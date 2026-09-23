@@ -239,7 +239,7 @@ io.adapter(createAdapter(pubClient, subClient));
 
 registerSocketHandlers(io);
 
-server.listen(PORT, () => {
-  console.log(`Watchparty server em http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Watchparty server em http://0.0.0.0:${PORT}`);
   console.log(`Origens liberadas: ${CLIENT_ORIGINS.join(', ')}`);
 });
