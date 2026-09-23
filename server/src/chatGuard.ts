@@ -7,6 +7,14 @@ const FLOOD_PATTERN = /(.)\1{10,}/;
 const MAX_REACTIONS = 20;
 const REACTION_WINDOW_MS = 4000;
 
+/**
+ * "Digitando...": o cliente já só emite na transição (começou/parou), não a
+ * cada tecla, então esse teto é só para um cliente adulterado que ignore
+ * isso e tente floodar a sala.
+ */
+const MAX_TYPING_EVENTS = 15;
+const TYPING_WINDOW_MS = 4000;
+
 /** Emissão de token de upload: os arquivos já são grandes, não precisa de muitos por minuto. */
 const MAX_UPLOAD_TOKENS = 6;
 const UPLOAD_WINDOW_MS = 60_000;
@@ -40,6 +48,10 @@ export function isReactionRateLimited(socketId: string): boolean {
   return slidingWindowHit(`reaction:${socketId}`, MAX_REACTIONS, REACTION_WINDOW_MS);
 }
 
+export function isTypingRateLimited(socketId: string): boolean {
+  return slidingWindowHit(`typing:${socketId}`, MAX_TYPING_EVENTS, TYPING_WINDOW_MS);
+}
+
 export function isUploadRateLimited(socketId: string): boolean {
   return slidingWindowHit(`upload:${socketId}`, MAX_UPLOAD_TOKENS, UPLOAD_WINDOW_MS);
 }
@@ -48,6 +60,7 @@ export function clearRateLimit(socketId: string): void {
   windows.delete(`chat:${socketId}`);
   windows.delete(`reaction:${socketId}`);
   windows.delete(`upload:${socketId}`);
+  windows.delete(`typing:${socketId}`);
 }
 
 /**

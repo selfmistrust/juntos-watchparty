@@ -75,6 +75,17 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   /** Última senha tentada; usada tanto no join inicial quanto em reconexões. */
   const passwordRef = useRef('');
+  /**
+   * Avatar a mandar em cada `room:join` — inclui reconexões automáticas do
+   * Socket.io (queda de wi-fi, celular bloqueou, aba ficou muito tempo em
+   * segundo plano). Começa com o que veio da tela de entrada, mas depois de
+   * cada `room:welcome`/`room:state` é atualizada pra refletir o que o
+   * servidor confirmou por último — inclusive uma troca de foto feita no
+   * meio da sessão pelo painel de pessoas. Sem isso, uma reconexão silenciosa
+   * reenviaria o avatar antigo (a semente do DiceBear escolhida lá no
+   * início) e apagaria a foto enviada, mesmo com ela já valendo há um tempo.
+   */
+  const avatarRef = useRef({ avatarSeed, avatarUrl });
   /** serverTime - clientTime, já descontada metade do round-trip. */
   const clockOffset = useRef(0);
 
@@ -92,8 +103,8 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
         roomId,
         name,
         password: passwordRef.current || undefined,
-        avatarSeed,
-        avatarUrl,
+        avatarSeed: avatarRef.current.avatarSeed,
+        avatarUrl: avatarRef.current.avatarUrl,
       });
       syncClock(socket, clockOffset);
     };
@@ -167,7 +178,10 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
       socket.off('reaction:new', onReaction);
       socket.off('sound:play', onSoundPlay);
     };
-    // avatarSeed/avatarUrl só importam no join inicial; trocas depois passam por actions.setAvatar.
+    // avatarSeed/avatarUrl não entram nas deps de propósito: usá-las direto
+    // faria esse efeito inteiro reconectar o socket a cada troca de avatar.
+    // O valor atual pra reconexões automáticas vem de `avatarRef` (acima),
+    // que já é mantida em dia por fora deste efeito.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, roomId, name]);
 
@@ -182,6 +196,11 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
       setMe(updated);
     }
   }, [state, me]);
+
+  /** Espelha o avatar mais recente confirmado pelo servidor — ver comentário em `avatarRef`. */
+  useEffect(() => {
+    if (me) avatarRef.current = { avatarSeed: me.avatarSeed, avatarUrl: me.avatarUrl };
+  }, [me]);
 
   useEffect(() => {
     if (!notice) return;

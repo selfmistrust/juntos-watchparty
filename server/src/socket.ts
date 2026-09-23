@@ -3,6 +3,7 @@ import {
   clearRateLimit,
   isRateLimited,
   isReactionRateLimited,
+  isTypingRateLimited,
   isUploadRateLimited,
   sanitizeCaption,
   sanitizeGifUrl,
@@ -392,7 +393,8 @@ export function registerSocketHandlers(io: Server) {
       const room = await currentRoom();
       const user = room?.users[socket.id];
       if (!room || !user) return;
-      socket.to(room.id).emit('chat:typing', { id: user.id, name: user.name, isTyping });
+      if (isTypingRateLimited(socket.id)) return;
+      socket.to(room.id).emit('chat:typing', { id: user.id, name: user.name, isTyping: Boolean(isTyping) });
     });
 
     socket.on('disconnect', async () => {
@@ -400,7 +402,14 @@ export function registerSocketHandlers(io: Server) {
       const room = await currentRoom();
       if (!room) return;
       const user = removeUser(room, socket.id);
-      if (user) system(room.id, 'leave', `${user.name} saiu da sala`);
+      if (user) {
+        system(room.id, 'leave', `${user.name} saiu da sala`);
+        // Sem isso, quem estava digitando na hora de cair a conexão (aba
+        // fechada, wi-fi caiu) deixaria o indicador travado pros outros pra
+        // sempre — o timeout de "parou de digitar" do cliente nunca dispara
+        // porque o cliente já não está mais lá pra disparar nada.
+        socket.to(room.id).emit('chat:typing', { id: user.id, name: user.name, isTyping: false });
+      }
       if (Object.keys(room.users).length === 0) {
         // Ninguém assistindo: congela o tempo para não "correr" com a sala vazia.
         commitPosition(room, projectedPosition(room));
