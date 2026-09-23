@@ -1,22 +1,13 @@
 import 'dotenv/config';
 import http from 'node:http';
-import path from 'node:path';
 import { createAdapter } from '@socket.io/redis-adapter';
 import cors from 'cors';
 import express from 'express';
-import multer from 'multer';
 import { Server } from 'socket.io';
 import { createRoom, getRoom, roomCount } from './rooms.js';
 import { pubClient, subClient } from './redis.js';
 import { registerSocketHandlers } from './socket.js';
-import {
-  consumeUploadToken,
-  MAX_UPLOAD_BYTES,
-  publicUploadUrl,
-  UPLOAD_DIR,
-  uploadStorage,
-  videoFileFilter,
-} from './uploads.js';
+import { scheduleUploadCleanup } from './uploadCleanup.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
 
@@ -171,59 +162,6 @@ app.get('/api/gifs/search', async (req, res) => {
   }
 });
 
-// Vídeos enviados pelos usuários. `nosniff` evita que o navegador tente
-// "adivinhar" o tipo do arquivo pelo conteúdo — vale a pena já que o
-// conteúdo vem de terceiros. `immutable` porque o nome do arquivo é
-// aleatório e nunca é reaproveitado para outro conteúdo.
-app.use(
-  '/uploads',
-  (_req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    next();
-  },
-  express.static(UPLOAD_DIR, { maxAge: '7d', immutable: true }),
-);
-
-const upload = multer({
-  storage: uploadStorage,
-  fileFilter: videoFileFilter,
-  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
-});
-
-/**
- * Recebe o arquivo de vídeo em si. A permissão (só host/controlador da sala)
- * já foi checada no socket ao emitir o token — aqui só validamos que o token
- * existe, não expirou e ainda não foi usado. Ver server/src/uploads.ts.
- */
-app.post('/api/uploads', async (req, res) => {
-  const token = String(req.query.token ?? '');
-  const tokenData = await consumeUploadToken(token);
-  if (!tokenData) {
-    return res.status(401).json({ error: 'invalid_or_expired_token' });
-  }
-
-  upload.single('file')(req, res, (err: unknown) => {
-    if (err) {
-      const code = (err as { code?: string; message?: string })?.code;
-      const message = (err as { message?: string })?.message;
-      const reason =
-        code === 'LIMIT_FILE_SIZE'
-          ? 'file_too_large'
-          : message === 'unsupported_type'
-            ? 'unsupported_type'
-            : 'upload_failed';
-      return res.status(400).json({ error: reason });
-    }
-    if (!req.file) return res.status(400).json({ error: 'missing_file' });
-
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    res.status(201).json({
-      url: publicUploadUrl(baseUrl, req.file.filename),
-      title: path.parse(req.file.originalname).name.slice(0, 120) || 'Vídeo enviado',
-    });
-  });
-});
-
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: CLIENT_ORIGINS, methods: ['GET', 'POST'] },
@@ -239,7 +177,11 @@ io.adapter(createAdapter(pubClient, subClient));
 
 registerSocketHandlers(io);
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Watchparty server em http://0.0.0.0:${PORT}`);
+server.listen(PORT, () => {
+  console.log(`Watchparty server em http://localhost:${PORT}`);
   console.log(`Origens liberadas: ${CLIENT_ORIGINS.join(', ')}`);
 });
+
+// Limpeza periódica de vídeos enviados que não estão mais na fila de
+// nenhuma sala ativa — ver server/src/uploadCleanup.ts.
+scheduleUploadCleanup();

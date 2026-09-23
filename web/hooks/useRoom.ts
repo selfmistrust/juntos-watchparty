@@ -59,7 +59,7 @@ export interface RoomActions {
 }
 
 export type UploadTokenResult =
-  | { ok: true; token: string }
+  | { ok: true; uploadUrl: string; publicUrl: string; contentType: string }
   | { ok: false; error: string };
 
 export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoomOptions) {

@@ -1,0 +1,50 @@
+# Deploy do backend (server/) no Fly.io.
+#
+# O servidor não guarda mais vídeo em disco nenhum (upload vai direto pro
+# bucket S3/R2 configurado nos secrets abaixo) — por isso não tem volume
+# aqui. Isso também significa que dá pra usar auto_stop_machines = true com
+# tranquilidade se quiser economizar: sem volume, a máquina não fica presa a
+# um host específico do Fly.
+#
+# Antes do primeiro deploy:
+#   1. flyctl auth login
+#   2. Trocar o "app" abaixo por um nome único (ex.: juntos-watchparty-SEUNOME)
+#   3. cd server && fly launch --no-deploy --copy-config --name <mesmo-nome-do-app>
+#      (isso registra o app no Fly sem sobrescrever este arquivo)
+#   4. Configurar os secrets (nunca vão neste arquivo, que pode ir pro git):
+#      fly secrets set \
+#        CLIENT_ORIGIN=https://SEU-FRONT.vercel.app \
+#        REDIS_URL=rediss://...                        \
+#        S3_ENDPOINT=https://<accountid>.r2.cloudflarestorage.com \
+#        S3_BUCKET=juntos-watchparty-videos             \
+#        S3_PUBLIC_URL=https://videos.seudominio.com    \
+#        S3_ACCESS_KEY_ID=...                           \
+#        S3_SECRET_ACCESS_KEY=...
+#      # opcionais:
+#      fly secrets set YOUTUBE_API_KEY=... GIPHY_API_KEY=...
+#   5. fly deploy
+#
+# Depois, qualquer `git push` + `fly deploy` reaplica a mesma imagem.
+
+app = "juntos-watchparty"
+primary_region = "gru" # São Paulo — troque se você e seus amigos estiverem longe do Brasil
+
+[build]
+
+[env]
+  PORT = "4000"
+  MAX_UPLOAD_MB = "1024"
+  S3_REGION = "auto"
+
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

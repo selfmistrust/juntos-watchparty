@@ -117,7 +117,7 @@ export function PlaylistPanel({
           <p className="animate-fade-up mt-2 text-2xs leading-relaxed text-live/90">{status.message}</p>
         )}
 
-        <VideoUploadField canControl={canControl} onUploaded={onAdd} />
+        <VideoUploadField canControl={canControl} onUploaded={onAdd} requestUploadToken={requestUploadToken} />
       </div>
 
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">

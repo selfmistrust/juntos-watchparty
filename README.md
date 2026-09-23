@@ -15,7 +15,7 @@ watchparty/
 │  │  ├─ socket.ts                Handlers de sincronia, chat e fila
 │  │  ├─ rooms.ts                 Store em memória + projeção de posição do vídeo
 │  │  └─ types.ts
-│  ├─ .env.example
+│  ├─ .env
 │  └─ package.json
 │
 └─ web/                           Next.js (Pages Router)

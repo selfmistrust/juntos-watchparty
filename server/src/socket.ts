@@ -35,11 +35,11 @@ import {
   type SoundId,
   type SystemEventKind,
 } from './types.js';
-import { createUploadToken, deleteUploadIfOwned, isAllowedVideoFile, MAX_UPLOAD_BYTES } from './uploads.js';
+import { createUploadTarget, deleteUploadIfOwned, isAllowedVideoFile, MAX_UPLOAD_BYTES } from './storage.js';
 
 /** Resposta do handler `upload:requestToken`, entregue via callback de ack. */
 type UploadTokenAck =
-  | { ok: true; token: string }
+  | { ok: true; uploadUrl: string; publicUrl: string; contentType: string }
   | { ok: false; error: 'no_room' | 'denied' | 'rate_limited' | 'bad_size' | 'too_large' | 'unsupported_type' };
 
 interface JoinPayload {
@@ -217,11 +217,13 @@ export function registerSocketHandlers(io: Server) {
     });
 
     /**
-     * Emite um token de uso único para o upload HTTP de um vídeo. Só quem
-     * controla a reprodução pode enviar arquivos — mais restrito do que
-     * `playlist:add` via link/busca, que qualquer participante pode usar.
-     * O token é a prova de que essa checagem passou: a rota HTTP que recebe
-     * o arquivo não tem como saber, por si só, quem está do outro lado.
+     * Autoriza o upload de um vídeo — mas quem recebe o arquivo não é o
+     * nosso servidor, é o bucket S3/R2 diretamente. Aqui a gente só checa
+     * permissão (`canControl`, mais restrito que `playlist:add` por
+     * link/busca) e devolve uma URL assinada de PUT que só serve pra este
+     * objeto específico, por um tempo limitado. O vídeo nunca passa pelo
+     * nosso processo — sem isso, um host de graça com timeout curto (ex.:
+     * Render free tier) derrubaria qualquer envio de arquivo grande.
      */
     socket.on(
       'upload:requestToken',
@@ -238,12 +240,18 @@ export function registerSocketHandlers(io: Server) {
         const size = Number(payload.fileSize);
         if (!Number.isFinite(size) || size <= 0) return reply({ ok: false, error: 'bad_size' });
         if (size > MAX_UPLOAD_BYTES) return reply({ ok: false, error: 'too_large' });
-        if (!isAllowedVideoFile(String(payload.fileName ?? ''), String(payload.mimeType ?? ''))) {
+        const fileName = String(payload.fileName ?? '');
+        if (!isAllowedVideoFile(fileName, String(payload.mimeType ?? ''))) {
           return reply({ ok: false, error: 'unsupported_type' });
         }
 
-        const token = await createUploadToken({ roomId: room.id, socketId: socket.id });
-        reply({ ok: true, token });
+        // Aqui a gente confia no tamanho que o cliente declarou — uma URL
+        // assinada de PUT não tem como travar um Content-Length máximo
+        // (isso exigiria presigned POST com policy, bem mais complexo pro
+        // ganho). Pra uso entre amigos/confiável isso é aceitável; num
+        // cenário público valeria a pena migrar pra presigned POST.
+        const target = await createUploadTarget(fileName);
+        reply({ ok: true, uploadUrl: target.uploadUrl, publicUrl: target.publicUrl, contentType: target.contentType });
       },
     );
 
@@ -254,7 +262,7 @@ export function registerSocketHandlers(io: Server) {
       const index = room.playlist.findIndex((i) => i.id === itemId);
       if (index === -1) return;
       const [removed] = room.playlist.splice(index, 1);
-      if (removed?.kind === 'file') deleteUploadIfOwned(removed.src);
+      if (removed?.kind === 'file') void deleteUploadIfOwned(removed.src);
       if (index < room.currentIndex) room.currentIndex -= 1;
       else if (index === room.currentIndex) {
         room.currentIndex = Math.min(room.currentIndex, room.playlist.length - 1);
