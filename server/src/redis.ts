@@ -4,12 +4,14 @@ const REDIS_URL = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
 
 function connect(name: string): Redis {
   const client = new Redis(REDIS_URL, {
-    // Backoff simples: tenta de novo em vez de derrubar o processo se o
-    // Redis cair um instante (comum em serviços gerenciados durante deploy).
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
     retryStrategy: (attempt) => Math.min(attempt * 200, 5000),
   });
+
   client.on('error', (err) => console.error(`[redis:${name}]`, err.message));
   client.on('connect', () => console.log(`[redis:${name}] conectado`));
+
   return client;
 }
 
