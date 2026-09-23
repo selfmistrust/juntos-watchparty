@@ -1,0 +1,48 @@
+# Sobe Redis + o servidor exatamente como rodariam em produção
+# O front-end (Next.js) fica de fora de propósito, em produção ele normalmente
+# vai para a Vercel (ou outro host de front-end) separado do back-end.
+#
+# Uso:
+#   docker compose up --build
+#
+# O servidor lê as variáveis de server/.env
+# antes de subir, com REDIS_URL=redis://redis:6379
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build: ./server
+    restart: unless-stopped
+    env_file: ./server/.env
+    environment:
+      REDIS_URL: redis://redis:6379
+      # Onde os vídeos enviados pelos usuários ficam gravados dentro do
+      # container; o volume abaixo garante que sobrevivem a um restart/deploy.
+      UPLOAD_DIR: /app/uploads
+      # Teto de tamanho por arquivo enviado, em MB. Ajuste conforme o disco
+      # disponível — sem objeto de armazenamento externo (S3 etc.), isso é
+      # espaço local do host.
+      MAX_UPLOAD_MB: '1024'
+    ports:
+      - '4000:4000'
+    volumes:
+      - uploads-data:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+  uploads-data:
