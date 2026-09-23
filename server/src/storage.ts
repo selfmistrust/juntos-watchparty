@@ -138,15 +138,23 @@ export async function listUploadedObjects(): Promise<{ key: string; lastModified
   const objects: { key: string; lastModified: Date }[] = [];
   let continuationToken: string | undefined;
 
-  do {
-    const res = await s3.send(
-      new ListObjectsV2Command({ Bucket: BUCKET, Prefix: KEY_PREFIX, ContinuationToken: continuationToken }),
-    );
-    for (const obj of res.Contents ?? []) {
-      if (obj.Key && obj.LastModified) objects.push({ key: obj.Key, lastModified: obj.LastModified });
+  try {
+    do {
+      const res = await s3.send(
+        new ListObjectsV2Command({ Bucket: BUCKET, Prefix: KEY_PREFIX, ContinuationToken: continuationToken }),
+      );
+      for (const obj of res.Contents ?? []) {
+        if (obj.Key && obj.LastModified) objects.push({ key: obj.Key, lastModified: obj.LastModified });
+      }
+      continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+    } while (continuationToken);
+  } catch (err: any) {
+    // Se o prefixo/pasta 'uploads/' não existir no bucket ainda ou estiver vazio, o R2 lança NoSuchKey/NotFound.
+    if (err?.name === 'NoSuchKey' || err?.$metadata?.httpStatusCode === 404) {
+      return [];
     }
-    continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
-  } while (continuationToken);
+    throw err;
+  }
 
   return objects;
 }
