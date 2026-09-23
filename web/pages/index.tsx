@@ -37,12 +37,6 @@ export default function Home() {
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-6 py-8 sm:px-10">
       <header className="flex items-center justify-between">
         <span className="font-display text-lg tracking-tight">juntos</span>
-        <a
-          href="https://github.com"
-          className="text-sm text-ink-faint transition-colors duration-150 hover:text-ink"
-        >
-          código
-        </a>
       </header>
 
       <div className="grid flex-1 items-center gap-14 py-16 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:gap-20">

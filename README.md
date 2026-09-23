@@ -62,7 +62,9 @@ estado somente-leitura e um objeto `actions`. Isso mantém a UI testável e evit
 
 Texto em três níveis (`ink`, `ink-muted`, `ink-faint`) para criar hierarquia sem usar mais cores.
 
-**Tipografia.** Bricolage Grotesque nos títulos, Inter na interface, mono tabular para tempo e
+**Tipografia**
+
+Bricolage Grotesque nos títulos, Inter na interface, mono tabular para tempo e
 código da sala.
 
 **Princípios aplicados**
@@ -73,14 +75,16 @@ código da sala.
 - Controles do player somem após 2,8 s de mouse parado e voltam na hora em que o vídeo pausa.
 - `prefers-reduced-motion` desliga tudo, e o foco de teclado tem anel visível em qualquer fundo.
 
-**Responsividade.** Abaixo de 1024 px o vídeo vai para o topo em 16:9 e a sidebar vira uma gaveta
+**Responsividade**
+
+Abaixo de 1024 px o vídeo vai para o topo em 16:9 e a sidebar vira uma gaveta
 sobre a tela; acima disso, grid de duas colunas com painel fixo de 23 rem.
 
 ---
 
 ## 3. Como a sincronização funciona
 
-OCada sala guarda `position` (segundos) e `updatedAt` (timestamp de quando aquela posição valia). Quem chega depois recebe a posição **projetada**:
+Cada sala guarda `position` (segundos) e `updatedAt` (timestamp de quando aquela posição valia). Quem chega depois recebe a posição **projetada**:
 
 ```
 posição_agora = tocando ? position + (agora - updatedAt) / 1000 : position
@@ -181,7 +185,7 @@ texto, crie uma chave da **YouTube Data API v3** no Google Cloud Console e coloq
 `server/.env`:
 
 ```
-YOUTUBE_API_KEY=sua_chave
+YOUTUBE_API_KEY=sua_chave.
 ```
 
 A chave fica só no servidor, o cliente chama por `/api/youtube/search`
@@ -303,7 +307,7 @@ depois só copia `dist/` + dependências de produção para a imagem final).
 - **Arquivos `.mp4`** precisam de CORS liberado na origem e de um servidor que aceite Range
   requests, senão o seek não funciona.
 - **Sem recuperação de senha.** Se a sala tem senha e todo mundo esquece, a única saída é criar
-  uma sala nova — não existe conceito de "dono" fora da sessão do host atual.
+  uma sala nova. Não existe conceito de "dono" fora da sessão do host atual.
 - **`roomCount()` usa `KEYS room:*`**, que bloqueia o Redis por um instante proporcional ao número
   de salas. Aceitável para o health check ocasional deste projeto; troque por `SCAN` se o volume
   de salas crescer muito.
