@@ -1,8 +1,8 @@
-import { Shuffle, UploadSimple } from '@phosphor-icons/react';
+import { PencilSimple, Shuffle, UploadSimple } from '@phosphor-icons/react';
 import { useRef, useState } from 'react';
+import { AvatarCropper } from '@/components/ui/AvatarCropper';
 import { Button } from '@/components/ui/Button';
 import { dicebearUrl, randomAvatarSeed } from '@/lib/avatar';
-import { compressAvatarFile } from '@/lib/media';
 
 interface Props {
   roomId: string;
@@ -13,20 +13,16 @@ export function JoinGate({ roomId, onJoin }: Props) {
   const [name, setName] = useState('');
   const [seed, setSeed] = useState(() => randomAvatarSeed());
   const [photoUrl, setPhotoUrl] = useState<string | undefined>();
-  const [uploading, setUploading] = useState(false);
+  /** Guardado à parte do recorte em si, pra dar pra reabrir o "Ajustar foto" sem pedir o arquivo de novo. */
+  const [sourceFile, setSourceFile] = useState<File | undefined>();
+  const [cropperOpen, setCropperOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const uploadPhoto = async (file: File | undefined) => {
+  const pickPhoto = (file: File | undefined) => {
     if (!file) return;
-    setUploading(true);
-    try {
-      setPhotoUrl(await compressAvatarFile(file));
-    } catch {
-      // Falha na leitura: fica com o avatar gerado mesmo.
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = '';
-    }
+    setSourceFile(file);
+    setCropperOpen(true);
+    if (fileRef.current) fileRef.current.value = '';
   };
 
   const submit = () => {
@@ -47,19 +43,33 @@ export function JoinGate({ roomId, onJoin }: Props) {
         </p>
 
         <div className="mt-6 flex items-center gap-3">
-          {photoUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={photoUrl} alt="Seu avatar" className="h-14 w-14 shrink-0 rounded-full object-cover ring-1 ring-hairline" />
-          ) : (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={dicebearUrl(seed)} alt="Seu avatar" className="h-14 w-14 shrink-0 rounded-full bg-raised ring-1 ring-hairline" />
-          )}
+          <div className="group relative shrink-0">
+            {photoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={photoUrl} alt="Seu avatar" className="h-14 w-14 rounded-full object-cover ring-1 ring-hairline" />
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={dicebearUrl(seed)} alt="Seu avatar" className="h-14 w-14 rounded-full bg-raised ring-1 ring-hairline" />
+            )}
+            {photoUrl && sourceFile && (
+              <button
+                type="button"
+                onClick={() => setCropperOpen(true)}
+                aria-label="Ajustar foto (zoom e posição)"
+                title="Ajustar foto"
+                className="absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border border-hairline bg-raised text-ink-muted opacity-0 transition-opacity duration-150 hover:text-ink group-hover:opacity-100 focus-visible:opacity-100"
+              >
+                <PencilSimple size={12} />
+              </button>
+            )}
+          </div>
 
           <div className="flex flex-1 gap-2">
             <button
               type="button"
               onClick={() => {
                 setPhotoUrl(undefined);
+                setSourceFile(undefined);
                 setSeed(randomAvatarSeed());
               }}
               className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
@@ -72,19 +82,29 @@ export function JoinGate({ roomId, onJoin }: Props) {
               type="file"
               accept="image/*"
               className="hidden"
-              onChange={(e) => uploadPhoto(e.target.files?.[0])}
+              onChange={(e) => pickPhoto(e.target.files?.[0])}
             />
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-              className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink disabled:opacity-50"
+              className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
             >
               <UploadSimple size={13} />
-              {uploading ? 'Enviando…' : 'Usar foto'}
+              Usar foto
             </button>
           </div>
         </div>
+
+        {cropperOpen && sourceFile && (
+          <AvatarCropper
+            file={sourceFile}
+            onCancel={() => setCropperOpen(false)}
+            onConfirm={(dataUrl) => {
+              setPhotoUrl(dataUrl);
+              setCropperOpen(false);
+            }}
+          />
+        )}
 
         <input
           autoFocus

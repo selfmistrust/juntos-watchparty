@@ -1,8 +1,8 @@
-import { Crown, Disc, Shuffle, UploadSimple } from '@phosphor-icons/react';
+import { Check, Crown, Disc, PencilSimple, Shuffle, UploadSimple, X } from '@phosphor-icons/react';
 import { useRef, useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
+import { AvatarCropper } from '@/components/ui/AvatarCropper';
 import { randomAvatarSeed } from '@/lib/avatar';
-import { compressAvatarFile } from '@/lib/media';
 import type { RoomSnapshot, User } from '@/types';
 
 interface Props {
@@ -14,6 +14,7 @@ interface Props {
   onSetOpenControl: (open: boolean) => void;
   onSetColor: (color: string) => void;
   onSetAvatar: (avatar: { seed?: string; url?: string }) => void;
+  onSetName: (name: string) => void;
 }
 
 /** Paleta livre pra escolha de cor — mais ampla que a atribuída automaticamente no join. */
@@ -30,22 +31,36 @@ const PROFILE_COLORS = [
   '#38BDF8',
 ];
 
-export function PeoplePanel({ state, me, isHost, djUserId, onSetOpenControl, onSetColor, onSetAvatar }: Props) {
+export function PeoplePanel({
+  state,
+  me,
+  isHost,
+  djUserId,
+  onSetOpenControl,
+  onSetColor,
+  onSetAvatar,
+  onSetName,
+}: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | undefined>();
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
 
-  const uploadPhoto = async (file: File | undefined) => {
+  const pickPhoto = (file: File | undefined) => {
     if (!file) return;
-    setUploading(true);
-    try {
-      const dataUrl = await compressAvatarFile(file);
-      onSetAvatar({ url: dataUrl });
-    } catch {
-      // Se a leitura falhar, o avatar simplesmente permanece o de antes.
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = '';
-    }
+    setPendingFile(file);
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const startEditingName = () => {
+    setNameDraft(me?.name ?? '');
+    setEditingName(true);
+  };
+
+  const saveName = () => {
+    const trimmed = nameDraft.trim();
+    if (trimmed && trimmed !== me?.name) onSetName(trimmed);
+    setEditingName(false);
   };
 
   return (
@@ -57,7 +72,47 @@ export function PeoplePanel({ state, me, isHost, djUserId, onSetOpenControl, onS
           <div className="mt-3 flex items-center gap-3">
             <Avatar name={me.name} color={me.color} avatarSeed={me.avatarSeed} avatarUrl={me.avatarUrl} size="lg" />
             <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <span className="truncate text-sm text-ink">{me.name}</span>
+              {editingName ? (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    value={nameDraft}
+                    maxLength={24}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') saveName();
+                      if (e.key === 'Escape') setEditingName(false);
+                    }}
+                    className="h-7 min-w-0 flex-1 rounded-md border border-hairline bg-raised px-2 text-sm text-ink focus:border-accent/60 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={saveName}
+                    disabled={!nameDraft.trim()}
+                    aria-label="Salvar nome"
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-accent transition-colors duration-150 hover:bg-hover disabled:opacity-40"
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingName(false)}
+                    aria-label="Cancelar edição do nome"
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-150 hover:bg-hover hover:text-ink"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={startEditingName}
+                  className="group flex min-w-0 items-center gap-1.5 text-left"
+                >
+                  <span className="truncate text-sm text-ink">{me.name}</span>
+                  <PencilSimple size={12} className="shrink-0 text-ink-faint opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
+                </button>
+              )}
               <div className="flex flex-wrap gap-1.5">
                 {PROFILE_COLORS.map((c) => (
                   <button
@@ -90,18 +145,28 @@ export function PeoplePanel({ state, me, isHost, djUserId, onSetOpenControl, onS
               type="file"
               accept="image/*"
               className="hidden"
-              onChange={(e) => uploadPhoto(e.target.files?.[0])}
+              onChange={(e) => pickPhoto(e.target.files?.[0])}
             />
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-              className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink disabled:opacity-50"
+              className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
             >
               <UploadSimple size={13} />
-              {uploading ? 'Enviando…' : 'Usar foto'}
+              Usar foto
             </button>
           </div>
+
+          {pendingFile && (
+            <AvatarCropper
+              file={pendingFile}
+              onCancel={() => setPendingFile(undefined)}
+              onConfirm={(dataUrl) => {
+                onSetAvatar({ url: dataUrl });
+                setPendingFile(undefined);
+              }}
+            />
+          )}
         </div>
       )}
 

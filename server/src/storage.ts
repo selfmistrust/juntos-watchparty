@@ -34,10 +34,8 @@ if (!BUCKET || !PUBLIC_BASE_URL) {
 }
 
 export const s3 = new S3Client({
-  region: REGION,
+  region: 'auto',
   endpoint: ENDPOINT,
-  // R2 exige "path style" (bucket no caminho da URL, não em subdomínio).
-  forcePathStyle: Boolean(ENDPOINT),
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY_ID ?? '',
     secretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? '',

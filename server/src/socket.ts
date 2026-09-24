@@ -23,6 +23,7 @@ import {
   removeUser,
   setUserAvatar,
   setUserColor,
+  setUserName,
   snapshot,
 } from './rooms.js';
 import {
@@ -143,6 +144,17 @@ export function registerSocketHandlers(io: Server) {
       }
 
       if (setUserAvatar(room, socket.id, { seed: payload.seed, url })) {
+        await persistRoom(room);
+        broadcastState(room);
+      }
+    });
+
+    /** Nome trocado no painel de pessoas, depois de já estar na sala. */
+    socket.on('user:setName', async (newName: string) => {
+      const room = await currentRoom();
+      if (!room) return;
+      if (typeof newName !== 'string') return;
+      if (setUserName(room, socket.id, newName)) {
         await persistRoom(room);
         broadcastState(room);
       }

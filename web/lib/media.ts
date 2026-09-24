@@ -79,9 +79,9 @@ export function hasAllowedVideoExtension(fileName: string): boolean {
 
 /**
  * Carrega um arquivo de imagem local num <img> para poder redesenhá-lo num
- * canvas — passo comum às duas funções de compressão abaixo.
+ * canvas — passo comum às funções de compressão/recorte abaixo.
  */
-function loadImageFile(file: File): Promise<HTMLImageElement> {
+export function loadImageFile(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('read_failed'));
@@ -128,5 +128,26 @@ export async function compressAvatarFile(file: File, size = 160, quality = 0.82)
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('canvas_unavailable');
   ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
+/**
+ * Recorta um quadrado arbitrário (em coordenadas naturais da imagem) e
+ * reencoda como JPEG — usado pelo `AvatarCropper`, que deixa a pessoa
+ * escolher o zoom e a posição em vez de sempre cortar o centro.
+ */
+export function cropAvatarFromImage(
+  img: HTMLImageElement,
+  crop: { x: number; y: number; size: number },
+  outputSize = 160,
+  quality = 0.82,
+): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = outputSize;
+  canvas.height = outputSize;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas_unavailable');
+  ctx.drawImage(img, crop.x, crop.y, crop.size, crop.size, 0, 0, outputSize, outputSize);
   return canvas.toDataURL('image/jpeg', quality);
 }

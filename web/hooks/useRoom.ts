@@ -46,6 +46,7 @@ export interface RoomActions {
   sendSound: (soundId: SoundId) => void;
   setColor: (color: string) => void;
   setAvatar: (avatar: { seed?: string; url?: string }) => void;
+  setName: (name: string) => void;
   /**
    * Pede autorização (via socket, canal confiável) para enviar um vídeo por
    * HTTP. Resolve com um token de uso único ou um motivo de recusa — ver
@@ -88,6 +89,21 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
   const avatarRef = useRef({ avatarSeed, avatarUrl });
   /** serverTime - clientTime, já descontada metade do round-trip. */
   const clockOffset = useRef(0);
+
+  /**
+   * Sem isto, o `useRef` acima só congela o avatar que existia no primeiro
+   * render deste hook — e esse primeiro render acontece antes do efeito em
+   * `pages/room/[id].tsx` terminar de ler a foto salva no localStorage (o
+   * `useRoom` já é chamado mesmo com a `JoinGate` ainda na tela, só que
+   * "desligado" via `enabled`). Resultado: ao atualizar a página, o
+   * `room:join` saía sempre com `avatarUrl: undefined` e a foto sumia,
+   * voltando pro avatar do DiceBear. Mantendo a ref em dia com as props a
+   * cada mudança — não só quando `me` muda — o valor certo já está pronto
+   * antes do primeiro `join()`.
+   */
+  useEffect(() => {
+    avatarRef.current = { avatarSeed, avatarUrl };
+  }, [avatarSeed, avatarUrl]);
 
   useEffect(() => {
     if (!enabled || !roomId) return;
@@ -185,13 +201,16 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, roomId, name]);
 
-  /** Mantém `me` em dia quando o próprio usuário muda cor/avatar (o broadcast chega em `state`). */
+  /** Mantém `me` em dia quando o próprio usuário muda nome/cor/avatar (o broadcast chega em `state`). */
   useEffect(() => {
     if (!me || !state) return;
     const updated = state.users.find((u) => u.id === me.id);
     if (
       updated &&
-      (updated.color !== me.color || updated.avatarSeed !== me.avatarSeed || updated.avatarUrl !== me.avatarUrl)
+      (updated.name !== me.name ||
+        updated.color !== me.color ||
+        updated.avatarSeed !== me.avatarSeed ||
+        updated.avatarUrl !== me.avatarUrl)
     ) {
       setMe(updated);
     }
@@ -243,6 +262,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
       },
       setColor: (color) => emit('user:setColor', color),
       setAvatar: (avatar) => emit('user:setAvatar', avatar),
+      setName: (newName) => emit('user:setName', newName),
       requestUploadToken: (payload) =>
         new Promise<UploadTokenResult>((resolve) => {
           const socket = socketRef.current;

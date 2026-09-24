@@ -111,6 +111,7 @@ export function Sidebar({
             onSetOpenControl={actions.setOpenControl}
             onSetColor={actions.setColor}
             onSetAvatar={actions.setAvatar}
+            onSetName={actions.setName}
           />
         )}
       </div>

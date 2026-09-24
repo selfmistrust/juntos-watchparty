@@ -132,6 +132,15 @@ export function setUserAvatar(room: Room, id: string, avatar: { seed?: string; u
   return true;
 }
 
+/** Nome trocado depois de já estar na sala (painel de pessoas). Mesmas regras do nome de entrada. */
+export function setUserName(room: Room, id: string, name: string): boolean {
+  const user = room.users[id];
+  const trimmed = name.trim().slice(0, 24);
+  if (!user || !trimmed) return false;
+  user.name = trimmed;
+  return true;
+}
+
 export function removeUser(room: Room, id: string): User | undefined {
   const user = room.users[id];
   delete room.users[id];

@@ -58,14 +58,19 @@ export default function RoomPage() {
   } = useRoom({ roomId, name, enabled: Boolean(roomId && name), avatarSeed, avatarUrl });
 
   /**
-   * Troca de avatar feita depois de já estar na sala (painel de pessoas) só
-   * passa pelo socket — sem isso aqui, ela nunca volta pro localStorage nem
-   * pro estado desta página. Reabrir a aba (comum no celular, que descarta
-   * abas em segundo plano) voltaria a mandar o avatar antigo salvo na
-   * entrada, entrando em conflito com a foto que já estava valendo.
+   * Troca de nome ou avatar feita depois de já estar na sala (painel de
+   * pessoas) só passa pelo socket — sem isso aqui, ela nunca volta pro
+   * localStorage nem pro estado desta página. Reabrir a aba (comum no
+   * celular, que descarta abas em segundo plano) voltaria a mandar o nome ou
+   * avatar antigo salvo na entrada, entrando em conflito com o que já estava
+   * valendo.
    */
   useEffect(() => {
     if (!me) return;
+    if (me.name !== name) {
+      setName(me.name);
+      window.localStorage.setItem(NAME_KEY, me.name);
+    }
     if (me.avatarSeed !== avatarSeed) {
       setAvatarSeed(me.avatarSeed);
       window.localStorage.setItem(AVATAR_SEED_KEY, me.avatarSeed);
