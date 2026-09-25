@@ -6,6 +6,7 @@ import type { Room, RoomSnapshot, User } from './types.js';
 /** IDs de sala curtos e fáceis de ditar por voz. */
 export const newRoomId = customAlphabet('abcdefghjkmnpqrstuvwxyz23456789', 12);
 export const newId = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 12);
+export const newUserId = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 16);
 
 const NAME_COLORS = [
   '#A78BFA',
@@ -28,11 +29,18 @@ const key = (id: string) => `room:${id}`;
 const ACTIVE_TTL_SECONDS = 6 * 60 * 60;
 const EMPTY_TTL_SECONDS = 10 * 60;
 
+/** Tempo (ms) sem heartbeat para considerar sessão offline. */
+export const PRESENCE_TIMEOUT_MS = 30_000;
+
+/** Intervalo da limpeza de sessões abandonadas. */
+export const CLEANUP_INTERVAL_MS = 10_000;
+
 function emptyRoom(id: string, name?: string): Room {
   return {
     id,
     name: name?.trim() || 'Sessão sem título',
     hostId: null,
+    hostUserId: null,
     openControl: false,
     users: {},
     playlist: [],
@@ -41,6 +49,7 @@ function emptyRoom(id: string, name?: string): Room {
     position: 0,
     updatedAt: Date.now(),
     createdAt: Date.now(),
+    messages: [],
   };
 }
 
@@ -88,31 +97,132 @@ export const persistRoom = saveRoom;
 // --- Funções puras: recebem a sala já carregada e só mexem no objeto em
 // memória. Não falam com o Redis, por isso continuam fáceis de testar. ---
 
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+function pickColor(room: Room, providedColor?: string): string {
+  if (providedColor && HEX_COLOR.test(providedColor)) return providedColor;
+  return NAME_COLORS[Object.keys(room.users).length % NAME_COLORS.length];
+}
+
+/**
+ * Adiciona ou reconecta um usuário na sala.
+ * Se o userId já existe na sala, reutiliza aquele usuário (reconexão).
+ * Caso contrário, cria novo usuário.
+ */
 export function addUser(
   room: Room,
-  id: string,
+  sessionId: string,
+  userId: string,
   name: string,
   avatar?: { seed?: string; url?: string },
+  color?: string,
 ): User {
-  const color = NAME_COLORS[Object.keys(room.users).length % NAME_COLORS.length];
+  const now = Date.now();
+
+  // Procura usuário existente com mesmo userId (reconexão)
+  const existingEntry = Object.entries(room.users).find(([, u]) => u.userId === userId);
+  if (existingEntry) {
+    const [existingSessionId, existingUser] = existingEntry;
+    // Se era uma sessão diferente, remove a entrada antiga
+    if (existingSessionId !== sessionId) {
+      delete room.users[existingSessionId];
+    }
+    // Atualiza sessão existente
+    const updated: User = {
+      ...existingUser,
+      sessionId,
+      name: name.slice(0, 24) || existingUser.name,
+      color: pickColor(room, color) || existingUser.color,
+      avatarSeed: avatar?.seed?.slice(0, 40) || existingUser.avatarSeed,
+      avatarUrl: avatar?.url ?? existingUser.avatarUrl,
+      lastSeen: now,
+      connected: true,
+    };
+    room.users[sessionId] = updated;
+    // Atualiza host se necessário
+    if (!room.hostUserId) room.hostUserId = userId;
+    if (!room.hostId) room.hostId = sessionId;
+    return updated;
+  }
+
+  // Novo usuário
   const user: User = {
-    id,
+    userId,
+    sessionId,
     name: name.slice(0, 24) || 'Convidado',
-    color,
-    // Sem semente própria, usa o id do socket — determinístico e sempre disponível.
-    avatarSeed: avatar?.seed?.slice(0, 40) || id,
+    color: pickColor(room, color),
+    avatarSeed: avatar?.seed?.slice(0, 40) || userId,
     avatarUrl: avatar?.url,
+    lastSeen: now,
+    connected: true,
   };
-  room.users[id] = user;
-  if (!room.hostId) room.hostId = id;
+  room.users[sessionId] = user;
+  if (!room.hostUserId) room.hostUserId = userId;
+  if (!room.hostId) room.hostId = sessionId;
   return user;
 }
 
-const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+/** Atualiza último heartbeat do usuário. */
+export function updateUserHeartbeat(room: Room, sessionId: string): boolean {
+  const user = room.users[sessionId];
+  if (!user) return false;
+  user.lastSeen = Date.now();
+  user.connected = true;
+  return true;
+}
+
+/** Marca usuário como desconectado (mas mantém na sala para possível reconexão). */
+export function markUserDisconnected(room: Room, sessionId: string): User | undefined {
+  const user = room.users[sessionId];
+  if (!user) return undefined;
+  user.connected = false;
+  return user;
+}
+
+/** Remove usuário completamente da sala. */
+export function removeUser(room: Room, sessionId: string): User | undefined {
+  const user = room.users[sessionId];
+  delete room.users[sessionId];
+  if (room.hostId === sessionId) {
+    // O host sai: procura outro usuário conectado do mesmo hostUserId ou o mais antigo
+    const remaining = Object.entries(room.users).filter(([, u]) => u.connected);
+    if (remaining.length > 0) {
+      room.hostId = remaining[0][0];
+      room.hostUserId = remaining[0][1].userId;
+    } else {
+      room.hostId = null;
+      room.hostUserId = null;
+    }
+  }
+  return user;
+}
+
+/** Remove usuários desconectados há mais de PRESENCE_TIMEOUT_MS. */
+export function cleanupStaleUsers(room: Room): User[] {
+  const now = Date.now();
+  const removed: User[] = [];
+  for (const [sessionId, user] of Object.entries(room.users)) {
+    if (!user.connected && now - user.lastSeen > PRESENCE_TIMEOUT_MS) {
+      delete room.users[sessionId];
+      removed.push(user);
+      if (room.hostId === sessionId) {
+        const remaining = Object.entries(room.users).filter(([, u]) => u.connected);
+        if (remaining.length > 0) {
+          room.hostId = remaining[0][0];
+          room.hostUserId = remaining[0][1].userId;
+        } else {
+          room.hostId = null;
+          room.hostUserId = null;
+        }
+      }
+    }
+  }
+  return removed;
+}
 
 /** Cor de nome escolhida pelo próprio usuário, substituindo a atribuída automaticamente. */
-export function setUserColor(room: Room, id: string, color: string): boolean {
-  const user = room.users[id];
+export function setUserColor(room: Room, sessionId: string, color: string): boolean {
+  const user = room.users[sessionId];
   if (!user || !HEX_COLOR.test(color)) return false;
   user.color = color;
   return true;
@@ -122,8 +232,8 @@ export function setUserColor(room: Room, id: string, color: string): boolean {
  * Troca a semente do DiceBear e/ou a foto customizada. `url: ''` limpa a
  * foto e volta a usar o avatar gerado a partir da semente.
  */
-export function setUserAvatar(room: Room, id: string, avatar: { seed?: string; url?: string }): boolean {
-  const user = room.users[id];
+export function setUserAvatar(room: Room, sessionId: string, avatar: { seed?: string; url?: string }): boolean {
+  const user = room.users[sessionId];
   if (!user) return false;
   if (avatar.url !== undefined) {
     user.avatarUrl = avatar.url.length > 0 ? avatar.url : undefined;
@@ -133,26 +243,16 @@ export function setUserAvatar(room: Room, id: string, avatar: { seed?: string; u
 }
 
 /** Nome trocado depois de já estar na sala (painel de pessoas). Mesmas regras do nome de entrada. */
-export function setUserName(room: Room, id: string, name: string): boolean {
-  const user = room.users[id];
+export function setUserName(room: Room, sessionId: string, name: string): boolean {
+  const user = room.users[sessionId];
   const trimmed = name.trim().slice(0, 24);
   if (!user || !trimmed) return false;
   user.name = trimmed;
   return true;
 }
 
-export function removeUser(room: Room, id: string): User | undefined {
-  const user = room.users[id];
-  delete room.users[id];
-  if (room.hostId === id) {
-    // O host sai: o participante mais antigo assume para a sala não travar.
-    room.hostId = Object.keys(room.users)[0] ?? null;
-  }
-  return user;
-}
-
-export function canControl(room: Room, userId: string): boolean {
-  return room.openControl || room.hostId === userId;
+export function canControl(room: Room, sessionId: string): boolean {
+  return room.openControl || room.hostId === sessionId;
 }
 
 /**
@@ -173,18 +273,24 @@ export function commitPosition(room: Room, position?: number) {
 
 export function snapshot(room: Room): RoomSnapshot {
   const now = Date.now();
+  // Só inclui usuários conectados no snapshot enviado aos clientes
+  const connectedUsers = Object.values(room.users).filter(u => u.connected);
+  // Envia apenas as últimas 100 mensagens para o cliente
+  const recentMessages = (room.messages ?? []).slice(-100);
   return {
     id: room.id,
     name: room.name,
     hostId: room.hostId,
+    hostUserId: room.hostUserId,
     openControl: room.openControl,
     hasPassword: Boolean(room.passwordHash),
-    users: Object.values(room.users),
+    users: connectedUsers,
     playlist: room.playlist,
     currentIndex: room.currentIndex,
     isPlaying: room.isPlaying,
     position: projectedPosition(room, now),
     serverTime: now,
+    messages: recentMessages,
   };
 }
 

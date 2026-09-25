@@ -1,6 +1,7 @@
 import type { AppProps } from 'next/app';
 import { Bricolage_Grotesque, Inter } from 'next/font/google';
 import Head from 'next/head';
+import { YoutubeAccountProvider } from '@/hooks/useYouTubeAccount';
 import '@/styles/globals.css';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
@@ -33,7 +34,9 @@ export default function App({ Component, pageProps }: AppProps) {
         <link rel="manifest" href="/site.webmanifest" />
       </Head>
       <div className={`${inter.variable} ${display.variable} font-sans`}>
-        <Component {...pageProps} />
+        <YoutubeAccountProvider>
+          <Component {...pageProps} />
+        </YoutubeAccountProvider>
       </div>
     </>
   );

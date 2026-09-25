@@ -11,7 +11,7 @@ Tailwind no cliente, Node/Express + Socket.io no servidor.
 watchparty/
 ├─ server/                        Node + Express + Socket.io (estado autoritativo)
 │  ├─ src/
-│  │  ├─ index.ts                 HTTP, CORS, rotas REST, proxy da YouTube API
+│  │  ├─ index.ts                 HTTP, CORS, rotas REST, OAuth e proxy YouTube
 │  │  ├─ socket.ts                Handlers de sincronia, chat e fila
 │  │  ├─ rooms.ts                 Store em memória + projeção de posição do vídeo
 │  │  └─ types.ts
@@ -178,7 +178,36 @@ npm run dev          # http://localhost:3001
 Abra `http://localhost:3001`, clique em "Criar uma sala" e cole o link em outra janela anônima
 para ver a sincronia funcionando entre duas sessões.
 
-### Busca no YouTube (opcional)
+### Conta do YouTube (OAuth por usuário)
+
+Cada pessoa pode conectar a **própria** conta Google/YouTube. A busca na fila usa o token
+desse usuário; o `client_secret` e os refresh tokens ficam só no servidor (Redis, cifrados).
+
+No [Google Cloud Console](https://console.cloud.google.com/):
+
+1. Ative a **YouTube Data API v3**.
+2. Crie uma credencial OAuth 2.0 do tipo **Aplicativo da Web**.
+3. Em origens JavaScript autorizadas, coloque o front (`http://localhost:3000` ou `http://localhost:3001` no dev).
+4. Em URIs de redirecionamento, coloque exatamente:
+   `http://localhost:4000/api/youtube/oauth/callback`
+   (em produção, o domínio público do back-end + o mesmo caminho).
+5. Preencha `server/.env`:
+
+```
+SESSION_SECRET=uma_string_longa_e_aleatoria
+GOOGLE_CLIENT_ID=....apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=http://localhost:4000/api/youtube/oauth/callback
+```
+
+Na UI: **Conectar YouTube** (home, Fila ou Pessoas → Seu perfil) abre o consentimento do Google.
+Depois do retorno a conta aparece como conectada; **Desconectar** revoga o token no Google e apaga
+o registro local.
+
+A busca por texto ainda aceita `YOUTUBE_API_KEY` como fallback quando ninguém conectou a conta.
+Colar um link do YouTube continua funcionando sem OAuth.
+
+### Busca no YouTube (chave de API, opcional)
 
 A aba Fila aceita links do YouTube e `.mp4` sem nenhuma configuração. Para habilitar a busca por
 texto, crie uma chave da **YouTube Data API v3** no Google Cloud Console e coloque em
@@ -285,6 +314,9 @@ O código já lê tudo de variável de ambiente; o que muda em produção é só
 | Variável | Onde | Valor em produção |
 | --- | --- | --- |
 | `CLIENT_ORIGIN` | `server/.env` | domínio do front-end, `https://...` (aceita lista separada por vírgula para staging + produção juntos) |
+| `SESSION_SECRET` | `server/.env` | segredo HMAC do cookie de sessão (OAuth YouTube) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | `server/.env` | credencial OAuth 2.0; o secret nunca vai ao front |
+| `GOOGLE_REDIRECT_URI` | `server/.env` | callback público, `https://…/api/youtube/oauth/callback` |
 | `NEXT_PUBLIC_SERVER_URL` | `web/.env.local` | domínio do back-end, `https://...` |
 | `REDIS_URL` | `server/.env` | URL TLS do Redis gerenciado, `rediss://...` |
 

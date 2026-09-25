@@ -1,6 +1,7 @@
 import { ArrowRight, LockSimple } from '@phosphor-icons/react';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
 import { SERVER_URL } from '@/lib/socket';
 
@@ -35,7 +36,7 @@ export default function Home() {
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-6 py-8 sm:px-10">
-      <header className="flex items-center justify-between">
+      <header className="flex items-center justify-between gap-4">
         <span className="font-display text-lg tracking-tight">juntos</span>
       </header>
 
@@ -108,6 +109,21 @@ export default function Home() {
 
         <SyncHero />
       </div>
+
+      <footer className="mt-auto px-6 pb-8 text-center">
+        <nav className="flex flex-wrap items-center justify-center gap-4 text-sm text-ink-muted">
+          <Link href="/privacy" className="hover:text-accent transition-colors">
+            Política de Privacidade
+          </Link>
+          <span aria-hidden="true">·</span>
+          <Link href="/terms" className="hover:text-accent transition-colors">
+            Termos de Serviço
+          </Link>
+        </nav>
+        <p className="mt-3 text-2xs text-ink-faint">
+          juntos — Watch Party &copy; {new Date().getFullYear()}
+        </p>
+      </footer>
     </main>
   );
 }

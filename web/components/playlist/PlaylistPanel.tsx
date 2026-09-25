@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { VideoUploadField } from '@/components/playlist/VideoUploadField';
 import type { UploadTokenResult } from '@/hooks/useRoom';
+import { YouTubeConnect } from '@/components/youtube/YouTubeConnect';
 import { parseMediaUrl, youtubeThumb } from '@/lib/media';
 import { SERVER_URL } from '@/lib/socket';
 import type { PlaylistItem, YoutubeResult } from '@/types';
@@ -65,11 +66,31 @@ export function PlaylistPanel({
 
     setStatus({ kind: 'loading' });
     try {
-      const res = await fetch(`${SERVER_URL}/api/youtube/search?q=${encodeURIComponent(value)}`);
+      const res = await fetch(`${SERVER_URL}/api/youtube/search?q=${encodeURIComponent(value)}`, {
+        credentials: 'include',
+      });
       if (res.status === 501) {
         setStatus({
           kind: 'error',
-          message: 'A busca precisa de uma chave da YouTube API. Cole um link para adicionar mesmo assim.',
+          message: 'A busca precisa de uma conta YouTube conectada ou de uma chave da API. Cole um link para adicionar mesmo assim.',
+        });
+        return;
+      }
+      if (res.status === 401) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setStatus({
+          kind: 'error',
+          message:
+            body.error === 'youtube_reauth_required'
+              ? 'A autorização do YouTube expirou ou foi revogada. Conecte a conta de novo.'
+              : 'Conecte sua conta do YouTube para buscar, ou cole um link.',
+        });
+        return;
+      }
+      if (res.status === 403) {
+        setStatus({
+          kind: 'error',
+          message: 'O YouTube recusou esta busca. Tente outro termo ou cole um link.',
         });
         return;
       }
@@ -116,6 +137,10 @@ export function PlaylistPanel({
         {status.kind === 'error' && (
           <p className="animate-fade-up mt-2 text-2xs leading-relaxed text-live/90">{status.message}</p>
         )}
+
+        <div className="mt-3">
+          <YouTubeConnect compact />
+        </div>
 
         <VideoUploadField canControl={canControl} onUploaded={onAdd} requestUploadToken={requestUploadToken} />
       </div>

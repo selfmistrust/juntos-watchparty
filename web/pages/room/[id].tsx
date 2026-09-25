@@ -10,6 +10,7 @@ import { useRoom } from '@/hooks/useRoom';
 const NAME_KEY = 'juntos:name';
 const AVATAR_SEED_KEY = 'juntos:avatarSeed';
 const AVATAR_URL_KEY = 'juntos:avatarUrl';
+const COLOR_KEY = 'juntos:color';
 
 export default function RoomPage() {
   const router = useRouter();
@@ -55,6 +56,7 @@ export default function RoomPage() {
     targetPosition,
     reactions,
     actions,
+  replyingTo,
   } = useRoom({ roomId, name, enabled: Boolean(roomId && name), avatarSeed, avatarUrl });
 
   /**
@@ -65,6 +67,8 @@ export default function RoomPage() {
    * avatar antigo salvo na entrada, entrando em conflito com o que já estava
    * valendo.
    */
+  const COLOR_KEY = 'juntos:color';
+
   useEffect(() => {
     if (!me) return;
     if (me.name !== name) {
@@ -79,6 +83,9 @@ export default function RoomPage() {
       setAvatarUrl(me.avatarUrl);
       if (me.avatarUrl) window.localStorage.setItem(AVATAR_URL_KEY, me.avatarUrl);
       else window.localStorage.removeItem(AVATAR_URL_KEY);
+    }
+    if (me.color && me.color !== window.localStorage.getItem(COLOR_KEY)) {
+      window.localStorage.setItem(COLOR_KEY, me.color);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me]);
@@ -142,6 +149,7 @@ export default function RoomPage() {
           actions={actions}
           canControl={canControl}
           isHost={isHost}
+          replyingTo={replyingTo}
         />
       </div>
 

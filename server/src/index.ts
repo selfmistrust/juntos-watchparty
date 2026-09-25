@@ -6,8 +6,9 @@ import express from 'express';
 import { Server } from 'socket.io';
 import { createRoom, getRoom, roomCount } from './rooms.js';
 import { pubClient, subClient } from './redis.js';
-import { registerSocketHandlers } from './socket.js';
+import { registerSocketHandlers, startPresenceCleanup } from './socket.js';
 import { scheduleUploadCleanup } from './uploadCleanup.js';
+import { registerYoutubeRoutes } from './youtubeRoutes.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
 
@@ -15,7 +16,7 @@ const PORT = Number(process.env.PORT ?? 4000);
  * Aceita uma lista separada por vírgula, para permitir staging + produção
  * ao mesmo tempo sem precisar de duas variáveis: CLIENT_ORIGIN=https://a,https://b
  */
-const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN ?? 'http://localhost:3000')
+const CLIENT_ORIGINS = (process.env.CLIENT_ORIGIN ?? 'http://localhost:3000,http://localhost:3001')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -27,7 +28,7 @@ const app = express();
 // em vez do IP/protocolo internos do proxy.
 app.set('trust proxy', 1);
 
-app.use(cors({ origin: CLIENT_ORIGINS }));
+app.use(cors({ origin: CLIENT_ORIGINS, credentials: true }));
 app.use(express.json());
 
 app.get('/health', async (_req, res) => {
@@ -50,47 +51,11 @@ app.get('/api/rooms/:id', async (req, res) => {
   });
 });
 
-/**
- * Proxy da YouTube Data API. Fica no back-end para a chave nunca ir ao browser.
- * Sem chave configurada a UI cai no modo "cole um link", que segue funcionando.
- */
-app.get('/api/youtube/search', async (req, res) => {
-  const key = process.env.YOUTUBE_API_KEY;
-  const q = String(req.query.q ?? '').trim();
-  if (!key) return res.status(501).json({ error: 'no_api_key' });
-  if (!q) return res.json({ items: [] });
-
-  const url = new URL('https://www.googleapis.com/youtube/v3/search');
-  url.searchParams.set('part', 'snippet');
-  url.searchParams.set('type', 'video');
-  url.searchParams.set('maxResults', '12');
-  url.searchParams.set('videoEmbeddable', 'true');
-  url.searchParams.set('q', q);
-  url.searchParams.set('key', key);
-
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`youtube ${response.status}`);
-    const data = (await response.json()) as {
-      items: { id: { videoId: string }; snippet: { title: string; channelTitle: string; thumbnails: { medium?: { url: string } } } }[];
-    };
-    res.json({
-      items: data.items.map((item) => ({
-        videoId: item.id.videoId,
-        title: item.snippet.title,
-        channel: item.snippet.channelTitle,
-        thumbnail: item.snippet.thumbnails.medium?.url ?? '',
-      })),
-    });
-  } catch {
-    res.status(502).json({ error: 'youtube_unavailable' });
-  }
-});
+registerYoutubeRoutes(app);
 
 /**
  * Proxy de busca de GIFs. Usa Tenor se `TENOR_API_KEY` estiver definida,
- * senão cai para Giphy com `GIPHY_API_KEY`. Mesma lógica do proxy do
- * YouTube acima: a chave nunca vai ao navegador, o cliente só chama esta rota.
+ * senão cai para Giphy com `GIPHY_API_KEY`. A chave nunca vai ao navegador.
  * Sem nenhuma chave configurada, a UI esconde a busca de GIF automaticamente.
  */
 app.get('/api/gifs/search', async (req, res) => {
@@ -176,6 +141,9 @@ const io = new Server(server, {
 io.adapter(createAdapter(pubClient, subClient));
 
 registerSocketHandlers(io);
+
+// Inicia limpeza periódica de sessões abandonadas
+startPresenceCleanup(io);
 
 server.listen(PORT, () => {
   console.log(`Watchparty server em http://localhost:${PORT}`);

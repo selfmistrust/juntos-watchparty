@@ -2,6 +2,7 @@ import { Check, Crown, Disc, PencilSimple, Shuffle, UploadSimple, X } from '@pho
 import { useRef, useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
 import { AvatarCropper } from '@/components/ui/AvatarCropper';
+import { YouTubeConnect } from '@/components/youtube/YouTubeConnect';
 import { randomAvatarSeed } from '@/lib/avatar';
 import type { RoomSnapshot, User } from '@/types';
 
@@ -167,24 +168,26 @@ export function PeoplePanel({
               }}
             />
           )}
+
+          <YouTubeConnect />
         </div>
       )}
 
       <ul className="scroll-thin min-h-0 flex-1 overflow-y-auto p-2">
         {state.users.map((user) => (
-          <li key={user.id} className="flex items-center gap-3 rounded-lg p-2 transition-colors duration-150 hover:bg-hover">
+          <li key={user.sessionId} className="flex items-center gap-3 rounded-lg p-2 transition-colors duration-150 hover:bg-hover">
             <Avatar name={user.name} color={user.color} avatarSeed={user.avatarSeed} avatarUrl={user.avatarUrl} />
             <span className="min-w-0 flex-1 truncate text-sm text-ink">
               {user.name}
-              {user.id === me?.id && <span className="ml-1.5 text-2xs text-ink-faint">você</span>}
+              {user.userId === me?.userId && <span className="ml-1.5 text-2xs text-ink-faint">você</span>}
             </span>
-            {djUserId === user.id && (
+            {djUserId === user.userId && (
               <span className="flex shrink-0 items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-2xs text-ink-muted">
                 <Disc size={11} weight="fill" />
                 DJ
               </span>
             )}
-            {state.hostId === user.id && (
+            {state.hostId === user.sessionId && (
               <span className="flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs text-accent">
                 <Crown size={11} weight="fill" />
                 host

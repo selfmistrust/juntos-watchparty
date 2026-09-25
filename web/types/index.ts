@@ -13,13 +13,20 @@ export interface PlaylistItem {
 }
 
 export interface User {
-  id: string;
+  /** Identidade persistente do usuário (sobrevive a reconexões). */
+  userId: string;
+  /** ID da sessão/conexão atual (socket.id). Muda a cada reconexão. */
+  sessionId: string;
   name: string;
   color: string;
   /** Semente do DiceBear; usada quando não há foto customizada. */
   avatarSeed: string;
   /** Foto enviada pelo usuário (data URL), se houver. Tem prioridade sobre avatarSeed. */
   avatarUrl?: string;
+  /** Timestamp da última atividade/heartbeat. */
+  lastSeen: number;
+  /** Se a conexão atual está ativa. */
+  connected: boolean;
 }
 
 export type ChatMessageKind = 'text' | 'gif' | 'image';
@@ -27,6 +34,15 @@ export type ChatMessageKind = 'text' | 'gif' | 'image';
 /** Mesma lista fechada do servidor, mantém cliente e servidor em sincronia visual. */
 export const ALLOWED_REACTIONS = ['❤️', '😂', '😱', '🔥', '👏'] as const;
 export type ReactionEmoji = (typeof ALLOWED_REACTIONS)[number];
+
+/** Emojis aceitos para reações em mensagens do chat. */
+export const CHAT_REACTION_EMOJIS = [
+  '❤️', '👍', '👎', '😂', '😮', '😢', '🔥', '🎉', '🤔', '👏',
+  '😍', '🥰', '🤩', '😊', '😭', '😡', '😠', '🤬', '😱', '😨',
+  '😰', '😥', '😐', '😶', '🙄', '😏', '😴', '🤷', '🤷‍♂️', '🤷‍♀️',
+  '🤦', '👋', '🤝', '✋', '🤚', '🖐', '✌️', '🤞'
+] as const;
+export type ChatReactionEmoji = (typeof CHAT_REACTION_EMOJIS)[number];
 
 export const ALLOWED_SOUNDS = ['clap', 'laugh', 'wow', 'drum'] as const;
 export type SoundId = (typeof ALLOWED_SOUNDS)[number];
@@ -53,6 +69,7 @@ export interface RoomSnapshot {
   id: string;
   name: string;
   hostId: string | null;
+  hostUserId: string | null;
   openControl: boolean;
   hasPassword: boolean;
   users: User[];
@@ -61,6 +78,8 @@ export interface RoomSnapshot {
   isPlaying: boolean;
   position: number;
   serverTime: number;
+  /** Últimas mensagens do chat (últimas 100). */
+  messages: ChatMessage[];
 }
 
 export type JoinErrorReason = 'wrong_password' | 'password_required';
@@ -79,6 +98,16 @@ export interface ChatMessage {
   text: string;
   mediaUrl?: string;
   at: number;
+  /** ID da mensagem original, se for uma resposta. */
+  parentMessageId?: string;
+  /** Resumo da mensagem original para preview na resposta. */
+  parentMessagePreview?: {
+    id: string;
+    name: string;
+    text: string;
+  };
+  /** Reações na mensagem: emoji -> { count, users: string[] }. */
+  reactions?: Record<string, { count: number; users: string[] }>;
 }
 
 export type SystemEventKind = 'join' | 'leave' | 'play' | 'pause' | 'seek' | 'track' | 'host';

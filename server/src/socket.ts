@@ -14,9 +14,11 @@ import {
   addUser,
   canControl,
   checkPassword,
+  cleanupStaleUsers,
   commitPosition,
   ensureRoom,
   getRoom,
+  markUserDisconnected,
   newId,
   persistRoom,
   projectedPosition,
@@ -25,11 +27,16 @@ import {
   setUserColor,
   setUserName,
   snapshot,
+  updateUserHeartbeat,
+  PRESENCE_TIMEOUT_MS,
+  CLEANUP_INTERVAL_MS,
 } from './rooms.js';
 import {
   ALLOWED_REACTIONS,
   ALLOWED_SOUNDS,
+  CHAT_REACTION_EMOJIS,
   type ChatMessageKind,
+  type ChatReactionEmoji,
   type PlaylistItem,
   type ReactionEmoji,
   type Room,
@@ -37,6 +44,7 @@ import {
   type SystemEventKind,
 } from './types.js';
 import { createUploadTarget, deleteUploadIfOwned, isAllowedVideoFile, MAX_UPLOAD_BYTES } from './storage.js';
+import { redis } from './redis.js';
 
 /** Resposta do handler `upload:requestToken`, entregue via callback de ack. */
 type UploadTokenAck =
@@ -48,10 +56,14 @@ interface JoinPayload {
   name: string;
   roomName?: string;
   password?: string;
+  /** Identidade persistente do usuário (gerada no cliente, salva no localStorage). */
+  userId: string;
   /** Semente do DiceBear escolhida na tela de entrada; o servidor gera uma se faltar. */
   avatarSeed?: string;
   /** Foto customizada (data URL), se o usuário já tiver enviado uma antes de entrar. */
   avatarUrl?: string;
+  /** Cor de nome escolhida pelo usuário (hex), se já tiver uma salva. */
+  color?: string;
 }
 
 /** Payload aceito por `chat:message`. Uma string solta ainda funciona como mensagem de texto. */
@@ -61,6 +73,8 @@ type ChatSendPayload =
       kind?: ChatMessageKind;
       text?: string;
       mediaUrl?: string;
+      /** ID da mensagem original, se for uma resposta. */
+      parentMessageId?: string;
     };
 
 export function registerSocketHandlers(io: Server) {
@@ -91,28 +105,33 @@ export function registerSocketHandlers(io: Server) {
 
     socket.on(
       'room:join',
-      async ({ roomId: rid, name, roomName, password, avatarSeed, avatarUrl }: JoinPayload) => {
+      async ({ roomId: rid, name, roomName, password, userId, avatarSeed, avatarUrl, color }: JoinPayload) => {
         const room = await ensureRoom(rid, roomName);
 
         const passwordOk = await checkPassword(room, password);
         if (!passwordOk) {
           socket.emit('room:join:error', {
             reason: password ? 'wrong_password' : 'password_required',
-            message: password ? 'Senha incorreta.' : 'Esta sala tem senha.',
+            message: password ? 'Senha incorreta.' : 'Esta tem senha.',
           });
           return;
         }
 
         roomId = rid;
         socket.join(rid);
-        const user = addUser(room, socket.id, name, {
+        const sessionId = socket.id;
+        const user = addUser(room, sessionId, userId, name, {
           seed: avatarSeed,
           url: avatarUrl ? sanitizeImageDataUrl(avatarUrl) ?? undefined : undefined,
-        });
+        }, color);
         await persistRoom(room);
         socket.emit('room:welcome', { you: user, state: snapshot(room) });
         socket.to(rid).emit('room:state', snapshot(room));
-        system(rid, 'join', `${user.name} entrou na sala`);
+        // Só emite evento de join se for um usuário NOVO (não reconexão)
+        const isReconnect = room.users[sessionId]?.lastSeen !== undefined && room.users[sessionId].lastSeen < Date.now() - 1000;
+        if (!isReconnect) {
+          system(rid, 'join', `${user.name} entrou na sala`);
+        }
       },
     );
 
@@ -167,6 +186,15 @@ export function registerSocketHandlers(io: Server) {
       else socket.emit('time:pong', payload);
     });
 
+    /** Heartbeat de presença: atualiza lastSeen do usuário. */
+    socket.on('presence:heartbeat', async () => {
+      const room = await currentRoom();
+      if (!room) return;
+      if (updateUserHeartbeat(room, socket.id)) {
+        await persistRoom(room);
+      }
+    });
+
     socket.on('player:play', async (at?: number) => {
       const room = await currentRoom();
       if (!room) return;
@@ -216,7 +244,7 @@ export function registerSocketHandlers(io: Server) {
         ...item,
         id: newId(),
         addedBy: user?.name ?? 'Convidado',
-        addedById: user?.id ?? '',
+        addedById: user?.userId ?? '',
       };
       room.playlist.push(entry);
       if (room.currentIndex === -1) {
@@ -338,7 +366,7 @@ export function registerSocketHandlers(io: Server) {
       io.to(room.id).emit('reaction:new', {
         id: newId(),
         emoji,
-        userId: user.id,
+        userId: user.sessionId,
         name: user.name,
       });
     });
@@ -354,7 +382,7 @@ export function registerSocketHandlers(io: Server) {
       io.to(room.id).emit('sound:play', {
         id: newId(),
         soundId,
-        userId: user.id,
+        userId: user.sessionId,
         name: user.name,
       });
     });
@@ -375,11 +403,19 @@ export function registerSocketHandlers(io: Server) {
 
       let text = '';
       let mediaUrl: string | undefined;
+      let parentMessageId: string | undefined;
+      let parentMessagePreview: { id: string; name: string; text: string } | undefined;
 
       if (kind === 'text') {
         const clean = sanitizeMessage(raw.text ?? '');
         if (!clean) return;
         text = clean;
+        // Verifica se há parentMessageId no payload (para respostas)
+        if (typeof payload === 'object' && payload.parentMessageId) {
+          parentMessageId = payload.parentMessageId;
+          // Busca a mensagem original para preview
+          const parentMsg = Object.values(room.users).flatMap(() => []); // placeholder - we'll look in a messages store
+        }
       } else if (kind === 'gif') {
         const url = sanitizeGifUrl(raw.mediaUrl);
         if (!url) return;
@@ -397,16 +433,81 @@ export function registerSocketHandlers(io: Server) {
         return;
       }
 
-      io.to(room.id).emit('chat:message', {
-        id: newId(),
-        userId: user.id,
+      const messageId = newId();
+      const now = Date.now();
+
+      // Se há parentMessageId, busca a mensagem original no feed do Redis (simplificado: procuramos na sala)
+      // Para simplificar, armazenamos mensagens recentes na sala
+      if (!room.messages) room.messages = [];
+      const parentMsg = parentMessageId ? room.messages.find((m: any) => m.id === parentMessageId) : undefined;
+
+      const message = {
+        id: messageId,
+        userId: user.sessionId,
         name: user.name,
         color: user.color,
         kind,
         text,
         mediaUrl,
-        at: Date.now(),
-      });
+        at: now,
+        parentMessageId,
+        parentMessagePreview: parentMsg ? {
+          id: parentMsg.id,
+          name: parentMsg.name,
+          text: parentMsg.kind === 'text' ? parentMsg.text : parentMsg.kind === 'gif' ? '[GIF] ' + (parentMsg.text || parentMsg.mediaUrl || '') : '[Imagem]'
+        } : undefined,
+        reactions: {},
+      };
+
+      room.messages.push(message);
+      // Mantém apenas últimas 500 mensagens
+      if (room.messages.length > 500) room.messages = room.messages.slice(-500);
+
+      await persistRoom(room);
+      io.to(room.id).emit('chat:message', message);
+    });
+
+    // Reação a mensagem
+    socket.on('chat:reaction:add', async ({ messageId, emoji }: { messageId: string; emoji: string }) => {
+      const room = await currentRoom();
+      const user = room?.users[socket.id];
+      if (!room || !user) return;
+
+      if (!CHAT_REACTION_EMOJIS.includes(emoji as any)) return;
+      if (isReactionRateLimited(socket.id)) return;
+
+      if (!room.messages) return;
+      const msg = room.messages.find((m: any) => m.id === messageId);
+      if (!msg) return;
+
+      if (!msg.reactions) msg.reactions = {};
+      if (!msg.reactions[emoji]) msg.reactions[emoji] = { count: 0, users: [] };
+      if (msg.reactions[emoji].users.includes(user.sessionId)) return; // Já reagiu
+
+      msg.reactions[emoji].count += 1;
+      msg.reactions[emoji].users.push(user.sessionId);
+
+      await persistRoom(room);
+      io.to(room.id).emit('chat:reaction:add', { messageId, emoji, userId: user.sessionId });
+    });
+
+    // Remover reação
+    socket.on('chat:reaction:remove', async ({ messageId, emoji }: { messageId: string; emoji: string }) => {
+      const room = await currentRoom();
+      const user = room?.users[socket.id];
+      if (!room || !user) return;
+
+      if (!room.messages) return;
+      const msg = room.messages.find((m: any) => m.id === messageId);
+      if (!msg || !msg.reactions?.[emoji]) return;
+      if (!msg.reactions[emoji].users.includes(user.sessionId)) return; // Não reagiu
+
+      msg.reactions[emoji].count -= 1;
+      msg.reactions[emoji].users = msg.reactions[emoji].users.filter((u: string) => u !== user.sessionId);
+      if (msg.reactions[emoji].count === 0) delete msg.reactions[emoji];
+
+      await persistRoom(room);
+      io.to(room.id).emit('chat:reaction:remove', { messageId, emoji, userId: user.sessionId });
     });
 
     socket.on('chat:typing', async (isTyping: boolean) => {
@@ -414,24 +515,25 @@ export function registerSocketHandlers(io: Server) {
       const user = room?.users[socket.id];
       if (!room || !user) return;
       if (isTypingRateLimited(socket.id)) return;
-      socket.to(room.id).emit('chat:typing', { id: user.id, name: user.name, isTyping: Boolean(isTyping) });
+      socket.to(room.id).emit('chat:typing', { id: user.sessionId, name: user.name, isTyping: Boolean(isTyping) });
     });
 
     socket.on('disconnect', async () => {
       clearRateLimit(socket.id);
       const room = await currentRoom();
       if (!room) return;
-      const user = removeUser(room, socket.id);
+      const user = markUserDisconnected(room, socket.id);
       if (user) {
         system(room.id, 'leave', `${user.name} saiu da sala`);
         // Sem isso, quem estava digitando na hora de cair a conexão (aba
         // fechada, wi-fi caiu) deixaria o indicador travado pros outros pra
         // sempre — o timeout de "parou de digitar" do cliente nunca dispara
         // porque o cliente já não está mais lá pra disparar nada.
-        socket.to(room.id).emit('chat:typing', { id: user.id, name: user.name, isTyping: false });
+        socket.to(room.id).emit('chat:typing', { id: user.sessionId, name: user.name, isTyping: false });
       }
-      if (Object.keys(room.users).length === 0) {
-        // Ninguém assistindo: congela o tempo para não "correr" com a sala vazia.
+      // Se não há usuários conectados, congela o tempo
+      const connectedUsers = Object.values(room.users).filter(u => u.connected);
+      if (connectedUsers.length === 0) {
         commitPosition(room, projectedPosition(room));
         room.isPlaying = false;
       }
@@ -451,4 +553,41 @@ function advance(room: Room) {
     commitPosition(room, 0);
     room.isPlaying = false;
   }
+}
+
+/**
+ * Inicia job periódico de limpeza de sessões abandonadas.
+ * Remove usuários desconectados há mais de PRESENCE_TIMEOUT_MS.
+ */
+export function startPresenceCleanup(io: Server): NodeJS.Timeout {
+  return setInterval(async () => {
+    try {
+      const keys = await redis.keys('room:*');
+      for (const key of keys) {
+        const raw = await redis.get(key);
+        if (!raw) continue;
+        let room: Room;
+        try {
+          room = JSON.parse(raw) as Room;
+        } catch {
+          continue;
+        }
+        const removed = cleanupStaleUsers(room);
+        if (removed.length > 0) {
+          await persistRoom(room);
+          io.to(room.id).emit('room:state', snapshot(room));
+          for (const user of removed) {
+            io.to(room.id).emit('room:event', {
+              id: newId(),
+              kind: 'leave',
+              text: `${user.name} foi removido por inatividade`,
+              at: Date.now(),
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[presence-cleanup] erro:', err);
+    }
+  }, CLEANUP_INTERVAL_MS);
 }

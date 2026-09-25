@@ -57,7 +57,7 @@ export function RoomHeader({ state, connected, sidebarOpen, onToggleSidebar }: P
       <div className="ml-auto flex items-center gap-2">
         <div className="hidden items-center sm:flex">
           {visible.map((user, i) => (
-            <span key={user.id} className={clsx(i > 0 && '-ml-2')}>
+            <span key={user.sessionId} className={clsx(i > 0 && '-ml-2')}>
               <Avatar
                 name={user.name}
                 color={user.color}

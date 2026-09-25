@@ -7,7 +7,7 @@ import { PlaylistPanel } from '@/components/playlist/PlaylistPanel';
 import { IconButton } from '@/components/ui/Button';
 import { Tabs, type TabDef } from '@/components/ui/Tabs';
 import type { RoomActions } from '@/hooks/useRoom';
-import type { FeedEntry, RoomSnapshot, User } from '@/types';
+import type { FeedEntry, RoomSnapshot, User, ChatMessage } from '@/types';
 
 type TabId = 'chat' | 'queue' | 'people';
 
@@ -21,6 +21,7 @@ interface Props {
   actions: RoomActions;
   canControl: boolean;
   isHost: boolean;
+  replyingTo?: ChatMessage | null;
 }
 
 export function Sidebar({
@@ -33,6 +34,7 @@ export function Sidebar({
   actions,
   canControl,
   isHost,
+  replyingTo,
 }: Props) {
   const [tab, setTab] = useState<TabId>('chat');
   const [unread, setUnread] = useState(0);
@@ -75,6 +77,8 @@ export function Sidebar({
         </IconButton>
       </div>
 
+      {/* Ações para chat */}
+
       <div className="min-h-0 flex-1">
         {tab === 'chat' && (
           <ChatPanel
@@ -88,6 +92,10 @@ export function Sidebar({
             onTyping={actions.setTyping}
             onSendGif={actions.sendGif}
             onSendImage={actions.sendImage}
+            onReact={actions.react}
+            onReply={actions.reply}
+            onCancelReply={actions.cancelReply}
+            replyingTo={replyingTo ?? null}
           />
         )}
         {tab === 'queue' && (

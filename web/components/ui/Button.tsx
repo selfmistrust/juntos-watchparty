@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { forwardRef } from 'react';
 
 type Variant = 'primary' | 'ghost' | 'outline';
 type Size = 'sm' | 'md';
@@ -38,20 +39,25 @@ interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children: ReactNode;
 }
 
-export function IconButton({ label, active, className, children, ...rest }: IconButtonProps) {
-  return (
-    <button
-      aria-label={label}
-      title={label}
-      className={clsx(
-        'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ease-out',
-        active ? 'bg-accent-soft text-accent' : 'text-ink-muted hover:bg-white/10 hover:text-ink',
-        'disabled:cursor-not-allowed disabled:opacity-40',
-        className,
-      )}
-      {...rest}
-    >
-      {children}
-    </button>
-  );
-}
+export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
+  ({ label, active, className, children, ...rest }, ref) => {
+    return (
+      <button
+        ref={ref}
+        aria-label={label}
+        title={label}
+        className={clsx(
+          'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ease-out',
+          active ? 'bg-accent-soft text-accent' : 'text-ink-muted hover:bg-white/10 hover:text-ink',
+          'disabled:cursor-not-allowed disabled:opacity-40',
+          className,
+        )}
+        {...rest}
+      >
+        {children}
+      </button>
+    );
+  }
+);
+
+IconButton.displayName = 'IconButton';

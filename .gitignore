@@ -1,4 +1,9 @@
+# Dependências e Builds
 node_modules/
 dist/
+.next/
+out/
+
+# Configurações sensíveis e uploads locais
 .env
 uploads/

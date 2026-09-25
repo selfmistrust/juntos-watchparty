@@ -1,10 +1,13 @@
-import { Image as ImageIcon, PaperPlaneRight, Sticker } from '@phosphor-icons/react';
+import { Image as ImageIcon, PaperPlaneRight, Sticker, Smiley, ArrowArcLeft, ChatTeardrop } from '@phosphor-icons/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
 import { IconButton } from '@/components/ui/Button';
 import { compressImageFile, formatClock } from '@/lib/media';
 import { GifPicker } from './GifPicker';
-import type { FeedEntry, GifResult, User } from '@/types';
+import { EmojiPicker } from './EmojiPicker';
+import { ReactionPicker } from './ReactionPicker';
+import { ReplyPreview } from './ReplyPreview';
+import type { FeedEntry, GifResult, User, ChatMessage } from '@/types';
 
 interface Props {
   feed: FeedEntry[];
@@ -19,6 +22,12 @@ interface Props {
   onTyping: (isTyping: boolean) => void;
   onSendGif: (gif: GifResult) => void;
   onSendImage: (dataUrl: string) => void;
+  /** Ações para reações e respostas. */
+  onReact: (messageId: string, emoji: string) => void;
+  onReply: (message: ChatMessage) => void;
+  onCancelReply: () => void;
+  /** Mensagem que está sendo respondida (se houver). */
+  replyingTo?: ChatMessage | null;
 }
 
 export function ChatPanel({
@@ -32,16 +41,23 @@ export function ChatPanel({
   onTyping,
   onSendGif,
   onSendImage,
+  onReact,
+  onReply,
+  onCancelReply,
+  replyingTo,
 }: Props) {
   const [draft, setDraft] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const [sendingImage, setSendingImage] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const typingTimeout = useRef<ReturnType<typeof setTimeout>>();
   const isTypingRef = useRef(false);
+  const emojiAnchorRef = useRef<HTMLButtonElement>(null);
+  const reactionAnchorRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
-  const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
+  const userById = useMemo(() => new Map(users.map((u) => [u.sessionId, u])), [users]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -90,6 +106,25 @@ export function ChatPanel({
     }
   };
 
+  /** Converte reactions do formato do servidor (emoji -> {count, users[]}) para o formato do ReactionPicker. */
+  const formatReactions = (reactions?: Record<string, { count: number; users: string[] }>) => {
+    if (!reactions) return [];
+    return Object.entries(reactions).map(([emoji, data]) => ({
+      emoji,
+      count: data.count,
+      users: data.users,
+      hasCurrentUser: data.users.includes(me?.sessionId ?? ''),
+    }));
+  };
+
+  /** Encontra a mensagem original para reply preview. */
+  const findParentMessage = (parentId?: string): ChatMessage | undefined => {
+    if (!parentId) return undefined;
+    return feed.find(
+      (e): e is FeedEntry & { type: 'message' } => e.type === 'message' && e.id === parentId
+    ) as ChatMessage | undefined;
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="scroll-thin flex-1 space-y-3 overflow-y-auto px-4 py-4">
@@ -111,6 +146,19 @@ export function ChatPanel({
           const sender = userById.get(entry.userId);
           const isHost = hostId === entry.userId;
           const isDj = djUserId === entry.userId;
+          const isOwn = entry.userId === me?.sessionId;
+          const parentMessage = findParentMessage(entry.parentMessageId);
+          const reactionAnchorKey = entry.id;
+
+          // Preview de resposta (se esta mensagem for uma resposta)
+          const showReplyPreview = parentMessage && (
+            <ReplyPreview
+              key={`reply-preview-${entry.id}`}
+              message={parentMessage}
+              onCancel={onCancelReply}
+              currentUserName={me?.name}
+            />
+          );
 
           return (
             <div key={entry.id} className="animate-fade-up flex gap-2.5">
@@ -123,12 +171,13 @@ export function ChatPanel({
                 className="mt-0.5"
               />
               <div className="min-w-0 flex-1">
+                {showReplyPreview}
                 <div className="flex flex-wrap items-baseline gap-1.5">
                   <span
                     className="truncate text-[0.8125rem] font-medium"
-                    style={{ color: entry.userId === me?.id ? undefined : entry.color }}
+                    style={{ color: isOwn ? undefined : entry.color }}
                   >
-                    {entry.userId === me?.id ? 'Você' : entry.name}
+                    {isOwn ? 'Você' : entry.name}
                   </span>
                   {isHost && <Badge label="Host" />}
                   {isDj && <Badge label="DJ" />}
@@ -154,6 +203,42 @@ export function ChatPanel({
                     {entry.text}
                   </p>
                 )}
+
+                {/* Reações */}
+                {entry.reactions && Object.keys(entry.reactions).length > 0 && (
+                  <ReactionPicker
+                    key={`reactions-${entry.id}`}
+                    reactions={formatReactions(entry.reactions)}
+                    messageId={entry.id}
+                    currentUserId={me?.sessionId ?? ''}
+                    onToggle={onReact}
+                    anchorRef={{ current: reactionAnchorRefs.current.get(reactionAnchorKey) ?? null } as React.RefObject<HTMLButtonElement | null>}
+                    isMobile={typeof window !== 'undefined' && window.innerWidth < 640}
+                  />
+                )}
+
+                {/* Ações da mensagem (reagir, responder) */}
+                <div className="mt-1.5 flex items-center gap-1">
+                  <button
+                    type="button"
+                    ref={(el) => { if (el) reactionAnchorRefs.current.set(reactionAnchorKey, el); }}
+                    onClick={() => {
+                      // O ReactionPicker abre via anchorRef
+                    }}
+                    className="flex h-7 items-center gap-1 rounded-lg px-2 text-2xs text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+                    aria-label="Adicionar reação"
+                  >
+                    <ChatTeardrop size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onReply(entry)}
+                    className="flex h-7 items-center gap-1 rounded-lg px-2 text-2xs text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+                    aria-label="Responder"
+                  >
+                    <ArrowArcLeft size={13} />
+                  </button>
+                </div>
               </div>
             </div>
           );
@@ -178,6 +263,36 @@ export function ChatPanel({
 
       <div className="relative border-t border-hairline p-3">
         {gifOpen && <GifPicker onPick={pickGif} onClose={() => setGifOpen(false)} />}
+        {emojiOpen && (
+          <EmojiPicker
+            anchorRef={emojiAnchorRef}
+            onSelect={(emoji) => {
+              const textarea = document.querySelector('textarea');
+              if (textarea) {
+                const start = textarea.selectionStart;
+                const end = textarea.selectionEnd;
+                const newText = draft.slice(0, start) + emoji + draft.slice(end);
+                setDraft(newText);
+                // Move cursor após o emoji inserido
+                setTimeout(() => {
+                  textarea.selectionStart = textarea.selectionEnd = start + emoji.length;
+                  textarea.focus();
+                }, 0);
+              }
+            }}
+            onClose={() => setEmojiOpen(false)}
+          />
+        )}
+
+        {/* Preview de resposta ativa (quando respondendo a uma mensagem) */}
+        {replyingTo && (
+          <ReplyPreview
+            key="active-reply-preview"
+            message={replyingTo}
+            onCancel={onCancelReply}
+            currentUserName={me?.name}
+          />
+        )}
 
         <div className="flex items-end gap-1 rounded-xl border border-hairline bg-raised px-2 py-2 transition-colors duration-150 focus-within:border-accent/60">
           <input
@@ -192,6 +307,14 @@ export function ChatPanel({
           </IconButton>
           <IconButton label="Enviar GIF" active={gifOpen} onClick={() => setGifOpen((v) => !v)}>
             <Sticker size={17} />
+          </IconButton>
+          <IconButton
+            label={emojiOpen ? 'Fechar emojis' : 'Inserir emoji'}
+            active={emojiOpen}
+            onClick={() => setEmojiOpen((v) => !v)}
+            ref={emojiAnchorRef}
+          >
+            <Smiley size={17} />
           </IconButton>
 
           <textarea

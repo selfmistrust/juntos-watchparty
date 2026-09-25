@@ -47,11 +47,12 @@ export interface RoomActions {
   setColor: (color: string) => void;
   setAvatar: (avatar: { seed?: string; url?: string }) => void;
   setName: (name: string) => void;
-  /**
-   * Pede autorização (via socket, canal confiável) para enviar um vídeo por
-   * HTTP. Resolve com um token de uso único ou um motivo de recusa — ver
-   * `upload:requestToken` em server/src/socket.ts.
-   */
+  /** Reagir a uma mensagem do chat. */
+  react: (messageId: string, emoji: string) => void;
+  /** Responder a uma mensagem do chat. */
+  reply: (message: ChatMessage) => void;
+  /** Cancelar resposta em andamento. */
+  cancelReply: () => void;
   requestUploadToken: (payload: {
     fileName: string;
     fileSize: number;
@@ -74,6 +75,8 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
   const [joinError, setJoinError] = useState<JoinError | null>(null);
   /** Reações flutuantes ativas — cada uma se remove sozinha depois da animação. */
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
+  /** Mensagem sendo respondida no momento (para preview no input). */
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   /** Última senha tentada; usada tanto no join inicial quanto em reconexões. */
   const passwordRef = useRef('');
   /**
@@ -144,6 +147,39 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
         return next;
       });
 
+    // Handlers para reações e respostas no chat
+    const onReactionAdd = ({ messageId, emoji, userId }: { messageId: string; emoji: string; userId: string }): void => {
+      setFeed((prev: FeedEntry[]) => {
+        return prev.map((entry: FeedEntry): FeedEntry => {
+          if (entry.type === 'message' && entry.id === messageId) {
+            const reactions = { ...entry.reactions };
+            if (!reactions[emoji]) reactions[emoji] = { count: 0, users: [] };
+            reactions[emoji].count += 1;
+            reactions[emoji].users.push(userId);
+            return { ...entry, reactions };
+          }
+          return entry;
+        });
+      });
+    };
+
+    const onReactionRemove = ({ messageId, emoji, userId }: { messageId: string; emoji: string; userId: string }): void => {
+      setFeed((prev: FeedEntry[]) => {
+        return prev.map((entry: FeedEntry) => {
+          if (entry.type === 'message' && entry.id === messageId) {
+            const reactions = { ...entry.reactions };
+            if (reactions[emoji]) {
+              reactions[emoji].count -= 1;
+              reactions[emoji].users = reactions[emoji].users.filter((u) => u !== userId);
+              if (reactions[emoji].count <= 0) delete reactions[emoji];
+            }
+            return { ...entry, reactions };
+          }
+          return entry;
+        });
+      });
+    };
+
     const onDenied = (message: string) => setNotice(message);
     const onDisconnect = () => setConnected(false);
 
@@ -174,6 +210,8 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
     socket.on('room:event', onEvent);
     socket.on('room:denied', onDenied);
     socket.on('chat:message', onMessage);
+    socket.on('chat:reaction:add', onReactionAdd);
+    socket.on('chat:reaction:remove', onReactionRemove);
     socket.on('chat:typing', onTyping);
     socket.on('reaction:new', onReaction);
     socket.on('sound:play', onSoundPlay);
@@ -190,6 +228,8 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
       socket.off('room:event', onEvent);
       socket.off('room:denied', onDenied);
       socket.off('chat:message', onMessage);
+      socket.off('chat:reaction:add', onReactionAdd);
+      socket.off('chat:reaction:remove', onReactionRemove);
       socket.off('chat:typing', onTyping);
       socket.off('reaction:new', onReaction);
       socket.off('sound:play', onSoundPlay);
@@ -204,7 +244,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
   /** Mantém `me` em dia quando o próprio usuário muda nome/cor/avatar (o broadcast chega em `state`). */
   useEffect(() => {
     if (!me || !state) return;
-    const updated = state.users.find((u) => u.id === me.id);
+    const updated = state.users.find((u) => u.userId === me.userId);
     if (
       updated &&
       (updated.name !== me.name ||
@@ -263,6 +303,9 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
       setColor: (color) => emit('user:setColor', color),
       setAvatar: (avatar) => emit('user:setAvatar', avatar),
       setName: (newName) => emit('user:setName', newName),
+      react: (messageId, emoji) => emit('chat:reaction:add', { messageId, emoji }),
+      reply: (message) => setReplyingTo(message),
+      cancelReply: () => setReplyingTo(null),
       requestUploadToken: (payload) =>
         new Promise<UploadTokenResult>((resolve) => {
           const socket = socketRef.current;
@@ -278,7 +321,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
     [emit],
   );
 
-  const isHost = Boolean(me && state && state.hostId === me.id);
+  const isHost = Boolean(me && state && state.hostId === me.sessionId);
   const canControl = Boolean(state?.openControl) || isHost;
   const currentItem = state && state.currentIndex >= 0 ? state.playlist[state.currentIndex] ?? null : null;
 
@@ -305,6 +348,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
     targetPosition,
     reactions,
     actions,
+    replyingTo,
   };
 }
 
