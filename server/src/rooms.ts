@@ -141,7 +141,12 @@ export function addUser(
     room.users[sessionId] = updated;
     // Atualiza host se necessário
     if (!room.hostUserId) room.hostUserId = userId;
-    if (!room.hostId) room.hostId = sessionId;
+    // Se este usuário é o host (userId bate com hostUserId), atualiza hostId para o novo sessionId
+    if (room.hostUserId === userId) {
+      room.hostId = sessionId;
+    } else if (!room.hostId) {
+      room.hostId = sessionId;
+    }
     return updated;
   }
 
