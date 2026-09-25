@@ -53,20 +53,34 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
     searchInputRef.current?.focus();
   }, []);
 
-  // Posicionamento relativo ao anchor
+  // Posicionamento relativo ao anchor (abre acima se não houver espaço abaixo)
   useEffect(() => {
     const anchor = anchorRef.current;
     const container = containerRef.current;
     if (!anchor || !container) return;
 
     const rect = anchor.getBoundingClientRect();
-    container.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    const containerHeight = 340; // altura aproximada do picker
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+
+    // Decide se abre acima ou abaixo
+    const openAbove = spaceBelow < containerHeight + 8 && spaceAbove > containerHeight + 8;
+
+    if (openAbove) {
+      container.style.top = `${rect.top + window.scrollY - containerHeight - 4}px`;
+    } else {
+      container.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    }
     container.style.left = `${rect.left + window.scrollX}px`;
 
-    // Ajusta se passar da tela
+    // Ajusta horizontal se passar da tela
     const containerRect = container.getBoundingClientRect();
     if (containerRect.right > window.innerWidth - 8) {
       container.style.left = `${window.innerWidth - containerRect.width - 8}px`;
+    }
+    if (containerRect.left < 8) {
+      container.style.left = `8px`;
     }
   }, [anchorRef]);
 
