@@ -28,7 +28,6 @@ interface Props {
 export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('Frequentes');
-  const [showCategories, setShowCategories] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -60,7 +59,7 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
     if (!anchor || !container) return;
 
     const rect = anchor.getBoundingClientRect();
-    const containerHeight = 340; // altura aproximada do picker
+    const containerHeight = 300; // altura aproximada do picker
     const spaceBelow = window.innerHeight - rect.bottom;
     const spaceAbove = rect.top;
 
@@ -88,25 +87,27 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
     <Portal>
       <div
         ref={containerRef}
-        className="fixed z-50 w-72 rounded-xl border border-hairline bg-surface shadow-lg overflow-hidden animate-fade-up"
+        className="fixed z-50 w-64 rounded-xl border border-hairline bg-surface shadow-lift overflow-hidden animate-fade-up"
         role="dialog"
         aria-label="Seletor de emoji"
       >
         {/* Header com busca e categorias */}
-        <div className="p-2 border-b border-hairline">
-          <div className="relative mb-2">
-            <MagnifyingGlass size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-faint" />
+        <div className="px-1.5 py-1.5 border-b border-hairline">
+          {/* Busca */}
+          <div className="relative mb-1.5">
+            <MagnifyingGlass size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-faint" />
             <input
               ref={searchInputRef}
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Pesquisar emoji..."
-              className="w-full h-8 pl-8 pr-2 bg-raised rounded-lg text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:ring-1 focus:ring-accent"
+              className="w-full h-7 pl-7 pr-2 bg-raised rounded-lg text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:ring-1 focus:ring-accent"
             />
           </div>
 
-          <div className="flex gap-1 overflow-x-auto pb-1" role="tablist">
+          {/* Categorias */}
+          <div className="flex gap-0.5 overflow-x-auto pb-1" role="tablist">
             {Object.keys(EMOJI_CATEGORIES).map((cat) => (
               <button
                 key={cat}
@@ -116,9 +117,9 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
                   setActiveCategory(cat);
                   setSearch('');
                 }}
-                className={`shrink-0 px-2 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                className={`shrink-0 px-1.5 py-0.5 rounded-md text-[0.625rem] font-medium transition-colors whitespace-nowrap ${
                   activeCategory === cat
-                    ? 'bg-accent text-white'
+                    ? 'bg-accent-soft text-accent'
                     : 'text-ink-muted hover:bg-hover hover:text-ink'
                 }`}
               >
@@ -129,11 +130,11 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
         </div>
 
         {/* Grid de emojis */}
-        <div className="max-h-60 overflow-y-auto p-2">
+        <div className="max-h-56 overflow-y-auto p-1">
           {filteredEmojis.length === 0 ? (
-            <p className="text-center text-2xs text-ink-faint py-4">Nenhum emoji encontrado</p>
+            <p className="text-center text-2xs text-ink-faint py-3">Nenhum emoji encontrado</p>
           ) : (
-            <div className="grid grid-cols-8 gap-1" role="listbox">
+            <div className="grid grid-cols-9 gap-0.5" role="listbox">
               {filteredEmojis.map((emoji) => (
                 <button
                   key={emoji}
@@ -142,7 +143,7 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
                     onSelect(emoji);
                     onClose();
                   }}
-                  className="flex h-10 items-center justify-center rounded-lg text-xl transition-colors hover:bg-hover active:bg-hover active:scale-95"
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-lg transition-colors hover:bg-hover active:bg-hover active:scale-95"
                   aria-label={getEmojiName(emoji)}
                 >
                   {emoji}
@@ -153,13 +154,13 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
         </div>
 
         {/* Footer com fechar */}
-        <div className="flex items-center justify-end gap-2 p-2 border-t border-hairline">
+        <div className="flex items-center justify-end gap-1.5 px-1.5 py-1 border-t border-hairline">
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+            className="flex h-7 items-center gap-1 rounded-md px-2 text-[0.625rem] text-ink-muted transition-colors hover:bg-hover hover:text-ink"
           >
-            <X size={14} />
+            <X size={12} />
             Fechar
           </button>
         </div>
