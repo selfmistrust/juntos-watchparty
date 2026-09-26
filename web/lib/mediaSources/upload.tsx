@@ -94,6 +94,13 @@ export const uploadProvider: MediaSourceProvider = {
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', tokenRes.uploadUrl);
       xhr.setRequestHeader('Content-Type', tokenRes.contentType);
+      // Sem o progresso, um vídeo grande parece travado: a única pista seria
+      // o card em loading, sem nenhuma noção de quanto falta.
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          context.onProgress?.('upload', Math.round((e.loaded / e.total) * 100));
+        }
+      };
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) resolve();
         else reject(new Error(errorMessage('upload_failed')));

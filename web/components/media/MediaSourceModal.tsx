@@ -17,8 +17,6 @@ interface Props {
   canControl: boolean;
   addToPlaylist: MediaSourceContext['addToPlaylist'];
   requestUploadToken: MediaSourceContext['requestUploadToken'];
-  /** Fonte a abrir já com o fluxo iniciado (usado pelo atalho do painel da fila). */
-  initialSourceId?: string | null;
   /** Chamado quando o fluxo de uma fonte é iniciado com sucesso. */
   onSourceStarted?: (id: string) => void;
 }
@@ -29,6 +27,8 @@ interface CardState {
   reason?: string;
   starting: boolean;
   error?: string;
+  /** 0–100, só para fontes que reportam progresso (upload). */
+  progress?: number;
 }
 
 const idle: CardState = { loading: false, available: true, starting: false };
@@ -39,7 +39,6 @@ export function MediaSourceModal({
   canControl,
   addToPlaylist,
   requestUploadToken,
-  initialSourceId,
   onSourceStarted,
 }: Props) {
   const [states, setStates] = useState<Record<string, CardState>>({});
@@ -58,7 +57,20 @@ export function MediaSourceModal({
   );
 
   const context = useRef<MediaSourceContext>({ canControl, addToPlaylist, requestUploadToken });
-  context.current = { canControl, addToPlaylist, requestUploadToken };
+  context.current = {
+    canControl,
+    addToPlaylist,
+    requestUploadToken,
+    // O progresso volta para o card da fonte, que é onde a pessoa está olhando
+    // enquanto o modal continua aberto durante o envio.
+    onProgress: (sourceId, percent) => {
+      setStates((prev) => {
+        const atual = prev[sourceId];
+        if (!atual?.starting) return prev;
+        return { ...prev, [sourceId]: { ...atual, progress: percent } };
+      });
+    },
+  };
 
   /**
    * Consulta o estado de todas as fontes ao abrir. Uma fonte que responde
@@ -185,7 +197,7 @@ export function MediaSourceModal({
       if (estado && !estado.available) return;
       if (!source.start) return;
 
-      setStates((prev) => ({ ...prev, [source.id]: { ...(prev[source.id] ?? idle), starting: true, error: undefined } }));
+      setStates((prev) => ({ ...prev, [source.id]: { ...(prev[source.id] ?? idle), starting: true, error: undefined, progress: 0 } }));
       try {
         await source.start(context.current);
         onSourceStarted?.(source.id);
@@ -203,23 +215,6 @@ export function MediaSourceModal({
     },
     [states, onClose, onSourceStarted],
   );
-
-  // Atalho: abre o modal já iniciando uma fonte (o botão da fila continua
-  // funcionando e pula a etapa de escolher no modal).
-  const startedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!open || !initialSourceId) return;
-    if (startedRef.current === initialSourceId) return;
-    const source = sources.find((s) => s.id === initialSourceId);
-    if (!source) return;
-    if (source.requiresControl && !canControl) return;
-    startedRef.current = initialSourceId;
-    void start(source);
-  }, [open, initialSourceId, canControl, start, sources]);
-
-  useEffect(() => {
-    if (!open) startedRef.current = null;
-  }, [open]);
 
   // O painel do YouTube vive fora do `if (!open)`: ele é um modal próprio, que
   // precisa continuar montado depois de o modal de Aplicações fechar.
@@ -324,11 +319,30 @@ function SourceCard({
             {state.loading && <span className="h-1.5 w-1.5 shrink-0 animate-blink rounded-full bg-accent" />}
           </span>
           <span className="mt-0.5 block text-2xs leading-relaxed text-ink-faint">
-            {bloqueado && state.reason ? state.reason : source.description}
+            {state.starting && state.progress !== undefined
+              ? `Enviando… ${state.progress}%`
+              : bloqueado && state.reason
+                ? state.reason
+                : source.description}
           </span>
           {bloqueado && (
             <span className="mt-1.5 inline-flex items-center rounded-full bg-hover px-1.5 py-0.5 text-[0.625rem] font-medium text-ink-faint">
               Indisponível
+            </span>
+          )}
+          {state.starting && state.progress !== undefined && (
+            <span
+              role="progressbar"
+              aria-valuenow={state.progress}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={`Enviando para ${source.name}`}
+              className="mt-1.5 block h-1 overflow-hidden rounded-full bg-hover"
+            >
+              <span
+                className="block h-full rounded-full bg-accent transition-[width] duration-200"
+                style={{ width: `${state.progress}%` }}
+              />
             </span>
           )}
         </span>

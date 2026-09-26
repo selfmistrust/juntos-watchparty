@@ -80,4 +80,9 @@ export interface MediaSourceContext {
     fileSize: number;
     mimeType: string;
   }) => Promise<import('@/hooks/useRoom').UploadTokenResult>;
+  /**
+   * Progresso de 0 a 100, para fontes que demoram (upload). O modal desenha
+   * no card; quem não chamar simplesmente não mostra nada.
+   */
+  onProgress?: (sourceId: string, percent: number) => void;
 }

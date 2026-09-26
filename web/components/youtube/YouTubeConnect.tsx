@@ -1,15 +1,17 @@
 import { YoutubeLogo } from '@phosphor-icons/react';
 import { useYouTubeAccount } from '@/hooks/useYouTubeAccount';
 
-interface Props {
-  compact?: boolean;
-}
-
-export function YouTubeConnect({ compact = false }: Props) {
+/**
+ * Conta do YouTube da pessoa.
+ *
+ * Fica só aqui, no perfil. A busca de vídeos é uma opção do modal de
+ * Aplicações; manter o controle de conta também na aba Fila duplicava a mesma
+ * integração em dois lugares e poluía o topo da fila.
+ */
+export function YouTubeConnect() {
   const { status, loading, busy, message, error, connect, disconnect } = useYouTubeAccount();
 
   if (loading) {
-    if (compact) return null;
     return (
       <div className="rounded-xl border border-hairline bg-raised/60 p-3">
         <p className="text-2xs text-ink-faint">Verificando YouTube…</p>
@@ -25,7 +27,7 @@ export function YouTubeConnect({ compact = false }: Props) {
   }
 
   return (
-    <div className={compact ? 'flex flex-col gap-1.5' : 'mt-3 rounded-xl border border-hairline bg-raised/60 p-3'}>
+    <div className="mt-3 rounded-xl border border-hairline bg-raised/60 p-3">
       <div className="flex items-start gap-2.5">
         <YoutubeLogo size={18} weight="fill" className="mt-0.5 shrink-0 text-live" />
         <div className="min-w-0 flex-1">
@@ -36,8 +38,6 @@ export function YouTubeConnect({ compact = false }: Props) {
                 <p className="mt-0.5 truncate text-2xs text-ink-faint">{status.channelTitle}</p>
               )}
             </>
-          ) : compact ? (
-            <p className="text-sm text-ink">YouTube</p>
           ) : (
             <>
               <p className="text-sm text-ink">Conta do YouTube</p>

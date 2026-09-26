@@ -1,14 +1,10 @@
-import { DotsSixVertical, MagnifyingGlass, Plus, Trash, WaveTriangle } from '@phosphor-icons/react';
+import { DotsSixVertical, Plus, Trash } from '@phosphor-icons/react';
 import clsx from 'clsx';
-import { useCallback, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { MediaSourceModal } from '@/components/media/MediaSourceModal';
-import { VideoUploadField } from '@/components/playlist/VideoUploadField';
 import type { UploadTokenResult } from '@/hooks/useRoom';
-import { YouTubeConnect } from '@/components/youtube/YouTubeConnect';
-import { parseMediaUrl, youtubeThumb } from '@/lib/media';
-import { searchYoutube } from '@/lib/mediaSources';
-import type { PlaylistItem, YoutubeResult } from '@/types';
+import type { PlaylistItem } from '@/types';
 
 interface Props {
   playlist: PlaylistItem[];
@@ -25,8 +21,6 @@ interface Props {
   }) => Promise<UploadTokenResult>;
 }
 
-type Status = { kind: 'idle' } | { kind: 'error'; message: string } | { kind: 'loading' };
-
 export function PlaylistPanel({
   playlist,
   currentIndex,
@@ -37,60 +31,9 @@ export function PlaylistPanel({
   onSelect,
   requestUploadToken,
 }: Props) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<YoutubeResult[]>([]);
-  const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [initialSourceId, setInitialSourceId] = useState<string | null>(null);
   const dragFrom = useRef<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
-
-  const abrirFontes = useCallback((id?: string) => {
-    setInitialSourceId(id ?? null);
-    setSourcesOpen(true);
-  }, []);
-
-  /**
-   * Um único campo resolve os dois casos: se o texto for uma URL reproduzível,
-   * entra direto na fila; caso contrário, vira uma busca no YouTube.
-   *
-   * A lógica de rede foi para `lib/mediaSources/youtube`, agora compartilhada
-   * com o painel do modal — o comportamento daqui é o mesmo de antes, sem a
-   * duplicata que existiria se cada tela tivesse a sua cópia.
-   */
-  const submit = useCallback(async () => {
-    const value = query.trim();
-    if (!value) return;
-
-    const parsed = parseMediaUrl(value);
-    if (parsed) {
-      onAdd({
-        kind: parsed.kind,
-        src: parsed.src,
-        title: parsed.title,
-        thumbnail: parsed.kind === 'youtube' ? youtubeThumb(parsed.src) : undefined,
-      });
-      setQuery('');
-      setResults([]);
-      setStatus({ kind: 'idle' });
-      return;
-    }
-
-    setStatus({ kind: 'loading' });
-    try {
-      const data = await searchYoutube(value);
-      setResults(data);
-      setStatus({ kind: 'idle' });
-    } catch (e) {
-      setStatus({ kind: 'error', message: e instanceof Error ? e.message : 'A busca não respondeu. Tente de novo ou cole um link.' });
-    }
-  }, [onAdd, query]);
-
-  const addResult = (result: YoutubeResult) => {
-    onAdd({ kind: 'youtube', src: result.videoId, title: result.title, thumbnail: result.thumbnail });
-    setResults([]);
-    setQuery('');
-  };
 
   const handleDrop = (to: number) => {
     const from = dragFrom.current;
@@ -104,90 +47,26 @@ export function PlaylistPanel({
     <div className="flex h-full min-h-0 flex-col">
       <MediaSourceModal
         open={sourcesOpen}
-        onClose={() => {
-          setSourcesOpen(false);
-          setInitialSourceId(null);
-        }}
+        onClose={() => setSourcesOpen(false)}
         canControl={canControl}
         addToPlaylist={onAdd}
         requestUploadToken={requestUploadToken}
-        initialSourceId={initialSourceId}
       />
 
+      {/*
+        * Topo da aba: um único botão. A busca do YouTube e o bloco de conta
+        * ficaram dentro do modal de Aplicações — ter as duas coisas aqui e lá
+        * duplicava a mesma integração em dois lugares, e era isso que poluía o
+        * topo. A conta conectada continua visível na aba Pessoas, no perfil.
+        */}
       <div className="border-b border-hairline p-3">
-        <Button
-          variant="outline"
-          onClick={() => abrirFontes()}
-          disabled={!canControl}
-          className="mb-2 h-9 w-full justify-center gap-2"
-        >
-          <Plus size={15} weight="bold" />
+        <Button onClick={() => setSourcesOpen(true)} disabled={!canControl} className="h-10 w-full justify-center gap-2">
+          <Plus size={16} weight="bold" />
           Adicionar de uma aplicação
         </Button>
-
-        <div className="flex items-center gap-2 rounded-xl border border-hairline bg-raised px-3 transition-colors duration-150 focus-within:border-accent/60">
-          <MagnifyingGlass size={16} className="shrink-0 text-ink-faint" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submit()}
-            placeholder="Buscar no YouTube ou colar um link"
-            /* `min-w-0` é obrigatório aqui: item flex tem `min-width: auto`, o
-               que impede o input de encolher abaixo do tamanho do placeholder e
-               empurra o botão Add para fora da tela em telas de 320px. */
-            className="h-10 min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-ink-faint focus:outline-none"
-          />
-          <Button size="sm" onClick={submit} disabled={!query.trim() || status.kind === 'loading'} className="h-7 px-2.5">
-            {status.kind === 'loading' ? <WaveTriangle size={14} className="animate-pulse" /> : <Plus size={14} weight="bold" />}
-            Add
-          </Button>
-        </div>
-        {status.kind === 'error' && (
-          <p className="animate-fade-up mt-2 text-2xs leading-relaxed text-live/90">{status.message}</p>
-        )}
-
-        <div className="mt-3">
-          <YouTubeConnect compact />
-        </div>
-
-        {/* Atalho direto do upload, sem passar pela escolha no modal. O modal
-            continua sendo a entrada única para escolher a aplicação; este
-            botão é o caminho de um clique para quem já sabe que quer enviar do
-            computador, e abre o modal já com o upload iniciado. */}
-        <VideoUploadField
-          canControl={canControl}
-          onUploaded={onAdd}
-          requestUploadToken={requestUploadToken}
-          onRequestOpenModal={() => abrirFontes('upload')}
-        />
       </div>
 
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-        {results.length > 0 && (
-          <div className="border-b border-hairline bg-surface/60 p-2">
-            <div className="mb-1 flex items-center justify-between px-1">
-              <span className="text-2xs text-ink-faint">Resultados da busca</span>
-              <button onClick={() => setResults([])} className="text-2xs text-ink-faint hover:text-ink">
-                limpar
-              </button>
-            </div>
-            {results.map((r) => (
-              <button
-                key={r.videoId}
-                onClick={() => addResult(r)}
-                className="flex w-full items-center gap-3 rounded-lg p-2 text-left transition-colors duration-150 hover:bg-hover"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={r.thumbnail} alt="" className="h-10 w-[4.4rem] shrink-0 rounded object-cover" />
-                <span className="min-w-0 flex-1">
-                  <span className="line-clamp-2 block text-[0.8125rem] leading-snug text-ink">{r.title}</span>
-                  <span className="block truncate text-2xs text-ink-faint">{r.channel}</span>
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-
         {playlist.length === 0 ? (
           <p className="px-6 pt-10 text-center text-sm text-ink-faint">
             A fila começa vazia. Adicione o primeiro vídeo acima.
