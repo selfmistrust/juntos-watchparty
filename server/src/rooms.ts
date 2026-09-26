@@ -105,6 +105,17 @@ function pickColor(room: Room, providedColor?: string): string {
 }
 
 /**
+ * Cor de quem está reconectando. O `|| existingUser.color` de antes nunca
+ * valia nada, porque `pickColor` sempre devolve alguma coisa: bastava um F5
+ * sem `color` no payload para a pessoa receber uma cor sorteada por turno de
+ * fala, em vez da que já era dela. Sem cor válida, a que ela já tinha vale.
+ */
+function reconnectColor(room: Room, existingColor: string, providedColor?: string): string {
+  if (providedColor && HEX_COLOR.test(providedColor)) return providedColor;
+  return existingColor || pickColor(room);
+}
+
+/**
  * Adiciona ou reconecta um usuário na sala.
  * Se o userId já existe na sala, reutiliza aquele usuário (reconexão).
  * Caso contrário, cria novo usuário.
@@ -132,7 +143,7 @@ export function addUser(
       ...existingUser,
       sessionId,
       name: name.slice(0, 24) || existingUser.name,
-      color: pickColor(room, color) || existingUser.color,
+      color: reconnectColor(room, existingUser.color, color),
       avatarSeed: avatar?.seed?.slice(0, 40) || existingUser.avatarSeed,
       avatarUrl: avatar?.url ?? existingUser.avatarUrl,
       lastSeen: now,

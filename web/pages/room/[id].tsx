@@ -19,9 +19,10 @@ export default function RoomPage() {
   const [name, setName] = useState('');
   const [avatarSeed, setAvatarSeed] = useState<string | undefined>();
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>();
+  const [color, setColor] = useState<string | undefined>();
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  /** Nome e avatar ficam salvos para quem volta à mesma aba não escolher de novo. */
+  /** Nome, avatar e cor ficam salvos para quem volta à mesma aba não escolher de novo. */
   useEffect(() => {
     const storedName = window.localStorage.getItem(NAME_KEY);
     if (storedName) setName(storedName);
@@ -29,6 +30,8 @@ export default function RoomPage() {
     if (storedSeed) setAvatarSeed(storedSeed);
     const storedUrl = window.localStorage.getItem(AVATAR_URL_KEY);
     if (storedUrl) setAvatarUrl(storedUrl);
+    const storedColor = window.localStorage.getItem(COLOR_KEY);
+    if (storedColor) setColor(storedColor);
   }, []);
 
   const join = (value: string, avatar: { seed: string; url?: string }) => {
@@ -57,18 +60,16 @@ export default function RoomPage() {
     reactions,
     actions,
   replyingTo,
-  } = useRoom({ roomId, name, enabled: Boolean(roomId && name), avatarSeed, avatarUrl });
+  } = useRoom({ roomId, name, enabled: Boolean(roomId && name), avatarSeed, avatarUrl, color });
 
   /**
-   * Troca de nome ou avatar feita depois de já estar na sala (painel de
-   * pessoas) só passa pelo socket — sem isso aqui, ela nunca volta pro
-   * localStorage nem pro estado desta página. Reabrir a aba (comum no
-   * celular, que descarta abas em segundo plano) voltaria a mandar o nome ou
-   * avatar antigo salvo na entrada, entrando em conflito com o que já estava
-   * valendo.
+   * Troca de nome, avatar ou cor feita depois de já estar na sala (painel de
+   * pessoas) só passa pelo socket — sem isso aqui, ela nunca volta para o
+   * localStorage nem para o estado desta página. Reabrir a aba (comum no
+   * celular, que descarta abas em segundo plano) voltaria a mandar o nome, o
+   * avatar ou a cor antigos salvos na entrada, entrando em conflito com o que
+   * já estava valendo.
    */
-  const COLOR_KEY = 'juntos:color';
-
   useEffect(() => {
     if (!me) return;
     if (me.name !== name) {
@@ -84,7 +85,10 @@ export default function RoomPage() {
       if (me.avatarUrl) window.localStorage.setItem(AVATAR_URL_KEY, me.avatarUrl);
       else window.localStorage.removeItem(AVATAR_URL_KEY);
     }
-    if (me.color && me.color !== window.localStorage.getItem(COLOR_KEY)) {
+    // Espelha a cor para os dois lados: grava no localStorage (para o próximo
+    // F5) e devolve para o estado, que é o que o `useRoom` reenvia no join.
+    if (me.color && me.color !== color) {
+      setColor(me.color);
       window.localStorage.setItem(COLOR_KEY, me.color);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

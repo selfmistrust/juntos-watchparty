@@ -27,6 +27,8 @@ interface UseRoomOptions {
   /** Avatar escolhido na tela de entrada; pode ser trocado depois com actions.setAvatar. */
   avatarSeed?: string;
   avatarUrl?: string;
+  /** Cor salva no navegador; reenviada a cada entrada para não voltar à cor padrão. */
+  color?: string;
 }
 
 export interface RoomActions {
@@ -65,7 +67,7 @@ export type UploadTokenResult =
   | { ok: true; uploadUrl: string; publicUrl: string; contentType: string }
   | { ok: false; error: string };
 
-export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoomOptions) {
+export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }: UseRoomOptions) {
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [me, setMe] = useState<User | null>(null);
@@ -91,6 +93,13 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
    * início) e apagaria a foto enviada, mesmo com ela já valendo há um tempo.
    */
   const avatarRef = useRef({ avatarSeed, avatarUrl });
+  /**
+   * Mesma ideia do `avatarRef`, para a cor. O servidor só sorteia uma cor nova
+   * quando o join chega sem `color`; como o `color` era reenviado só no
+   * primeiro render, um F5 mandava o payload sem ele e a pessoa voltava para a
+   * cor que o servidor sortearia naquele momento.
+   */
+  const colorRef = useRef(color);
   /** serverTime - clientTime, já descontada metade do round-trip. */
   const clockOffset = useRef(0);
   /**
@@ -134,6 +143,17 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
     avatarRef.current = { avatarSeed, avatarUrl };
   }, [avatarSeed, avatarUrl]);
 
+  /**
+   * Mantém a cor salva em dia com a prop. Pelo mesmo motivo do `avatarRef`
+   * acima: o primeiro render acontece antes do efeito da página ler o
+   * localStorage, então sem isto a cor salva nunca chegaria ao `join`.
+   * Também reflete uma troca feita no painel de pessoas, para que a próxima
+   * reconexão não reponha a cor antiga.
+   */
+  useEffect(() => {
+    colorRef.current = color;
+  }, [color]);
+
   useEffect(() => {
     if (!enabled || !roomId) return;
     const socket = getSocket();
@@ -153,6 +173,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
         userId: getUserId(),
         avatarSeed: avatarRef.current.avatarSeed,
         avatarUrl: avatarRef.current.avatarUrl,
+        color: colorRef.current,
       });
       syncClock(socket, clockOffset);
     };
@@ -317,7 +338,13 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
   const retryPassword = useCallback(
     (password: string) => {
       passwordRef.current = password;
-      socketRef.current?.emit('room:join', { roomId, name, userId: getUserId(), password: password || undefined });
+      socketRef.current?.emit('room:join', {
+        roomId,
+        name,
+        userId: getUserId(),
+        color: colorRef.current,
+        password: password || undefined,
+      });
     },
     [roomId, name],
   );
