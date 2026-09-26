@@ -238,12 +238,18 @@ export function ChatPanel({
                 </div>
 
                 {entry.kind === 'image' && entry.mediaUrl ? (
+                  // Anexos do chat vêm do object storage com URL já pronta e
+                  // dims desconhecidas; passar pelo `next/image` exigiria
+                  // largura e altura para reservar o espaço, e aqui não temos
+                  // nenhum dos dois antes de carregar.
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={entry.mediaUrl}
                     alt="Imagem enviada no chat"
                     className="mt-1.5 max-h-52 max-w-[14rem] rounded-lg object-cover ring-1 ring-hairline"
                   />
                 ) : entry.kind === 'gif' && entry.mediaUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={entry.mediaUrl}
                     alt={entry.text || 'GIF'}

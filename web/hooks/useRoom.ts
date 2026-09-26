@@ -289,7 +289,6 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
     // faria esse efeito inteiro reconectar o socket a cada troca de avatar.
     // O valor atual pra reconexões automáticas vem de `avatarRef` (acima),
     // que já é mantida em dia por fora deste efeito.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, roomId, name]);
 
   /**

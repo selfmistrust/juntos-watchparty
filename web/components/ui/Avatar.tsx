@@ -24,6 +24,11 @@ export function Avatar({ name, color, avatarSeed, avatarUrl, size = 'md', classN
 
   if (src) {
     return (
+      // Avatar é um círculo de tamanho fixo por prop, e a origem é um serviço
+      // externo (upload da pessoa ou DiceBear) com URL já pronta. O
+      // `next/image` não acrescentaria otimização aqui: o tamanho da
+      // requisição é o mesmo, e a dims já é conhecida pelo `SIZES[size]`.
+      // eslint-disable-next-line @next/next/no-img-element
       <img
         src={src}
         alt={name}

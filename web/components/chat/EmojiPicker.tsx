@@ -111,7 +111,7 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
       </div>
 
       {/* Grid de Emojis - Mantém o mesmo padronizado scroll-thin e altura max-h-56 do GifPicker */}
-      <div className="scroll-thin max-h-56 overflow-y-auto overflow-x-hidden p-2" role="listbox">
+      <div className="scroll-thin max-h-56 overflow-y-auto overflow-x-hidden p-2">
         {filteredEmojis.length === 0 ? (
           <p className="py-6 text-center text-2xs text-ink-faint">
             Nenhum emoji encontrado.
@@ -122,7 +122,6 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
               <button
                 key={emoji}
                 type="button"
-                role="option"
                 onClick={() => {
                   onSelect(emoji);
                   // Não fecha o picker - permite selecionar múltiplos emojis

@@ -136,7 +136,7 @@ export function ReactionPicker({
       <div
         ref={setContainer}
         className="fixed z-50 transition-opacity duration-150 opacity-100"
-        role="menu"
+        role="group"
         aria-label="Reações"
       >
         <div className="flex items-center gap-1 rounded-xl bg-surface border border-hairline shadow-lg px-2 py-1.5">
@@ -149,7 +149,6 @@ export function ReactionPicker({
               <button
                 key={emoji}
                 type="button"
-                role="menuitem"
                 onClick={() => {
                   onToggle(messageId, emoji);
                   onClose();

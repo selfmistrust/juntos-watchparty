@@ -1,5 +1,5 @@
 import Head from 'next/head';
-import { Shield, Gavel, FileText, Users, WifiHigh, Envelope, Warning, CheckCircle } from '@phosphor-icons/react';
+import { Shield, Gavel, FileText, Users, Envelope, Warning, CheckCircle } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/Button';
 import Link from 'next/link';
 
@@ -34,7 +34,7 @@ export default function TermsOfService() {
             <p className="mt-3">
               Ao acessar ou usar o <strong>juntos</strong> (&ldquo;Serviço&rdquo;, &ldquo;Plataforma&rdquo;, &ldquo;nós&rdquo;),
               você (&ldquo;Usuário&rdquo;, &ldquo;Vocês&rdquo;) concorda com estes Termos de Serviço (&ldquo;Termos&rdquo;),
-              nossa <a href="/privacy" className="text-accent hover:underline">Política de Privacidade</a> e
+              nossa <Link href="/privacy" className="text-accent hover:underline">Política de Privacidade</Link> e
               quaisquer diretrizes da comunidade publicadas. Se não concordar, não use o Serviço.
             </p>
           </section>
@@ -169,7 +169,7 @@ export default function TermsOfService() {
               <li>Podemos adicionar, remover ou alterar funcionalidades a qualquer momento</li>
               <li>Podemos suspender temporariamente para manutenção ou emergência</li>
               <li>Podemos encerrar o Serviço permanentemente com aviso razoável (30 dias) na interface</li>
-              <li>Seus dados serão excluídos conforme <a href="/privacy" className="text-accent hover:underline">Política de Privacidade</a></li>
+              <li>Seus dados serão excluídos conforme <Link href="/privacy" className="text-accent hover:underline">Política de Privacidade</Link></li>
             </ul>
           </section>
 

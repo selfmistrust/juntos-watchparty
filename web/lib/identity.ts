@@ -16,7 +16,7 @@ const USER_ID_KEY = 'juntos:userId';
 export function getUserId(): string {
   if (typeof window === 'undefined') return '';
 
-  let id = window.localStorage.getItem(USER_ID_KEY);
+  const id = window.localStorage.getItem(USER_ID_KEY);
   if (id) return id;
 
   // `crypto.randomUUID` não existe em navegadores antigos nem em contextos

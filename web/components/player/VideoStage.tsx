@@ -304,7 +304,7 @@ function EmptyStage() {
       <FilmSlateIcon size={32} className="text-ink-faint" />
       <p className="text-sm text-ink-muted">Nenhum vídeo na fila.</p>
       <p className="max-w-xs text-sm text-ink-faint">
-        Use "Adicionar de uma aplicação" na aba Fila para escolher de onde vem o vídeo.
+        Use &quot;Adicionar de uma aplicação&quot; na aba Fila para escolher de onde vem o vídeo.
       </p>
     </div>
   );

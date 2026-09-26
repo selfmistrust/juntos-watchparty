@@ -94,7 +94,11 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
     return () => {
       cancelled = true;
     };
-  }, [videoId]);
+    // `hideChrome` é um `useCallback` sem dependências, então é estável: hoje
+    // incluí-la não muda quando o efeito roda. Fica explícita porque os
+    // callbacks do player a usam, e se ela um dia passar a depender de algo,
+    // o efeito tem de refazer junto.
+  }, [videoId, hideChrome]);
 
   useEffect(
     () => () => {

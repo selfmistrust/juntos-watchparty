@@ -1,9 +1,9 @@
 'use client';
 
 import { YoutubeLogo } from '@phosphor-icons/react';
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useYouTubeAccount } from '@/hooks/useYouTubeAccount';
-import type { MediaSourceContext, MediaSourceProvider, MediaSourceState } from './types';
+import type { MediaSourceProvider, MediaSourceState } from './types';
 import { READY, checking } from './types';
 import { useYoutubePanel } from '@/components/media/useYoutubePanel';
 
