@@ -6,6 +6,7 @@ import { useYouTubeAccount } from '@/hooks/useYouTubeAccount';
 import { addYoutubeFromUrl, searchYoutube } from '@/lib/mediaSources';
 import { Portal } from '@/components/ui/Portal';
 import { Button } from '@/components/ui/Button';
+import { TruncatedText } from '@/components/ui/TruncatedText';
 import type { MediaSourceContext } from '@/lib/mediaSources';
 import type { YoutubeResult } from '@/types';
 
@@ -168,8 +169,15 @@ export function YoutubeSearchPanel({ open, onClose, context }: Props) {
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={r.thumbnail} alt="" className="h-10 w-[4.4rem] shrink-0 rounded object-cover" />
                       <span className="min-w-0 flex-1">
-                        <span className="line-clamp-2 block text-[0.8125rem] leading-snug text-ink">{r.title}</span>
-                        <span className="block truncate text-2xs text-ink-faint">{r.channel}</span>
+                        <TruncatedText
+                          text={r.title}
+                          lineClamp={2}
+                          className="block text-[0.8125rem] leading-snug text-ink"
+                        />
+                        <TruncatedText
+                          text={r.channel}
+                          className="block text-2xs text-ink-faint"
+                        />
                       </span>
                     </button>
                   </li>

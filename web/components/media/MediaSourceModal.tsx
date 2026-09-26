@@ -4,6 +4,7 @@ import clsx from 'clsx';
 import { CheckCircle } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Portal } from '@/components/ui/Portal';
+import { TruncatedText } from '@/components/ui/TruncatedText';
 import { useYoutubeSource } from '@/lib/mediaSources/useYoutubeSource';
 import {
   MEDIA_SOURCES,
@@ -332,16 +333,28 @@ function SourceCard({
 
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
-            <span className="truncate text-sm font-medium text-ink">{source.name}</span>
+            <TruncatedText text={source.name} className="text-sm font-medium text-ink" />
             {state.loading && <span className="h-1.5 w-1.5 shrink-0 animate-blink rounded-full bg-accent" />}
           </span>
-          <span className="mt-0.5 block text-2xs leading-relaxed text-ink-faint">
-            {state.starting && state.progress !== undefined
-              ? `Enviando… ${state.progress}%`
-              : bloqueado && state.reason
-                ? state.reason
-                : source.description}
-          </span>
+          {/*
+            * A linha de baixo vai a duas linhas e para. A descrição de uma
+            * fonte nova pode ser longa, e o card é meia largura no desktop:
+            * sem teto, um texto bem escrito empurrava o card para baixo e
+            * desalinhava a grade. Duas linhas cobrem as descrições de hoje, e
+            * o `TruncatedText` põe o `title` quando a segunda linha ainda
+            * cortou algo.
+            */}
+          <TruncatedText
+            text={
+              state.starting && state.progress !== undefined
+                ? `Enviando… ${state.progress}%`
+                : bloqueado && state.reason
+                  ? state.reason
+                  : source.description
+            }
+            className="mt-0.5 block text-2xs leading-relaxed text-ink-faint"
+            lineClamp={2}
+          />
           {bloqueado && (
             <span className="mt-1.5 inline-flex items-center rounded-full bg-hover px-1.5 py-0.5 text-[0.625rem] font-medium text-ink-faint">
               Indisponível
@@ -408,9 +421,13 @@ function AccountRow({ account }: { account: NonNullable<MediaSourceProvider['acc
           {account.connected ? (
             <>
               <CheckCircle weight="fill" size={13} className="shrink-0 text-live" />
-              <span className="min-w-0 truncate text-2xs text-ink-muted">
-                {account.detail || 'Conta conectada'}
-              </span>
+              {/* Nome de canal é o texto mais imprevisível do app: pode ter
+                  qualquer tamanho e nenhuma regra. Vai numa linha com
+                  reticência, e o `title` devolve o nome inteiro. */}
+              <TruncatedText
+                text={account.detail || 'Conta conectada'}
+                className="text-2xs text-ink-muted"
+              />
             </>
           ) : (
             /*
@@ -436,7 +453,7 @@ function AccountRow({ account }: { account: NonNullable<MediaSourceProvider['acc
               void account.disconnect().finally(() => setTrocando(false));
             }}
             disabled={ocupado}
-            className="shrink-0 rounded-md border border-hairline px-2 py-1 text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-9 [@media(pointer:coarse)]:px-3"
+            className="min-w-0 shrink-0 whitespace-nowrap rounded-md border border-hairline px-2 py-1 text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-9 [@media(pointer:coarse)]:px-3"
           >
             {ocupado ? 'Saindo…' : 'Trocar de conta'}
           </button>
@@ -445,7 +462,7 @@ function AccountRow({ account }: { account: NonNullable<MediaSourceProvider['acc
             type="button"
             onClick={account.connect}
             disabled={!account.configured || account.busy}
-            className="shrink-0 rounded-md bg-accent px-2 py-1 text-2xs font-medium text-white transition-colors duration-150 hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-9 [@media(pointer:coarse)]:px-3"
+            className="min-w-0 shrink-0 whitespace-nowrap rounded-md bg-accent px-2 py-1 text-2xs font-medium text-white transition-colors duration-150 hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-9 [@media(pointer:coarse)]:px-3"
           >
             {account.busy ? 'Conectando…' : 'Conectar'}
           </button>

@@ -2,6 +2,7 @@ import { DotsSixVertical, Plus, Trash } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import { useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
+import { TruncatedText } from '@/components/ui/TruncatedText';
 import { MediaSourceModal } from '@/components/media/MediaSourceModal';
 import type { UploadTokenResult } from '@/hooks/useRoom';
 import type { PlaylistItem } from '@/types';
@@ -131,14 +132,22 @@ export function PlaylistPanel({
                       )}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span
+                      {/*
+                        * Duas linhas, não uma: o título de vídeo é o texto mais
+                        * comprido do app e uma linha só jogaria fora a
+                        * informação que diz qual faixa é. O corte continua
+                        * existindo, e o `title` devolve o título inteiro — o
+                        * `line-clamp` escondia o final sem nenhuma forma de
+                        * lê-lo.
+                        */}
+                      <TruncatedText
+                        text={item.title}
+                        lineClamp={2}
                         className={clsx(
-                          'line-clamp-2 block text-[0.8125rem] leading-snug',
+                          'block text-[0.8125rem] leading-snug',
                           playing ? 'text-ink' : 'text-ink/85',
                         )}
-                      >
-                        {item.title}
-                      </span>
+                      />
                       <span className="block truncate text-2xs text-ink-faint">
                         {playing ? 'Tocando agora' : `por ${item.addedBy}`}
                       </span>

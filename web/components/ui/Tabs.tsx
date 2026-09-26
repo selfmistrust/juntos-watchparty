@@ -26,12 +26,15 @@ export function Tabs<T extends string>({ tabs, value, onChange }: TabsProps<T>) 
             aria-selected={selected}
             onClick={() => onChange(tab.id)}
             className={clsx(
-              'relative flex h-12 items-center justify-center gap-2 text-sm transition-colors duration-150 ease-out',
+              'relative flex h-12 min-w-0 items-center justify-center gap-2 whitespace-nowrap text-sm transition-colors duration-150 ease-out',
               selected ? 'text-ink' : 'text-ink-faint hover:text-ink-muted',
             )}
           >
             {tab.icon}
-            <span className="hidden sm:inline">{tab.label}</span>
+            {/* `min-w-0` + `truncate`: o grid já usa `minmax(0, 1fr)`, mas sem
+                isto no rótulo um nome de aba longo empurraria a grade em vez
+                de ser cortado dentro dela. */}
+            <span className="hidden min-w-0 truncate sm:inline">{tab.label}</span>
             {tab.badge ? (
               <span className="absolute right-3 top-2.5 min-w-[1.1rem] rounded-full bg-accent px-1 text-center text-2xs font-semibold text-white">
                 {tab.badge > 99 ? '99+' : tab.badge}

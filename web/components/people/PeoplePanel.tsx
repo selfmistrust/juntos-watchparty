@@ -108,7 +108,7 @@ export function PeoplePanel({
                   type="button"
                   onClick={startEditingName}
                   title="Mudar nome"
-                  className="group flex min-w-0 items-center gap-1.5 rounded-md text-left transition-colors duration-150 hover:text-ink"
+                  className="group flex min-w-0 items-center gap-1.5 whitespace-nowrap rounded-md text-left transition-colors duration-150 hover:text-ink"
                 >
                   <span className="truncate text-sm text-ink">{me.name}</span>
                   {/* Sempre visível: o botão só aparecia no `group-hover`, e
@@ -142,7 +142,7 @@ export function PeoplePanel({
             <button
               type="button"
               onClick={() => onSetAvatar({ seed: randomAvatarSeed(), url: '' })}
-              className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
+              className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
             >
               <ShuffleIcon size={13} />
               Novo avatar
@@ -157,7 +157,7 @@ export function PeoplePanel({
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
+              className="flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
             >
               <UploadSimpleIcon size={13} />
               Usar foto

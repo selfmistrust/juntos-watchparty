@@ -11,8 +11,22 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children: ReactNode;
 }
 
+/*
+ * `whitespace-nowrap` + `min-w-0` aqui valem para todo botão do app.
+ *
+ * As alturas são fixas (`h-9`/`h-11`), então um rótulo longo que quebrasse de
+ * linha não esticaria a caixa — transbordaria por cima e por baixo dela, e o
+ * texto ficaria cortado sem nenhuma reticência, que é o pior dos dois
+ * mundos. O `nowrap` garante que nunca há segunda linha. O `min-w-0` é o que
+ * permite o botão encolher dentro de um pai flex, que é o passo anterior
+ * para o `truncate` poder aparecer: sem ele o botão mantém a largura do
+ * conteúdo e empurra quem está do lado.
+ *
+ * Rótulo de comprimento variável entra em `<TruncatedText>`, que devolve a
+ * reticência e o `title` quando o texto foi de fato cortado.
+ */
 const base =
-  'inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-40';
+  'inline-flex min-w-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl font-medium transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:opacity-40';
 
 const variants: Record<Variant, string> = {
   primary: 'bg-accent text-white hover:bg-accent-hover active:bg-accent',

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
 import { IconButton } from '@/components/ui/Button';
+import { TruncatedText } from '@/components/ui/TruncatedText';
 import type { RoomSnapshot } from '@/types';
 
 interface Props {
@@ -43,9 +44,12 @@ export function RoomHeader({ state, connected, sidebarOpen, onToggleSidebar }: P
             connected ? 'animate-pulse-ring bg-live' : 'bg-ink-faint',
           )}
         />
-        <span className="truncate text-sm text-ink-muted">
-          {connected ? state.name : 'Reconectando…'}
-        </span>
+        {/* Nome de sala é texto livre: qualquer tamanho, nenhuma regra. Vai
+            cortado em uma linha, e o `title` devolve o nome inteiro. */}
+        <TruncatedText
+          text={connected ? state.name : 'Reconectando…'}
+          className="text-sm text-ink-muted"
+        />
         <span className="shrink-0 rounded-md bg-raised px-1.5 py-0.5 font-mono text-2xs text-ink-faint">
           {state.id}
         </span>
@@ -77,7 +81,7 @@ export function RoomHeader({ state, connected, sidebarOpen, onToggleSidebar }: P
 
         <button
           onClick={copyInvite}
-          className="flex h-9 items-center gap-2 rounded-xl border border-hairline bg-raised px-3 text-sm text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:justify-center [@media(pointer:coarse)]:px-0"
+          className="flex h-9 min-w-0 items-center gap-2 whitespace-nowrap rounded-xl border border-hairline bg-raised px-3 text-sm text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:justify-center [@media(pointer:coarse)]:px-0"
         >
           {copied ? <Check size={15} weight="bold" className="text-accent" /> : <LinkIcon size={15} />}
           <span className="hidden sm:inline">{copied ? 'Link copiado' : 'Convidar'}</span>
