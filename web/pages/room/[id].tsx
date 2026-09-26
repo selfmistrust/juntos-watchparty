@@ -12,9 +12,41 @@ const AVATAR_SEED_KEY = 'juntos:avatarSeed';
 const AVATAR_URL_KEY = 'juntos:avatarUrl';
 const COLOR_KEY = 'juntos:color';
 
+/**
+ * A página depende do id da URL, mas não tinha nenhum método de dados — o
+ * Next a tratava como auto-exportada e servia um shell estático com
+ * `__NEXT_DATA__.query` vazio. Nesse caso o router do cliente nunca resolvia
+ * o parâmetro: `query` ficava `{}` e `asPath` travava em `/room/[id]`, com
+ * `isReady` em `false` para sempre. Como a página devolvia `null` sem um
+ * `roomId`, quem abria o link direto (inclusive pelo convite) ficava com uma
+ * página em branco que não recuperava nem com F5.
+ *
+ * Declarar `getServerSideProps` resolve na raiz: o Next passa a renderizar
+ * esta rota no servidor, o `params.id` chega preenchido e o `query` do
+ * `__NEXT_DATA__` sai correto, então o router resolve na hora. Nada de dado é
+ * buscado aqui — a sala em si chega pelo socket —, o método existe só para
+ * a rota deixar de ser pré-renderizada.
+ */
+export function getServerSideProps() {
+  return { props: {} };
+}
+
+/**
+ * Rede de segurança para o id: se o `query` do router vier vazio, lê da
+ * própria URL. Com o `getServerSideProps` acima o caso normal não acontece,
+ * mas deixar a página cega aqui significaria voltar ao mesmo bug de tela
+ * branca por qualquer outra razão que faça o param atrasar.
+ */
+function roomIdFromPath(): string {
+  if (typeof window === 'undefined') return '';
+  const match = window.location.pathname.match(/^\/room\/([^/]+)\/?$/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
 export default function RoomPage() {
   const router = useRouter();
-  const roomId = typeof router.query.id === 'string' ? router.query.id : '';
+  const roomId =
+    typeof router.query.id === 'string' && router.query.id ? router.query.id : roomIdFromPath();
 
   const [name, setName] = useState('');
   const [avatarSeed, setAvatarSeed] = useState<string | undefined>();
@@ -94,7 +126,16 @@ export default function RoomPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me]);
 
-  if (!roomId) return null;
+  // Sem id não há nem o que mostrar — nem onde procurar a sala. Um estado de
+  // carregamento é melhor que `null`: tela branca não dá nenhuma pista do que
+  // aconteceu, e era o sintoma do bug que esta rota tinha.
+  if (!roomId) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <p className="animate-pulse text-sm text-ink-faint">Abrindo a sala…</p>
+      </div>
+    );
+  }
   if (!name) return <JoinGate roomId={roomId} onJoin={join} />;
 
   if (joinError && !state) {
