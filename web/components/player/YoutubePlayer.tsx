@@ -12,6 +12,27 @@ interface Props {
 }
 
 /**
+ * Params de legenda para o playerVar.
+ *
+ * **Desligado não é o mesmo que ligar com `0`.** A documentação diz que
+ * `cc_lang_pref` é "the default language that the player will use to *display*
+ * captions" — ou seja, passar a preferência de idioma pede legenda no idioma
+ * escolhido, e é isso que fazia a legenda continuar na tela depois de desligar.
+ *
+ * Então, desligado, nenhum dos dois params é enviado: o player nasce no
+ * default do YouTube, que é sem legenda. Só quando a pessoa pede é que os dois
+ * vão, juntos — `cc_load_policy` para exibir e `cc_lang_pref` para escolher a
+ * faixa.
+ *
+ * Português porque é o idioma de quase todo mundo na sala. O YouTube respeita a
+ * ordem: se não houver faixa em português, ele cai para outra.
+ */
+function legendaParams(captionsOn: boolean) {
+  if (!captionsOn) return {};
+  return { cc_load_policy: 1, cc_lang_pref: 'pt' };
+}
+
+/**
  * Os controles nativos ficam desligados: quem comanda é a barra customizada,
  * para que nenhum clique escape da sincronização do servidor.
  *
@@ -29,7 +50,8 @@ interface Props {
  *
  * A única alavanca documentada é o playerVar `cc_load_policy`, lido na
  * construção do player. Então ligar e desligar legenda significa **recriar o
- * player** com o playerVar diferente.
+ * player** — e o que vai na construção está em `legendaParams`, que trata
+ * "desligado" como "não pedir legenda", não como "pedir desligada".
  *
  * Isso custa um recarregamento, e é o motivo de o botão ser preferência de
  * quem assiste e não estado da sala: cada navegador tem o seu `YT.Player`, então
@@ -40,9 +62,8 @@ interface Props {
  * ## Por que o botão não some em vídeo sem legenda
  *
  * Dá para saber se o vídeo tem faixa (`getOption('captions', 'tracklist')`), mas
- * só depois que o módulo `captions` acorda — e ele só acorda com
- * `cc_load_policy: 1` ou com um `setOption('captions', 'reload', true)`, e o
- * `tracklist` vem vazio enquanto a legenda está desligada. Ou seja: sondar
+ * só pedindo as legendas — o `tracklist` só vem preenchido com
+ * `cc_load_policy: 1` ou com um `setOption('captions', 'reload', true)`. Sondar
  * significa carregar as legendas de um vídeo que a pessoa não pediu, e não dá
  * para garantir o efeito colateral disso.
  *
@@ -131,12 +152,7 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
           // Sem o botão de tela cheia do próprio YouTube: quem manda é o
           // controle da watchparty, e os dois se sobrepunham.
           fs: 0,
-          // A única forma de pedir legenda — e de pedir que ela não apareça.
-          cc_load_policy: captionsOn ? 1 : 0,
-          // Português como faixa preferida: é o idioma da maioria das pessoas
-          // da sala, e o YouTube respeita a ordem da lista quando a faixa
-          // pedida não existe.
-          cc_lang_pref: 'pt',
+          ...legendaParams(captionsOn),
         },
         events: {
           onReady: () => {
