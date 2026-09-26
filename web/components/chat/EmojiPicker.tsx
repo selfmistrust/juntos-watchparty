@@ -81,14 +81,13 @@ export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
           </button>
         </div>
 
-        {/* Categorias com scroll horizontal oculto. A classe `scrollbar-hide`
-            do globals.css esconde a barra nos navegadores de verdade; um
-            `<style>` com `div::-webkit-scrollbar` esconderia a barra de todo
-            div do app, não só desta fileira. */}
-        <div
-          className="scrollbar-hide flex gap-1 overflow-x-auto pb-0.5 select-none"
-          role="tablist"
-        >
+        {/* Categorias. Quebram linha em vez de rolar na horizontal: com
+            `overflow-x-auto` a última aba ("Mãos") ficava fora da tela em 320px,
+            e a barra escondida (`scrollbar-hide`) não dava nenhuma pista de que
+            dava para arrastar. Quebrando, todas ficam visíveis e o alvo de
+            toque continua inteiro. `whitespace-nowrap` em cada botão impede que
+            o texto da categoria quebre sozinho. */}
+        <div className="flex flex-wrap gap-1 select-none" role="tablist">
           {Object.keys(EMOJI_CATEGORIES).map((cat) => (
             <button
               key={cat}

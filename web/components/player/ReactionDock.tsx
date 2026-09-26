@@ -28,6 +28,10 @@ export function ReactionDock({ visible, onReaction, onSound }: Props) {
         visible ? 'opacity-100' : 'pointer-events-none opacity-0',
       )}
     >
+      {/* Os alvos crescem só onde o dedo é o ponteiro. São 9 botões em duas
+          fileiras: no desktop, 44px deixaria o grupo maior que o próprio player
+          em telas baixas. No celular o emoji é discreto, então o alvo grande
+          não rouba atenção. */}
       <div className="flex gap-0.5 rounded-full border border-white/10 bg-black/55 p-1.5 backdrop-blur-md">
         {ALLOWED_REACTIONS.map((emoji) => (
           <button
@@ -35,7 +39,7 @@ export function ReactionDock({ visible, onReaction, onSound }: Props) {
             type="button"
             onClick={() => onReaction(emoji)}
             aria-label={`Reagir com ${emoji}`}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-base transition-transform duration-150 ease-out hover:scale-125 active:scale-95"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-base transition-transform duration-150 ease-out hover:scale-125 active:scale-95 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
           >
             {emoji}
           </button>
@@ -50,7 +54,7 @@ export function ReactionDock({ visible, onReaction, onSound }: Props) {
             onClick={() => onSound(id)}
             title={SOUND_LABELS[id].label}
             aria-label={SOUND_LABELS[id].label}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-base transition-transform duration-150 ease-out hover:scale-125 active:scale-95"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-base transition-transform duration-150 ease-out hover:scale-125 active:scale-95 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
           >
             {SOUND_LABELS[id].icon}
           </button>

@@ -127,7 +127,10 @@ export function PlaylistPanel({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
             placeholder="Buscar no YouTube ou colar um link"
-            className="h-10 flex-1 bg-transparent text-sm text-ink placeholder:text-ink-faint focus:outline-none"
+            /* `min-w-0` é obrigatório aqui: item flex tem `min-width: auto`, o
+               que impede o input de encolher abaixo do tamanho do placeholder e
+               empurra o botão Add para fora da tela em telas de 320px. */
+            className="h-10 min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-ink-faint focus:outline-none"
           />
           <Button size="sm" onClick={submit} disabled={!query.trim() || status.kind === 'loading'} className="h-7 px-2.5">
             {status.kind === 'loading' ? <WaveTriangle size={14} className="animate-pulse" /> : <Plus size={14} weight="bold" />}

@@ -157,7 +157,10 @@ export function AvatarCropper({ file, onCancel, onConfirm }: Props) {
           step={0.01}
           value={zoom}
           onChange={(e) => changeZoom(Number(e.target.value))}
-          className="mt-3 w-full accent-accent"
+          /* O `range` nativo tem ~16px de altura e é difícil de acertar no
+             dedo. O `py-2` estende a área sensível para ~32px sem alterar a
+             espessura visual do controle. */
+          className="mt-1 w-full cursor-pointer py-2 accent-accent"
           aria-label="Zoom da foto"
         />
 

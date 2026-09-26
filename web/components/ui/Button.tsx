@@ -48,6 +48,9 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
         title={label}
         className={clsx(
           'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ease-out',
+          // Só onde o ponteiro é grosso (celular/tablet): 36px fica pequeno
+          // demais para o dedo. No desktop o `h-9 w-9` de antes é preservado.
+          '[@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11',
           active ? 'bg-accent-soft text-accent' : 'text-ink-muted hover:bg-white/10 hover:text-ink',
           'disabled:cursor-not-allowed disabled:opacity-40',
           className,

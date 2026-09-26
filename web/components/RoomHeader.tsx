@@ -77,7 +77,7 @@ export function RoomHeader({ state, connected, sidebarOpen, onToggleSidebar }: P
 
         <button
           onClick={copyInvite}
-          className="flex h-9 items-center gap-2 rounded-xl border border-hairline bg-raised px-3 text-sm text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
+          className="flex h-9 items-center gap-2 rounded-xl border border-hairline bg-raised px-3 text-sm text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:justify-center [@media(pointer:coarse)]:px-0"
         >
           {copied ? <Check size={15} weight="bold" className="text-accent" /> : <LinkIcon size={15} />}
           <span className="hidden sm:inline">{copied ? 'Link copiado' : 'Convidar'}</span>

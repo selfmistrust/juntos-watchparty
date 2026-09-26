@@ -78,8 +78,16 @@ export function ChatPanel({
 
   const userById = useMemo(() => new Map(users.map((u) => [u.sessionId, u])), [users]);
 
+  /**
+   * Rola até a última mensagem depois que o feed cresce.
+   *
+   * `scrollIntoView` sem argumento rolava a página inteira no celular, onde o
+   * player e o chat dividem a mesma área rolável: a tela saltava para o topo a
+   * cada mensagem nova. Rolar o container do feed (`nearest`) mantém o vídeo e
+   * os controles no lugar, e só mexe no chat.
+   */
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [feed.length, typingUsers.length]);
 
   const signalTyping = (value: string) => {
@@ -257,7 +265,10 @@ export function ChatPanel({
                         onClick={() => onToggleReaction(entry.id, reaction.emoji)}
                         aria-pressed={reaction.hasCurrentUser}
                         aria-label={`${reaction.emoji} ${reaction.count}`}
-                        className={`flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-2xs transition-colors ${
+                        /* Alvo maior só onde o dedo é o ponteiro (ver os botões
+                           abaixo). No desktop mantém o chip compacto, para não
+                           inflar a lista de reações de cada mensagem. */
+                        className={`flex min-h-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-2xs transition-colors [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:px-3 ${
                           reaction.hasCurrentUser
                             ? 'border-accent/50 bg-accent-soft text-accent'
                             : 'border-hairline bg-raised text-ink-muted hover:border-accent/40 hover:text-ink'
@@ -283,7 +294,12 @@ export function ChatPanel({
                   anchorRef={getReactionAnchor(entry.id)}
                 />
 
-                {/* Ações da mensagem */}
+                {/* Ações da mensagem.
+                    O alvo grande é por `pointer: coarse`, não por breakpoint de
+                    largura: um tablet em retrato tem 834px (acima de `sm`) e
+                    ainda é tocado com o dedo. Com `sm:` os botões voltavam a
+                    28px justamente nos tablets, que são os piores alvos.
+                    `h-11 w-11` = 44px, o mínimo recomendado para toque. */}
                 <div className="mt-1.5 flex items-center gap-1">
                   <button
                     type="button"
@@ -294,7 +310,7 @@ export function ChatPanel({
                       setReactionPickerOpen((prev) => (prev === entry.id ? null : entry.id))
                     }
                     aria-expanded={reactionPickerOpen === entry.id}
-                    className="flex h-7 items-center gap-1 rounded-lg px-2 text-2xs text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+                    className="flex h-7 w-auto items-center justify-center gap-1 rounded-lg px-2 text-2xs text-ink-faint transition-colors hover:bg-hover hover:text-ink [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:p-0"
                     aria-label="Adicionar reação"
                   >
                     <Smiley size={13} />
@@ -302,7 +318,7 @@ export function ChatPanel({
                   <button
                     type="button"
                     onClick={() => onReply(entry)}
-                    className="flex h-7 items-center gap-1 rounded-lg px-2 text-2xs text-ink-faint transition-colors hover:bg-hover hover:text-ink"
+                    className="flex h-7 w-auto items-center justify-center gap-1 rounded-lg px-2 text-2xs text-ink-faint transition-colors hover:bg-hover hover:text-ink [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:p-0"
                     aria-label="Responder"
                   >
                     <ArrowArcLeft size={13} />
