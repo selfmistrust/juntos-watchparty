@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import { loadYoutubeApi } from '@/lib/youtubeApi';
 import type { PlayerHandle } from '@/types';
 
@@ -23,13 +23,31 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
   callbacks.current = { onReady, onEnded };
 
   /** Esconde a UI nativa do player do YouTube, se ele tiver sido criado. */
-  const hideChrome = () => {
+  const hideChrome = useCallback(() => {
     try {
       playerRef.current?.hideControls?.();
     } catch {
       // Player ainda não pronto, ou já destruído.
     }
-  };
+  }, []);
+
+  /**
+   * Rede de segurança para o chrome nativo.
+   *
+   * Chamar `hideControls()` só nos eventos resolve o caso comum, mas o
+   * YouTube volta a exibir a barra sozinho depois de alguns segundos — e entre
+   * uma chamada e outra ela fica visível, por cima dos controles da watchparty.
+   * Como o embed é cross-origin, não dá para zerar isso por CSS. Um intervalo
+   * curto garante que a UI esteja escondida no momento em que for olhada, em
+   * vez de torcer para a próxima chamada chegar antes do usuário olhar.
+   *
+   * O custo é um postMessage por segundo, o que é irrelevante em comparação
+   * com a correção de deriva, que já manda vários por ciclo.
+   */
+  useEffect(() => {
+    const id = setInterval(hideChrome, 700);
+    return () => clearInterval(id);
+  }, [hideChrome, videoId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,8 +124,15 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
     },
     getCurrentTime: () => playerRef.current?.getCurrentTime?.() ?? 0,
     getDuration: () => playerRef.current?.getDuration?.() ?? 0,
-    setVolume: (v) => playerRef.current?.setVolume?.(Math.round(v * 100)),
-    setMuted: (m) => (m ? playerRef.current?.mute?.() : playerRef.current?.unMute?.()),
+    setVolume: (v) => {
+      playerRef.current?.setVolume?.(Math.round(v * 100));
+      hideChrome();
+    },
+    setMuted: (m) => {
+      if (m) playerRef.current?.mute?.();
+      else playerRef.current?.unMute?.();
+      hideChrome();
+    },
     setPlaybackRate: (r) => {
       playerRef.current?.setPlaybackRate?.(r);
       hideChrome();
