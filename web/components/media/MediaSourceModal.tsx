@@ -307,7 +307,11 @@ function SourceCard({
         <span
           className={clsx(
             'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-black/25',
-            bloqueado ? 'text-ink-faint' : (source.accent ?? 'text-ink'),
+            // A cor da marca continua aparecendo quando a fonte está
+            // indisponível: o `opacity-60` do card e o selo "Indisponível" já
+            // dizem o bastante, e um ícone cinza perde justamente o que faz o
+            // card ser reconhecível — a marca.
+            source.accent ?? 'text-ink',
           )}
         >
           {source.icon}

@@ -1,4 +1,4 @@
-import { Cloud } from '@phosphor-icons/react';
+import { GoogleDriveLogo } from '@phosphor-icons/react';
 import type { MediaSourceProvider } from './types';
 import { unavailable } from './types';
 
@@ -19,7 +19,9 @@ export const driveProvider: MediaSourceProvider = {
   id: 'drive',
   name: 'Google Drive',
   description: 'Vídeos do seu Drive. Em breve.',
-  icon: <Cloud size={22} weight="bold" />,
+  // Triângulo oficial do Drive, não um ícone genérico de nuvem: a marca é
+  // reconhecível só pelo triângulo, e o Phosphor já traz a forma certa.
+  icon: <GoogleDriveLogo size={22} weight="fill" />,
   accent: 'text-sky-300',
   resolveState: async () => unavailable('O Drive precisa de um servidor intermediário. Em breve.'),
 };

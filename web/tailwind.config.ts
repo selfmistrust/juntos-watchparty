@@ -10,6 +10,12 @@ const config: Config = {
     './pages/**/*.{ts,tsx}',
     './components/**/*.{ts,tsx}',
     './hooks/**/*.{ts,tsx}',
+    // `lib` entra porque os providers de mídia vivem aqui e carregam classes
+    // de cor no próprio arquivo (`accent` de cada card do modal). Sem este
+    // glob, `text-sky-300`, `text-teal-300` e as cores de marca custom não
+    // eram geradas e caíam silenciosamente na cor herdada — o ícone ficava
+    // cinza sem nenhum aviso do Tailwind.
+    './lib/**/*.{ts,tsx}',
   ],
   theme: {
     extend: {
