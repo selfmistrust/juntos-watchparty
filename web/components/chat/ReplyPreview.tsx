@@ -6,8 +6,18 @@ import type { ChatMessage } from '@/types';
 interface Props {
   /** Mensagem que está sendo respondida. */
   message: ChatMessage;
-  /** Callback para cancelar a resposta. */
-  onCancel: () => void;
+  /**
+   * Callback para cancelar a resposta. **Opcional de propósito**: só o preview
+   * do compositor passa isto.
+   *
+   * O mesmo componente aparece duas vezes — no compositor, com a resposta ainda
+   * pendente, e no feed, numa resposta já enviada. No feed o X não tinha o que
+   * cancelar: `onCancelReply` limpa a resposta *pendente*, não a mensagem
+   * mostrada, então o clique não fazia nada visível. Pior, se a pessoa estivesse
+   * respondendo alguma coisa e clicasse no X de uma resposta antiga, cancelava
+   * a resposta pendente por engano. Sem o botão no feed, os dois casos somem.
+   */
+  onCancel?: () => void;
   /** Nome do usuário atual (para exibir "Você"). */
   currentUserName?: string;
 }
@@ -30,14 +40,16 @@ export function ReplyPreview({ message, onCancel, currentUserName }: Props) {
           <ArrowArcLeft size={12} weight="fill" />
           <span>Respondendo a <strong>{displayName}</strong></span>
         </span>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="flex h-6 w-6 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-hover transition-colors"
-          aria-label="Cancelar resposta"
-        >
-          <X size={14} />
-        </button>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-hover transition-colors"
+            aria-label="Cancelar resposta"
+          >
+            <X size={14} />
+          </button>
+        )}
       </div>
       <p className="mt-1.5 line-clamp-2 text-sm text-ink/80 whitespace-pre-wrap break-words">
         {previewText}

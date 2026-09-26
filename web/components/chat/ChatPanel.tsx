@@ -233,7 +233,6 @@ export function ChatPanel({
                     }
                   : parentMessage!
               }
-              onCancel={onCancelReply}
               currentUserName={me?.name}
             />
           );
