@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Portal } from '@/components/ui/Portal';
 import { TruncatedText } from '@/components/ui/TruncatedText';
 import { useYoutubeSource } from '@/lib/mediaSources/useYoutubeSource';
+import { useScreenShare } from '@/lib/mediaSources/useScreenShare';
 import {
   MEDIA_SOURCES,
   type MediaSourceContext,
@@ -48,14 +49,24 @@ export function MediaSourceModal({
   const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   /**
-   * Fontes do registro + o YouTube, que vem de um hook porque a busca dele
-   * precisa abrir um painel com estado próprio. As duas listas se misturam
-   * aqui, num só lugar: o resto do modal não sabe a diferença.
+   * Fontes do registro + as duas que vêm de hook porque abrem painel com
+   * estado próprio: a busca do YouTube e o seletor de tela. As listas se
+   * misturam aqui, num só lugar: o resto do modal não sabe a diferença.
    */
   const youtube = useYoutubeSource();
+  const tela = useScreenShare();
   const sources = useMemo<MediaSourceProvider[]>(
-    () => [MEDIA_SOURCES[0], youtube.provider, ...MEDIA_SOURCES.slice(1)],
-    [youtube.provider],
+    () =>
+      MEDIA_SOURCES.flatMap((f) => {
+        // O YouTube não está no registro: ele entra logo depois do Computador,
+        // que é a ordem que o modal já tinha. Trocar a fonte do registro pela
+        // versão do hook, mantendo o lugar, evita que um card suma da grade
+        // quando uma fonte ganha painel próprio.
+        if (f.id === 'upload') return [f, youtube.provider];
+        if (f.id === 'screen') return [tela.provider];
+        return [f];
+      }),
+    [youtube.provider, tela.provider],
   );
 
   const context = useRef<MediaSourceContext>({ canControl, addToPlaylist, requestUploadToken });
@@ -223,9 +234,16 @@ export function MediaSourceModal({
     [states, onClose, onSourceStarted],
   );
 
-  // O painel do YouTube vive fora do `if (!open)`: ele é um modal próprio, que
-  // precisa continuar montado depois de o modal de Aplicações fechar.
-  const painelExtra: ReactNode = youtube.panel;
+  // Os painéis do YouTube e da tela vivem fora do `if (!open)`: cada um é um
+  // modal próprio, que precisa continuar montado depois de o modal de
+  // Aplicações fechar — inclusive porque o de tela fica aberto enquanto a
+  // captura corre.
+  const painelExtra: ReactNode = (
+    <>
+      {youtube.panel}
+      {tela.panel}
+    </>
+  );
 
   if (!open) return <>{painelExtra}</>;
 

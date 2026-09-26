@@ -32,6 +32,15 @@ module.exports = (phase) => {
     reactStrictMode: true,
     devIndicators: false,
     distDir,
+    // Só o build do app desktop liga isto. O modo standalone gera um servidor
+    // autocontido (`server.js` + node_modules enxuto) que o Electron sobe em
+    // `localhost:3210`, e é ele que dá à janela uma origem http de verdade.
+    //
+    // Ficar atrelado a uma variável é o ponto: `output: 'standalone'` muda
+    // como o Next entrega o build, e a Vercel tem o próprio esquema de saída.
+    // Declarar aqui sem condição arriscaria trocar a artefato da Vercel por um
+    // problema que só apareceria no deploy.
+    ...(process.env.NEXT_STANDALONE ? { output: 'standalone' } : {}),
     images: { remotePatterns: [{ protocol: 'https', hostname: 'i.ytimg.com' }] },
   };
 };

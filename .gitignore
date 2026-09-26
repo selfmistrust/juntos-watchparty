@@ -5,6 +5,14 @@ dist/
 # `distDir` do servidor de desenvolvimento (ver web/next.config.js)
 .next-dev/
 out/
+
+# App desktop (Electron)
+desktop/node_modules/
+desktop/dist/
+# Build standalone do web, copiado para dentro do pacote do app
+desktop/web-standalone/
+# Instaladores gerados (dezenas de MB cada)
+desktop/release/
 *.tsbuildinfo
 
 # Configurações sensíveis e uploads locais

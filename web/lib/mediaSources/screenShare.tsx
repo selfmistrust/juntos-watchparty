@@ -3,23 +3,23 @@ import type { MediaSourceProvider } from './types';
 import { unavailable } from './types';
 
 /**
- * Transmitir tela.
+ * Transmitir tela — a base fixa do card.
  *
- * Diferente do Drive e da Globoplay, aqui existe um caminho real no navegador
- * (`getDisplayMedia`), mas ele sozinho não serve: para a transmissão chegar
- * aos outros participantes da sala é preciso sinalização WebRTC no servidor e
- * um `MediaKind` novo ('stream'), com o `FilePlayer` aceitando um
- * `MediaStream` além de `src`. Nada disso existe ainda, e esta entrega não
- * toca no backend.
+ * `resolveState` e `description` são preenchidos por `useScreenShare`, porque
+ * dependem de estar ou não dentro do app desktop. O que mora aqui é o que não
+ * muda: id, nome, ícone e a exigência de ser host.
  *
- * Registrar o item como indisponível deixa o contrato honesto: o card existe,
- * explica o motivo, e a implementação futura é só preencher este provider —
- * o modal não muda.
+ * Nenhuma versão disso entrega a tela aos outros participantes ainda: para
+ * isso falta sinalização WebRTC no servidor, um `MediaKind` novo ('stream') e
+ * o `FilePlayer` aceitando `MediaStream` além de `src`. Nada disso existe, e
+ * esta entrega não toca no backend. O que o app desktop entrega é a
+ * **captura local** — inclusive o áudio do sistema, que o navegador não
+ * oferece. A tela é selecionada e capturada aqui; chegar aos outros ainda não.
  */
 export const screenShareProvider: MediaSourceProvider = {
   id: 'screen',
   name: 'Transmitir tela',
-  description: 'Compartilhe sua tela com a sala. Em breve.',
+  description: 'Compartilhe sua tela com a sala.',
   icon: <MonitorPlay size={22} weight="bold" />,
   // Branco de propósito: as outras marcas do modal aparecem na cor oficial
   // delas, e o teal punha "Transmitir tela" no mesmo footing de uma integração
@@ -27,6 +27,7 @@ export const screenShareProvider: MediaSourceProvider = {
   // navegador, então fica na cor neutra da interface.
   accent: 'text-white',
   requiresControl: true,
-  resolveState: async () =>
-    unavailable('A transmissão para a sala precisa de sinalização no servidor. Em breve.'),
+  // Sobrescrito pelo hook; este é o caso do navegador, e existe para o tipo
+  // do provider ficar completo mesmo se o hook não for montado.
+  resolveState: async () => unavailable('Disponível só no app desktop.'),
 };

@@ -1,0 +1,61 @@
+# electron-builder — só Windows, como combinado.
+#
+# O alvo é único de propósito: áudio do sistema (`loopback`) só existe no
+# Windows, então um .dmg ou um AppImage sem essa parte seria uma promessa que o
+# app não cumpre.
+
+appId: com.juntos.watchparty
+productName: Juntos
+copyright: Juntos
+
+directories:
+  output: release
+  buildResources: build
+
+# Só o código do app, e nada mais: o `web-standalone` vai por `extraResources`.
+files:
+  - dist/**/*
+  - package.json
+
+# O servidor web vai para `resources/web-standalone`, **fora** do asar, e por
+# dois motivos ao mesmo tempo:
+#
+# 1. O `node_modules` dele nunca entraria em `files`. O electron-builder filtra
+#    a árvore de `node_modules` a partir do `package.json` do app, e esse
+#    package não declara nenhuma daquelas dependências. A primeira versão
+#    empacotava um `server.js` sem nenhuma dependência ao lado: o app instalava,
+#    abria, e o servidor interno morria ao carregar o Next.
+#
+# 2. Node não consegue `require` de dentro do asar. Mesmo que entrasse, teria de
+#    extrair tudo para um temporário antes de usar. Fora do asar, o servidor lê
+#    direto do disco.
+#
+# O caminho é resolvido em `main/localServer.ts`, que olha `app.isPackaged`.
+extraResources:
+  - from: web-standalone
+    to: web-standalone
+    filter:
+      - "**/*"
+
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  # Sem certificado, o instalador aparece como "de fonte desconhecida" e o
+  # Windows SmartScreen avisa. Isso é esperado até haver assinatura; o
+  # instalador continua funcionando.
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Juntos
+
+# O Next standalone já foi construído com NEXT_TELEMETRY_DISABLED no servidor
+# local; estas linhas cobrem o resto da telemetria do Electron.
+publish: null

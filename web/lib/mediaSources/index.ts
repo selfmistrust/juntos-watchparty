@@ -11,6 +11,7 @@ export { driveProvider } from './drive';
 export { globoplayProvider } from './globoplay';
 export { screenShareProvider } from './screenShare';
 export { useYoutubeSource } from './useYoutubeSource';
+export { useScreenShare } from './useScreenShare';
 
 export type {
   MediaSourceProvider,
