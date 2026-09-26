@@ -4,7 +4,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import cors from 'cors';
 import express from 'express';
 import { Server } from 'socket.io';
-import { createRoom, getRoom, roomCount } from './rooms.js';
+import { createRoom, getRoom, roomCount, roomLimits } from './rooms.js';
 import { pubClient, subClient } from './redis.js';
 import { registerSocketHandlers, startPresenceCleanup } from './socket.js';
 import { scheduleUploadCleanup } from './uploadCleanup.js';
@@ -32,7 +32,15 @@ app.use(cors({ origin: CLIENT_ORIGINS, credentials: true }));
 app.use(express.json());
 
 app.get('/health', async (_req, res) => {
-  res.json({ ok: true, rooms: await roomCount(), uptime: process.uptime() });
+  res.json({
+    ok: true,
+    rooms: await roomCount(),
+    uptime: process.uptime(),
+    // As janelas de expiração entram aqui de propósito: elas vêm do ambiente,
+    // e um deploy com valor errado é o tipo de coisa que só aparece quando a
+    // sala já sumiu sozinha.
+    limits: roomLimits,
+  });
 });
 
 app.post('/api/rooms', async (req, res) => {

@@ -22,18 +22,97 @@ const NAME_COLORS = [
 const key = (id: string) => `room:${id}`;
 
 /**
- * TTLs do Redis (renovados a cada `saveRoom`). Uma sala ativa nunca chega
- * perto de 6h porque toda ação a renova; ela só expira de fato se todo mundo
- * sair E ninguém voltar dentro da janela curta abaixo.
+ * Expiração das salas — três janelas independentes, porque "velha" e
+ * "abandonada" são coisas diferentes.
+ *
+ * O TTL do Redis é renovado a cada `saveRoom`, e o heartbeat de presença chama
+ * `saveRoom`. Uma sala com uma aba aberta portanto **nunca** expirava pelo TTL:
+ * cada heartbeat renovava as 6h. Só a janela curta de 10 min abaixo limpava
+ * salas vazias, e uma sala com gente entrando e saindo ao longo de dias ficava
+ * para sempre.
+ *
+ * - `ACTIVE_TTL` / `EMPTY_TTL`: inatividade. Sala com gente renova a cada ação;
+ *   sala vazia morre em 10 min. Cobre o abandono, que é o caso comum.
+ * - `MAX_LIFETIME`: teto absoluto, contado do `createdAt`, que nenhuma ação
+ *   renova. Cobre a sala que vive para sempre por causa de um heartbeat.
+ *
+ * O teto não é só checagem periódica: `saveRoom` recorta o TTL no que falta
+ * para o fim, então o próprio Redis garante o limite mesmo se o processo de
+ * limpeza não rodar. A varredura existe para o encerramento ser educado —
+ * avisar quem está dentro e fechar o socket, em vez de a chave sumir no
+ * meio de uma sessão.
  */
-const ACTIVE_TTL_SECONDS = 6 * 60 * 60;
-const EMPTY_TTL_SECONDS = 10 * 60;
+const ACTIVE_TTL_SECONDS = numFromEnv('ROOM_ACTIVE_TTL_SECONDS', 6 * 60 * 60);
+const EMPTY_TTL_SECONDS = numFromEnv('ROOM_EMPTY_TTL_SECONDS', 10 * 60);
+const MAX_LIFETIME_MS = numFromEnv('ROOM_MAX_LIFETIME_MS', 24 * 60 * 60 * 1000);
+
+/**
+ * Histórico guardado por sala. O `snapshot` já corta em 100 no que vai para o
+ * cliente, mas o array no Redis crescia sem teto: o corte era só na projeção,
+ * não no armazenamento. Numa sala que vive semanas, eram milhares de mensagens
+ * — cada uma com `reactions` e `mediaUrl` — mantidas no Redis.
+ */
+const MAX_STORED_MESSAGES = numFromEnv('ROOM_MAX_MESSAGES', 300);
+
+/**
+ * Folga entre a sala deixar de ser válida e a chave do Redis expirar.
+ *
+ * Sem ela o TTL encerra a chave exatamente no vencimento, e a varredura — que
+ * roda a cada `CLEANUP_INTERVAL_MS` — só encontra a sala depois que a chave já
+ * foi embora. O resultado era a pior das combinações: a chave sumia (o limite
+ * funcionava) e ninguém era avisado (ninguém recebia `room:expired` nem
+ * desconectava), que é a queda de socket sem explicação que a tela
+ * `RoomExpired` existe para evitar.
+ *
+ * A folga precisa ser bem maior que o intervalo da varredura, para que sempre
+ * haja janelas em que a chave existe e a sala já venceu. Cinco minutos contra
+ * varredura de dez segundos dá folga de sobra, e o excesso de vida da chave é
+ * de minutos, não de horas.
+ */
+const EXPIRY_GRACE_SECONDS = numFromEnv('ROOM_EXPIRY_GRACE_SECONDS', 5 * 60);
+
+/** Intervalo da limpeza de sessões abandonadas. */
+export const CLEANUP_INTERVAL_MS = 10_000;
 
 /** Tempo (ms) sem heartbeat para considerar sessão offline. */
 export const PRESENCE_TIMEOUT_MS = 30_000;
 
-/** Intervalo da limpeza de sessões abandonadas. */
-export const CLEANUP_INTERVAL_MS = 10_000;
+function numFromEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+/**
+ * Instante em que a sala some, independente de atividade. Cai para
+ * `updatedAt` se `createdAt` não vier preenchido (dado antigo/corrompido): sem
+ * isso a sala ficaria sem teto nenhum, já que o cálculo depende do relógio.
+ */
+export function expiresAt(room: Room): number {
+  const base = Number.isFinite(room.createdAt)
+    ? room.createdAt
+    : Number.isFinite(room.updatedAt)
+      ? room.updatedAt
+      : Date.now();
+  return base + MAX_LIFETIME_MS;
+}
+
+/** Quanto falta para a sala ser encerrada. Zero ou menos = já passou do teto. */
+export function remainingLifetimeMs(room: Room, now = Date.now()): number {
+  return Math.max(0, expiresAt(room) - now);
+}
+
+export function isPastMaxLifetime(room: Room, now = Date.now()): boolean {
+  return remainingLifetimeMs(room, now) <= 0;
+}
+
+/** Limites em vigor, para o endpoint de saúde deixar a configuração visível. */
+export const roomLimits = {
+  activeTtlSeconds: ACTIVE_TTL_SECONDS,
+  emptyTtlSeconds: EMPTY_TTL_SECONDS,
+  maxLifetimeMs: MAX_LIFETIME_MS,
+  expiryGraceSeconds: EXPIRY_GRACE_SECONDS,
+  maxStoredMessages: MAX_STORED_MESSAGES,
+} as const;
 
 function emptyRoom(id: string, name?: string): Room {
   return {
@@ -53,9 +132,35 @@ function emptyRoom(id: string, name?: string): Room {
   };
 }
 
+/**
+ * Corta o histórico no teto. Roda dentro de `saveRoom` — e não só no caminho do
+ * chat — para que qualquer escrita traga a sala de volta dentro do limite,
+ * inclusive uma sala que já veio grande de uma versão anterior.
+ */
+function trimMessages(room: Room): void {
+  if (Array.isArray(room.messages) && room.messages.length > MAX_STORED_MESSAGES) {
+    room.messages = room.messages.slice(-MAX_STORED_MESSAGES);
+  }
+}
+
 async function saveRoom(room: Room): Promise<void> {
-  const ttl = Object.keys(room.users).length > 0 ? ACTIVE_TTL_SECONDS : EMPTY_TTL_SECONDS;
+  trimMessages(room);
+
+  const inativa = Object.keys(room.users).length > 0 ? ACTIVE_TTL_SECONDS : EMPTY_TTL_SECONDS;
+  // O TTL é o menor entre a inatividade e o que falta para o teto absoluto,
+  // mais a folga da varredura. É aqui que a sala deixa de depender do processo
+  // de limpeza para sumir: mesmo que ele nunca rode, o Redis expira a chave no
+  // prazo. A folga é o que dá à varredura a chance de rodar dentro da janela
+  // em que a sala já venceu mas a chave ainda existe — ver `EXPIRY_GRACE_SECONDS`.
+  const restante = Math.ceil(remainingLifetimeMs(room) / 1000) + EXPIRY_GRACE_SECONDS;
+  const ttl = Math.max(1, Math.min(inativa, restante));
+
   await redis.set(key(room.id), JSON.stringify(room), 'EX', ttl);
+}
+
+/** Apaga a sala. Idempotente: pode ser chamado por mais de uma instância. */
+export async function deleteRoom(id: string): Promise<void> {
+  await redis.del(key(id));
 }
 
 export async function createRoom(name?: string, password?: string): Promise<Room> {
@@ -306,6 +411,9 @@ export function snapshot(room: Room): RoomSnapshot {
     isPlaying: room.isPlaying,
     position: projectedPosition(room, now),
     serverTime: now,
+    // Vai junto para o cliente poder avisar que a sala encerra, em vez de o
+    // socket cair do nada quando a chave sumir.
+    expiresAt: expiresAt(room),
     messages: recentMessages,
   };
 }

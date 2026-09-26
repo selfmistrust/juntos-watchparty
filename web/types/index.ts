@@ -75,6 +75,8 @@ export interface RoomSnapshot {
   isPlaying: boolean;
   position: number;
   serverTime: number;
+  /** Instante em que a sala é encerrada de todo modo (teto de vida absoluta). */
+  expiresAt?: number;
   /** Últimas mensagens do chat (últimas 100). */
   messages: ChatMessage[];
 }

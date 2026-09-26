@@ -16,8 +16,10 @@ import {
   checkPassword,
   cleanupStaleUsers,
   commitPosition,
+  deleteRoom,
   ensureRoom,
   getRoom,
+  isPastMaxLifetime,
   markUserDisconnected,
   newId,
   persistRoom,
@@ -558,8 +560,31 @@ function advance(room: Room) {
 }
 
 /**
+ * Encerra uma sala que passou do teto de vida absoluta.
+ *
+ * Avisa antes de derrubar, porque o alternativa seria a chave do Redis sumir
+ * no meio de uma sessão: o cliente ficaria com a tela parada, o play pararia de
+ * responder e nada explicaria o motivo. O `emit` vai antes do
+ * `disconnectSockets` de propósito — no mesmo socket as duas coisas são
+ * enfileiradas na ordem, então o aviso chega antes da queda.
+ *
+ * `disconnectSockets` só alcança os sockets desta instância, o que é o
+ * desejado: cada instância roda a varredura e fecha quem é seu. O aviso, por
+ * ser broadcast, pode chegar mais de uma vez se houver várias instâncias —
+ * o cliente trata como idempotente.
+ */
+async function expireRoom(io: Server, room: Room): Promise<void> {
+  console.log(`[room-expiry] sala ${room.id} encerrada (teto de vida atingido)`);
+
+  io.to(room.id).emit('room:expired', { id: room.id });
+  io.in(room.id).disconnectSockets(true);
+  await deleteRoom(room.id);
+}
+
+/**
  * Inicia job periódico de limpeza de sessões abandonadas.
- * Remove usuários desconectados há mais de PRESENCE_TIMEOUT_MS.
+ * Remove usuários desconectados há mais de PRESENCE_TIMEOUT_MS, e encerra as
+ * salas que atingiram o teto de vida (ver `rooms.ts`).
  */
 export function startPresenceCleanup(io: Server): NodeJS.Timeout {
   return setInterval(async () => {
@@ -574,6 +599,15 @@ export function startPresenceCleanup(io: Server): NodeJS.Timeout {
         } catch {
           continue;
         }
+
+        // Antes de tudo: sala vencida não recebe manutenção nenhuma. Limpar
+        // usuárioIdle dela e regravar só devolveria uma chave que o `saveRoom`
+        // já deixou com TTL de 1s.
+        if (isPastMaxLifetime(room)) {
+          await expireRoom(io, room);
+          continue;
+        }
+
         const removed = cleanupStaleUsers(room);
         if (removed.length > 0) {
           await persistRoom(room);

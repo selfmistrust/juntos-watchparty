@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { JoinGate } from '@/components/JoinGate';
 import { PasswordGate } from '@/components/PasswordGate';
 import { RoomHeader } from '@/components/RoomHeader';
+import { RoomExpired } from '@/components/RoomExpired';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoStage } from '@/components/player/VideoStage';
 import { useRoom } from '@/hooks/useRoom';
@@ -84,6 +85,7 @@ export default function RoomPage() {
     typingUsers,
     notice,
     joinError,
+    expired,
     retryPassword,
     isHost,
     canControl,
@@ -137,6 +139,11 @@ export default function RoomPage() {
     );
   }
   if (!name) return <JoinGate roomId={roomId} onJoin={join} />;
+
+  // Antes do `joinError`: uma sala vencida não tem senha para checar, e o
+  // `state` já está em memória, então sem esta ordem o gate de senha
+  // ganharia.
+  if (expired) return <RoomExpired roomId={roomId} />;
 
   if (joinError && !state) {
     return <PasswordGate roomId={roomId} error={joinError} onSubmit={retryPassword} />;

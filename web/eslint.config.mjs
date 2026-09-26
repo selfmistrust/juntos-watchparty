@@ -16,11 +16,10 @@ const config = [
   {
     ignores: [
       '.next/**',
-      // `distDir` separado por ambiente (ver next.config.js): o build vai
-      // para `.next-build` e o dev para `.next-dev`, e nenhum dos dois é
+      // `distDir` do servidor de desenvolvimento (ver next.config.js): o dev
+      // vai para `.next-dev` e o build para `.next`, e nenhum dos dois é
       // código-fonte.
       '.next-dev/**',
-      '.next-build/**',
       'node_modules/**',
       'out/**',
       'build/**',
@@ -29,6 +28,18 @@ const config = [
     ],
   },
   ...compat.extends('next/core-web-vitals', 'next/typescript'),
+  {
+    files: ['next.config.js'],
+    rules: {
+      // O `package.json` do front não é `"type": "module"`, então o Next
+      // carrega este arquivo como CommonJS e o `require` é a forma correta de
+      // pegar `PHASE_DEVELOPMENT_SERVER`. Renomear para `.mjs` resolveria, mas
+      // a regra existe para pegar `require` esquecido em código de app, e
+      // exemptar um arquivo de configuração do build não é o mesmo que
+      // desligar a regra no resto.
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
   {
     rules: {
       // O projeto usa `<img>` de propósito em miniaturas e avatares: são

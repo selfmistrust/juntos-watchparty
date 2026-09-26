@@ -73,6 +73,15 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<JoinError | null>(null);
+  /**
+   * A sala atingiu o tempo máximo de vida e o servidor a encerrou. Diferente
+   * de `notice` (que some sozinho), isto é terminal: a tela precisa sair do
+   * player, porque a chave da sala não existe mais e nada recarregado volta a
+   * funcionar. Também não dá para reconectar — o `room:join` cairia no
+   * `ensureRoom`, que recria a sala vazia, e a pessoa cairia num chat morto
+   * sem nenhum aviso de que o histórico se foi.
+   */
+  const [expired, setExpired] = useState(false);
   /** Reações flutuantes ativas — cada uma se remove sozinha depois da animação. */
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   /** Mensagem sendo respondida no momento (para preview no input). */
@@ -182,6 +191,9 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
     };
 
     const onJoinError = (error: JoinError) => setJoinError(error);
+    // Idempotente de propósito: com mais de uma instância do servidor, todas
+    // rodam a varredura e o mesmo aviso chega mais de uma vez.
+    const onExpired = () => setExpired(true);
     const onState = (snap: RoomSnapshot) => setState(snap);
     const onMessage = (msg: ChatMessage) => pushFeed({ type: 'message', ...msg });
     const onEvent = (evt: SystemEvent) => pushFeed({ type: 'system', ...evt });
@@ -254,6 +266,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
     socket.on('room:join:error', onJoinError);
     socket.on('room:state', onState);
     socket.on('room:event', onEvent);
+    socket.on('room:expired', onExpired);
     socket.on('room:denied', onDenied);
     socket.on('chat:message', onMessage);
     socket.on('chat:reaction:add', onReactionAdd);
@@ -271,6 +284,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
       socket.off('room:join:error', onJoinError);
       socket.off('room:state', onState);
       socket.off('room:event', onEvent);
+      socket.off('room:expired', onExpired);
       socket.off('room:denied', onDenied);
       socket.off('chat:message', onMessage);
       socket.off('chat:reaction:add', onReactionAdd);
@@ -321,6 +335,43 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
     const t = setTimeout(() => setNotice(null), 3200);
     return () => clearTimeout(t);
   }, [notice]);
+
+  /**
+   * Rede de segurança do encerramento: se o `room:expired` não chegar — socket
+   * caiu antes do aviso, aba ficou em segundo plano e o timer do navegador foi
+   * congelado, o servidor caiu no meio — a sala encerra sozinha na hora certa.
+   *
+   * O atraso é corrigido pelo `clockOffset`, que o hook já mantém: sem isso o
+   * relógio do cliente — que pode estar errado por minutos — decidiria quando
+   * a sala morre. A dependência é só `expiresAt`, que é constante na vida da
+   * sala; usar `serverTime` reiniciaria o timer a cada `room:state`.
+   */
+  useEffect(() => {
+    if (!state?.expiresAt) return;
+    const restante = state.expiresAt - (Date.now() + clockOffset.current);
+    if (restante <= 0) {
+      setExpired(true);
+      return;
+    }
+    // O `+1s` é folga de relógio entre instâncias: encerra um instante depois
+    // do servidor, nunca antes.
+    const t = setTimeout(() => setExpired(true), restante + 1_000);
+    return () => clearTimeout(t);
+  }, [state?.expiresAt]);
+
+  /**
+   * Depois de expirada, a sala é um beco sem saída: o servidor já apagou a
+   * chave. Qualquer reconexão — automática do Socket.io ou disparada pelo
+   * `connect` lá dentro — faria `room:join` cair no `ensureRoom`, que recria a
+   * sala vazia. A pessoa veria um chat sem histórico e sem ninguém, sem
+   * nenhuma explicação. Travar o rejoin deixa o encerramento ser o que a tela
+   * mostra.
+   */
+  useEffect(() => {
+    if (!expired) return;
+    socketRef.current?.removeAllListeners();
+    socketRef.current?.disconnect();
+  }, [expired]);
 
   const emit = useCallback((event: string, payload?: unknown) => {
     socketRef.current?.emit(event, payload);
@@ -408,6 +459,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
     typingUsers: Object.values(typingUsers),
     notice,
     joinError,
+    expired,
     retryPassword,
     isHost,
     canControl,
