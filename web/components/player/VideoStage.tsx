@@ -6,6 +6,7 @@ import { PlayerControls } from './PlayerControls';
 import { ReactionDock } from './ReactionDock';
 import { ReactionsOverlay } from './ReactionsOverlay';
 import { YoutubePlayer } from './YoutubePlayer';
+import { useFullscreenLandscape } from '@/hooks/useFullscreenLandscape';
 import type { RoomActions } from '@/hooks/useRoom';
 import type { FloatingReaction, PlaylistItem, PlayerHandle, ReactionEmoji, RoomSnapshot, SoundId } from '@/types';
 
@@ -45,9 +46,10 @@ export function VideoStage({
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(0.8);
   const [muted, setMuted] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [drifting, setDrifting] = useState(false);
+
+  const { isFullscreen, rotate, toggle: toggleFullscreen } = useFullscreenLandscape({ targetRef: stageRef });
 
   const isPlaying = Boolean(state?.isPlaying);
   const hasNext = Boolean(state && state.currentIndex < state.playlist.length - 1);
@@ -138,12 +140,6 @@ export function VideoStage({
     return () => clearTimeout(hideTimer.current);
   }, [revealControls]);
 
-  useEffect(() => {
-    const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
-    document.addEventListener('fullscreenchange', onChange);
-    return () => document.removeEventListener('fullscreenchange', onChange);
-  }, []);
-
   const togglePlay = useCallback(() => {
     if (!canControl) return;
     const at = playerRef.current?.getCurrentTime() ?? 0;
@@ -175,11 +171,6 @@ export function VideoStage({
     });
   }, []);
 
-  const toggleFullscreen = useCallback(() => {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void stageRef.current?.requestFullscreen();
-  }, []);
-
   /** Reações e sons não exigem controle da sala — qualquer participante pode mandar. */
   const handleReaction = useCallback((emoji: ReactionEmoji) => actions.sendReaction(emoji), [actions]);
   const handleSound = useCallback((soundId: SoundId) => actions.sendSound(soundId), [actions]);
@@ -208,6 +199,10 @@ export function VideoStage({
       onTouchStart={revealControls}
       className={clsx(
         'group relative aspect-video w-full overflow-hidden rounded-2xl bg-black ring-1 ring-hairline lg:aspect-auto lg:h-full lg:rounded-none lg:ring-0',
+        isFullscreen && 'stage-fullscreen',
+        // No celular, se a tela continuou em pé depois do fullscreen, o palco
+        // é girado por CSS para o vídeo ficar na horizontal.
+        isFullscreen && rotate && 'stage-fullscreen--landscape',
         !controlsVisible && isPlaying && 'cursor-none',
       )}
     >

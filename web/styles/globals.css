@@ -41,6 +41,14 @@
     background: transparent;
   }
 
+  .scrollbar-hide {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
   .seek-track {
     background: linear-gradient(
       to right,
@@ -58,4 +66,46 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/*
+ * Tela cheia do player.
+ *
+ * Estas regras ficam fora de `@layer` de propósito: no Tailwind, CSS sem layer
+ * tem precedência sobre as utilities, e é isso que permite ao palco trocar as
+ * dimensões sem depender de `!important` contra o `aspect-video`/`w-full` dele.
+ */
+.stage-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/*
+ * Paisagem por CSS, para quando o aparelho não gira (o iOS não implementa
+ * `screen.orientation.lock`). As dimensões são trocadas — a largura passa a ser
+ * a altura da tela — e o palco é girado 90°, ficando centralizado pelo
+ * translate. O vídeo usa `object-contain`, então a moldura preta acompanha a
+ * rotação sem distorcer a imagem.
+ *
+ * O seletor repete a classe base de propósito. As duas regras declaram `width`
+ * e `height`, e depender da ordem no arquivo para o modificador vencer é
+ * frágil: qualquer regra posterior de mesma especificidade — ou a stylesheet
+ * do user-agent no `:fullscreen` — rouba a declaração. Com o seletor composto a
+ * precedência é 0,2,0 e para de depender de ordem e de layer.
+ */
+.stage-fullscreen.stage-fullscreen--landscape {
+  inset: auto;
+  top: 50%;
+  left: 50%;
+  width: 100vh;
+  height: 100vw;
+  transform: translate(-50%, -50%) rotate(90deg);
 }
