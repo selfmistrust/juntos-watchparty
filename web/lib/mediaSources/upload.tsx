@@ -75,6 +75,8 @@ export const uploadProvider: MediaSourceProvider = {
   description: 'Envie um vídeo do seu dispositivo (.mp4, .webm, .mkv).',
   icon: <CloudArrowUp size={22} weight="bold" />,
   requiresControl: true,
+  controlReason:
+    'O envio de arquivos é só para quem controla a fila: o token de upload é autorizado pelo servidor, e o arquivo vai para um bucket com custo e limite de taxa.',
   start: async (context: MediaSourceContext) => {
     const file = await chooseFile();
     if (!file) return;

@@ -58,9 +58,16 @@ export function PlaylistPanel({
         * ficaram dentro do modal de Aplicações — ter as duas coisas aqui e lá
         * duplicava a mesma integração em dois lugares, e era isso que poluía o
         * topo. A conta conectada continua visível na aba Pessoas, no perfil.
+        *
+        * O botão não é condicionado a `canControl`: adicionar à fila é uma
+        * permissão diferente de controlar a reprodução, e o servidor já aceita
+        * `playlist:add` de qualquer participante da sala. Quem decide se uma
+        * fonte específica pode ser usada é o card dela, via `requiresControl` —
+        * assim o modal abre para todo mundo e só as fontes que têm motivo real
+        * para ser restritas aparecem bloqueadas, com a explicação.
         */}
       <div className="border-b border-hairline p-3">
-        <Button onClick={() => setSourcesOpen(true)} disabled={!canControl} className="h-10 w-full justify-center gap-2">
+        <Button onClick={() => setSourcesOpen(true)} className="h-10 w-full justify-center gap-2">
           <Plus size={16} weight="bold" />
           Adicionar de uma aplicação
         </Button>

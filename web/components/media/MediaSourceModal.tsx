@@ -90,7 +90,7 @@ export function MediaSourceModal({
         collected[source.id] = {
           loading: false,
           available: false,
-          reason: 'Só quem controla a fila pode usar esta fonte.',
+          reason: source.controlReason ?? 'Só quem controla a fila pode usar esta fonte.',
           starting: false,
         };
       } else {

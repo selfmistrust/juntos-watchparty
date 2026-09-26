@@ -46,10 +46,21 @@ export interface MediaSourceProvider {
   /** Cor de acento do card (fundo do ícone), quando a marca tiver uma. */
   accent?: string;
   /**
-   * O que o provider precisa da sala. `canControl` decide se a fonte pode ser
-   * usada: sem ele, a pessoa só assiste.
+   * O que o provider precisa da sala.
+   *
+   * Só marque isto quando a fonte realmente não puder funcionar para quem não
+   * controla a fila — e não como sinônimo de "adicionar à fila". Encher a fila
+   * é uma permissão à parte, e o servidor aceita `playlist:add` de qualquer
+   * participante. O caso real é o upload, cujo token de arquivo o servidor
+   * restringe a `canControl`.
    */
   requiresControl?: boolean;
+  /**
+   * Por que a fonte está bloqueada para quem não controla a fila. Aparece no
+   * card no lugar do texto genérico, então vale a pena explicar a causa real
+   * em vez de repetir "só quem controla pode".
+   */
+  controlReason?: string;
   /**
    * Se a fonte já está pronta (não precisa consultar nada), devolve esse
    * estado. Ausente, o modal chama `resolveState`.
