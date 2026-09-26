@@ -22,6 +22,15 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
   const callbacks = useRef({ onReady, onEnded });
   callbacks.current = { onReady, onEnded };
 
+  /** Esconde a UI nativa do player do YouTube, se ele tiver sido criado. */
+  const hideChrome = () => {
+    try {
+      playerRef.current?.hideControls?.();
+    } catch {
+      // Player ainda não pronto, ou já destruído.
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -42,10 +51,22 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
           rel: 0,
           playsinline: 1,
           iv_load_policy: 3,
+          // Sem o botão de tela cheia do próprio YouTube: quem manda é o
+          // controle da watchparty, e os dois se sobrepunham.
+          fs: 0,
         },
         events: {
-          onReady: () => callbacks.current.onReady(),
+          onReady: () => {
+            hideChrome();
+            callbacks.current.onReady();
+          },
           onStateChange: (e: any) => {
+            // `controls: 0` não é garantia: o player do YouTube ainda exibe a
+            // barra inferior em algumas interações (pausa, toque, foco), e ela
+            // cai exatamente em cima dos controles da watchparty. Como o
+            // embed é cross-origin, não dá para esconder por CSS — a API
+            // expõe `hideControls()` para isso.
+            hideChrome();
             if (e.data === YT.PlayerState.ENDED) callbacks.current.onEnded();
           },
         },
@@ -66,19 +87,39 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
   );
 
   useImperativeHandle(ref, (): PlayerHandle => ({
-    play: () => playerRef.current?.playVideo?.(),
-    pause: () => playerRef.current?.pauseVideo?.(),
-    seek: (s) => playerRef.current?.seekTo?.(s, true),
+    // Cada comando enviado ao player do YouTube acaba fazendo a UI nativa
+    // reaparecer — e a correção de deriva do VideoStage chama `seek` e
+    // `setPlaybackRate` a cada ~1,2s. Sem repetir o `hideControls` aqui, a
+    // barra do YouTube voltaria o tempo todo por cima dos controles da
+    // watchparty, que é exatamente o sintoma reportado.
+    play: () => {
+      playerRef.current?.playVideo?.();
+      hideChrome();
+    },
+    pause: () => {
+      playerRef.current?.pauseVideo?.();
+      hideChrome();
+    },
+    seek: (s) => {
+      playerRef.current?.seekTo?.(s, true);
+      hideChrome();
+    },
     getCurrentTime: () => playerRef.current?.getCurrentTime?.() ?? 0,
     getDuration: () => playerRef.current?.getDuration?.() ?? 0,
     setVolume: (v) => playerRef.current?.setVolume?.(Math.round(v * 100)),
     setMuted: (m) => (m ? playerRef.current?.mute?.() : playerRef.current?.unMute?.()),
-    setPlaybackRate: (r) => playerRef.current?.setPlaybackRate?.(r),
+    setPlaybackRate: (r) => {
+      playerRef.current?.setPlaybackRate?.(r);
+      hideChrome();
+    },
   }));
 
   return (
     <div className="absolute inset-0">
-      <div ref={hostRef} className="h-full w-full" />
+      {/* O wrapper do player recebe os estilos do YT; o `pointer-events-none`
+          garante que nenhum clique, toque ou arrasto chegue no embed, mesmo
+          antes do div de bloqueio abaixo existir. */}
+      <div ref={hostRef} className="pointer-events-none h-full w-full" />
       {/* Bloqueia cliques no iframe: todo controle passa pela barra customizada. */}
       <div className="absolute inset-0" />
     </div>

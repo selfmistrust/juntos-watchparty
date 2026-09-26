@@ -1,4 +1,4 @@
-import { FilmSlate, Play } from '@phosphor-icons/react';
+import { FilmSlateIcon, PlayIcon } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FilePlayer } from './FilePlayer';
@@ -41,6 +41,8 @@ export function VideoStage({
   const playerRef = useRef<PlayerHandle>(null);
   const readyRef = useRef(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>();
+  /** Última velocidade enviada ao player, para não repetir o mesmo comando. */
+  const lastRateRef = useRef(1);
 
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -57,6 +59,7 @@ export function VideoStage({
   /** Troca de faixa: zera o relógio local e espera o novo player avisar que carregou. */
   useEffect(() => {
     readyRef.current = false;
+    lastRateRef.current = 1; // o player novo já nasce em 1x
     setCurrent(0);
     setDuration(0);
   }, [currentItem?.id]);
@@ -111,15 +114,23 @@ export function VideoStage({
       const drift = targetPosition() - player.getCurrentTime();
       const abs = Math.abs(drift);
 
+      // Só chama quando o valor muda: este laço roda a cada 1,2s e, no
+      // player do YouTube, cada comando faz a UI nativa reaparecer.
+      const setRate = (rate: number) => {
+        if (lastRateRef.current === rate) return;
+        lastRateRef.current = rate;
+        player.setPlaybackRate(rate);
+      };
+
       if (abs > HARD_SYNC_THRESHOLD) {
         player.seek(targetPosition());
-        player.setPlaybackRate(1);
+        setRate(1);
         setDrifting(true);
       } else if (abs > SOFT_SYNC_THRESHOLD) {
-        player.setPlaybackRate(drift > 0 ? 1.08 : 0.92);
+        setRate(drift > 0 ? 1.08 : 0.92);
         setDrifting(true);
       } else {
-        player.setPlaybackRate(1);
+        setRate(1);
         setDrifting(false);
       }
     }, 1200);
@@ -241,7 +252,7 @@ export function VideoStage({
       {currentItem && !isPlaying && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
           <span className="animate-fade-up flex h-16 w-16 items-center justify-center rounded-full bg-black/55 backdrop-blur-sm">
-            <Play size={28} weight="fill" className="ml-0.5 text-white" />
+            <PlayIcon size={28} weight="fill" className="ml-0.5 text-white" />
           </span>
         </div>
       )}
@@ -290,7 +301,7 @@ export function VideoStage({
 function EmptyStage() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-      <FilmSlate size={32} className="text-ink-faint" />
+      <FilmSlateIcon size={32} className="text-ink-faint" />
       <p className="text-sm text-ink-muted">Nenhum vídeo na fila.</p>
       <p className="max-w-xs text-sm text-ink-faint">
         Adicione um link do YouTube ou arquivo .mp4 na aba Fila para iniciar a reprodução.
