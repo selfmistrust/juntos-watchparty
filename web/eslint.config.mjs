@@ -16,6 +16,11 @@ const config = [
   {
     ignores: [
       '.next/**',
+      // `distDir` separado por ambiente (ver next.config.js): o build vai
+      // para `.next-build` e o dev para `.next-dev`, e nenhum dos dois é
+      // código-fonte.
+      '.next-dev/**',
+      '.next-build/**',
       'node_modules/**',
       'out/**',
       'build/**',

@@ -2,6 +2,9 @@
 node_modules/
 dist/
 .next/
+# `distDir` separado por ambiente (ver web/next.config.js)
+.next-dev/
+.next-build/
 out/
 *.tsbuildinfo
 
