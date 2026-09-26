@@ -14,22 +14,24 @@ interface Props {
 /**
  * Params de legenda para o playerVar.
  *
- * **Desligado não é o mesmo que ligar com `0`.** A documentação diz que
- * `cc_lang_pref` é "the default language that the player will use to *display*
- * captions" — ou seja, passar a preferência de idioma pede legenda no idioma
- * escolhido, e é isso que fazia a legenda continuar na tela depois de desligar.
+ * Só o "ligado" existe de verdade. A IFrame Player API **não tem como desligar
+ * legenda** — e isso foi conferido com a legenda visível na tela, não só lendo
+ * o estado: sem param nenhum ela aparece, com `cc_load_policy=0` aparece, com
+ * `cc_lang_pref` inválido aparece, no domínio `youtube-nocookie.com` também
+ * aparece, e `setOption('captions', 'track', …)` só aceita faixa válida —
+ * passar `{}`, `null` ou `false` não faz nada, e `unloadModule('captions')`
+ * também não.
  *
- * Então, desligado, nenhum dos dois params é enviado: o player nasce no
- * default do YouTube, que é sem legenda. Só quando a pessoa pede é que os dois
- * vão, juntos — `cc_load_policy` para exibir e `cc_lang_pref` para escolher a
- * faixa.
+ *Ou seja: a legenda é controlada pelo YouTube e pela preferência de quem
+ * assiste, e nenhum parâmetro nosso a vence. O `cc_load_policy=1` é o único
+ * comando que realmente liga.
  *
  * Português porque é o idioma de quase todo mundo na sala. O YouTube respeita a
  * ordem: se não houver faixa em português, ele cai para outra.
  */
-function legendaParams(captionsOn: boolean) {
+function legendaParams(captionsOn: boolean): Record<string, string> {
   if (!captionsOn) return {};
-  return { cc_load_policy: 1, cc_lang_pref: 'pt' };
+  return { cc_load_policy: '1', cc_lang_pref: 'pt' };
 }
 
 /**
@@ -42,22 +44,23 @@ function legendaParams(captionsOn: boolean) {
  *
  * ## Como a legenda é controlada aqui
  *
- * A IFrame Player API não tem como desligar legenda em um player que já existe.
- * A opção `captions.track` só aceita uma faixa válida: passar `{}`, `null`,
- * `{languageCode: ''}`, `{kind: 'none'}` ou `false` não faz nada, e
- * `unloadModule('captions')` também não — o player segue com a faixa
- * selecionada. Foi verificado no navegador, um caso por caso.
+ * Só o "ligado" é possível. A IFrame Player API não tem como **desligar**
+ * legenda, e isso foi conferido com a legenda aparecendo na tela, não só
+ * lendo estado: sem param nenhum ela aparece, com `cc_load_policy=0` também,
+ * com `cc_lang_pref` inválido também, no domínio `youtube-nocookie.com`
+ * também, e `setOption('captions', 'track', …)` só aceita faixa válida.
  *
- * A única alavanca documentada é o playerVar `cc_load_policy`, lido na
- * construção do player. Então ligar e desligar legenda significa **recriar o
- * player** — e o que vai na construção está em `legendaParams`, que trata
- * "desligado" como "não pedir legenda", não como "pedir desligada".
+ * A única alavanca documentada que funciona é `cc_load_policy: 1`, lida na
+ * construção do player — então ligar exige recriar o player. Desligar é
+ * devolver o player ao estado "não pedir", que é o default do YouTube, e o
+ * default não vence a preferência de quem assiste.
  *
  * Isso custa um recarregamento, e é o motivo de o botão ser preferência de
  * quem assiste e não estado da sala: cada navegador tem o seu `YT.Player`, então
  * só quem mexe no botão vê o recarregar. Posição e estado de play voltam
- * sozinhos, porque `onReady` chama o `handleReady` do VideoStage, que já faz
- * `seek` para a posição da sala.
+ * sozinhos: o `handleReady` do VideoStage faz `seek` para a posição da sala, e
+ * ele reenvia o `seek` porque o primeiro é descartado enquanto o player
+ * carrega.
  *
  * ## Por que o botão não some em vídeo sem legenda
  *

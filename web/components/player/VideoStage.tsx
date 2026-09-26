@@ -41,6 +41,8 @@ export function VideoStage({
   const playerRef = useRef<PlayerHandle>(null);
   const readyRef = useRef(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>();
+  /** Segunda tentativa de `seek` logo após o player ficar pronto. */
+  const seekRetryRef = useRef<ReturnType<typeof setTimeout>>();
   /** Última velocidade enviada ao player, para não repetir o mesmo comando. */
   const lastRateRef = useRef(1);
 
@@ -72,16 +74,38 @@ export function VideoStage({
     // quer lê-la no próximo vídeo também.
   }, [currentItem?.id]);
 
+  /**
+   * Player pronto: alinha volume, posição e estado de play.
+   *
+   * O `seek` vai duas vezes porque o primeiro é descartado com frequência: o
+   * player acabou de ser criado e ainda não tem o vídeo carregado, e o `seek`
+   * chega antes. Sem a segunda tentativa, o vídeo voltava para o começo — o que
+   * aparecia toda vez que a legenda era alternada, já que aí o player é
+   * recriado. A segunda passada também não atrapalha quando a primeira pega:
+   *.seek para onde já estamos é no-op.
+   *
+   * A correção de deriva (a cada 1,2s) também acabaria acertando, mas ela só
+   * roda com `isPlaying` — pausado, o seek perdido significava recomeço.
+   */
   const handleReady = useCallback(() => {
     readyRef.current = true;
     const player = playerRef.current;
     if (!player) return;
     player.setVolume(volume);
     player.setMuted(muted);
-    player.seek(targetPosition());
+    const at = targetPosition();
+    player.seek(at);
     if (isPlaying) player.play();
     setDuration(player.getDuration());
+
+    seekRetryRef.current = setTimeout(() => {
+      // Só repete se o player não foi substituído no meio do caminho.
+      if (playerRef.current !== player) return;
+      if (Math.abs(player.getCurrentTime() - at) > 1.5) player.seek(at);
+    }, 700);
   }, [isPlaying, muted, targetPosition, volume]);
+
+  useEffect(() => () => clearTimeout(seekRetryRef.current), []);
 
   /** Reage a play/pause vindos do servidor. */
   useEffect(() => {
