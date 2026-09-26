@@ -34,6 +34,15 @@ interface Props {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   reactions: FloatingReaction[];
+  /**
+   * Mídia de uma faixa `stream`: o próprio `MediaStream` de quem transmite,
+   * ou o que chegou por WebRTC de outra pessoa. `null` enquanto a conexão não
+   * fecha, e é por isso que o palco precisa de um estado de espera próprio.
+   */
+  liveStream?: MediaStream | null;
+  /** A conexão com quem transmite está em andamento. */
+  liveConnecting?: boolean;
+  liveError?: string | null;
 }
 
 export function VideoStage({
@@ -45,6 +54,9 @@ export function VideoStage({
   sidebarOpen,
   onToggleSidebar,
   reactions,
+  liveStream,
+  liveConnecting,
+  liveError,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<PlayerHandle>(null);
@@ -76,6 +88,18 @@ export function VideoStage({
    */
   const [nativeControls, setNativeControls] = useState(false);
   const isYoutube = currentItem?.kind === 'youtube';
+  /**
+   * Faixa ao vivo: a sincronização por posição não se aplica.
+   *
+   * Ela foi construída sobre `position`, que só existe em mídia com começo e
+   * fim. Numa tela compartilhada não há posição a sincronizar — o mesmo
+   * instante chega pelo relógio da mídia — e rodar o cálculo ali tentaria
+   * manter todo mundo no "segundo zero" de uma imagem que não tem começo. Por
+   * isso cada laço abaixo sai cedo neste caso, em vez de confiar no
+   * `PlayerHandle` para no-op: um `seek` em `MediaStream` não é no-op, e um
+   * `getDuration` devolve `Infinity`.
+   */
+  const isStream = currentItem?.kind === 'stream';
 
   const { isFullscreen, rotate, toggle: toggleFullscreen } = useFullscreenLandscape({ targetRef: stageRef });
 
@@ -111,9 +135,16 @@ export function VideoStage({
     if (!player) return;
     player.setVolume(volume);
     player.setMuted(muted);
+    if (isPlaying) player.play();
+
+    // Ao vivo não há para onde pular, e a barra de progresso fica em 0 de 0.
+    if (isStream) {
+      setDuration(0);
+      return;
+    }
+
     const at = targetPosition();
     player.seek(at);
-    if (isPlaying) player.play();
     setDuration(player.getDuration());
 
     seekRetryRef.current = setTimeout(() => {
@@ -121,7 +152,7 @@ export function VideoStage({
       if (playerRef.current !== player) return;
       if (Math.abs(player.getCurrentTime() - at) > 1.5) player.seek(at);
     }, 700);
-  }, [isPlaying, muted, targetPosition, volume]);
+  }, [isPlaying, isStream, muted, targetPosition, volume]);
 
   useEffect(() => () => clearTimeout(seekRetryRef.current), []);
 
@@ -131,16 +162,19 @@ export function VideoStage({
     const player = playerRef.current;
     if (!player) return;
     if (isPlaying) player.play();
-    else {
+    else if (!isStream) {
       player.pause();
       player.seek(targetPosition());
     }
     // targetPosition muda a cada snapshot; só queremos reagir à transição de estado.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, state?.serverTime]);
+  }, [isPlaying, isStream, state?.serverTime]);
 
   /** Relógio de UI. */
   useEffect(() => {
+    // Ao vivo o relógio mostraria uma posição que não corresponde a nada, já que
+    // a barra de progresso some.
+    if (isStream) return;
     const id = setInterval(() => {
       const player = playerRef.current;
       if (!player || !readyRef.current) return;
@@ -149,7 +183,7 @@ export function VideoStage({
       if (d && Math.abs(d - duration) > 0.5) setDuration(d);
     }, 250);
     return () => clearInterval(id);
-  }, [duration]);
+  }, [duration, isStream]);
 
   /**
    * Correção de deriva. Diferenças grandes viram seek; pequenas viram uma
@@ -157,6 +191,9 @@ export function VideoStage({
    * o atraso em poucos segundos.
    */
   useEffect(() => {
+    // Sem isto, a correção de deriva.seekaria uma tela compartilhada para a
+    // posição projetada da sala, que é 0 para sempre num item `stream`.
+    if (isStream) return;
     const id = setInterval(() => {
       const player = playerRef.current;
       if (!player || !readyRef.current || !isPlaying) return;
@@ -185,7 +222,7 @@ export function VideoStage({
       }
     }, 1200);
     return () => clearInterval(id);
-  }, [isPlaying, targetPosition]);
+  }, [isPlaying, isStream, targetPosition]);
 
   /** Auto-hide dos controles: some com o mouse parado, volta ao pausar. */
   const revealControls = useCallback(() => {
@@ -309,13 +346,30 @@ export function VideoStage({
             onEnded={actions.ended}
           />
         ) : (
-          <FilePlayer
-            key={currentItem.id}
-            ref={playerRef}
-            src={currentItem.src}
-            onReady={handleReady}
-            onEnded={actions.ended}
-          />
+          <>
+            {/*
+              * A faixa `stream` usa o mesmo player de arquivo, alimentado por
+              * `srcObject`. Enquanto o fluxo não chega, o palco mostra o estado
+              * real em vez de um retângulo preto — que é indistinguível de
+              * "quebrou" e é a pior coisa que um player de vídeo pode fazer.
+              */}
+            {isStream && !liveStream && (
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-black px-6 text-center">
+                <p className="text-sm text-ink-muted">
+                  {liveError ?? (liveConnecting ? 'Conectando à transmissão…' : 'Preparando a transmissão…')}
+                </p>
+                {liveError && <p className="text-2xs text-ink-faint">Acontece quando as redes não se alcançam.</p>}
+              </div>
+            )}
+            <FilePlayer
+              key={currentItem.id}
+              ref={playerRef}
+              src={currentItem.src}
+              stream={isStream ? liveStream : null}
+              onReady={handleReady}
+              onEnded={actions.ended}
+            />
+          </>
         )
       ) : (
         <EmptyStage />
@@ -390,6 +444,7 @@ export function VideoStage({
           isFullscreen={isFullscreen}
           sidebarOpen={sidebarOpen}
           captionsOn={currentItem?.kind === 'youtube' ? captionsOn : undefined}
+          live={isStream}
           onTogglePlay={togglePlay}
           onSeek={handleSeek}
           onNext={() => state && actions.selectTrack(state.currentIndex + 1)}

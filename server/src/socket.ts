@@ -19,16 +19,21 @@ import {
   deleteRoom,
   ensureRoom,
   getRoom,
+  getStream,
   isPastMaxLifetime,
   markUserDisconnected,
   newId,
   persistRoom,
   projectedPosition,
+  dropStreamsOwnedBy,
   removeUser,
   setUserAvatar,
   setUserColor,
   setUserName,
   snapshot,
+  startStream,
+  stopStream,
+  streamsDe,
   updateUserHeartbeat,
   PRESENCE_TIMEOUT_MS,
   CLEANUP_INTERVAL_MS,
@@ -38,6 +43,7 @@ import {
   CHAT_REACTION_EMOJIS,
   type ChatMessageKind,
   type ChatReactionEmoji,
+  type LiveStream,
   type PlaylistItem,
   type ReactionEmoji,
   type Room,
@@ -522,10 +528,157 @@ export function registerSocketHandlers(io: Server) {
       socket.to(room.id).emit('chat:typing', { id: user.sessionId, name: user.name, isTyping: Boolean(isTyping) });
     });
 
+    /* ---------------------------------------------------------------------
+     * Transmissão de tela — sinalização WebRTC.
+     *
+     * O servidor NÃO transporta mídia. Ele só entrega as mensagens de
+     * negociação (offer, answer, candidate) de uma pessoa para a outra, e
+     * depois disso as duas se falam direto por WebRTC. É o que mantém a
+     * arquitetura do resto: a sala é o estado compartilhado, e o vídeo não
+     * passa pelo servidor — nem entra no Redis, nem custa banda dele.
+     *
+     * Um para muitos: quem transmite cria uma `RTCPeerConnection` por
+     * espectador, e o mesmo `MediaStream` entra em todas. A captura é única
+     * mesmo com dez pessoas assistindo.
+     *
+     * Quem cria a oferta é o dono, porque uma oferta precisa anunciar um tipo
+     * de mídia e só ele tem a mídia. O espectador responde e manda candidates.
+     * ------------------------------------------------------------------- */
+
+    /** Projeção pública: o sessionId do socket de outra instância não serve. */
+    const publicStream = ({ ownerSessionId: _omit, ...pub }: LiveStream) => pub;
+
+    socket.on('stream:publish', async ({ title }: { title?: string } = {}) => {
+      const room = await currentRoom();
+      const user = room?.users[socket.id];
+      if (!room || !user) return;
+
+      if (!canControl(room, socket.id)) return denied(room);
+
+      // Uma pessoa transmite por vez. Duas telas simultâneas exigiriam um
+      // modelo de composição que o app não tem, e o resultado seria uma sala
+      // com dois "tocando agora" disputando a mesma caixa.
+      if (Object.keys(streamsDe(room)).length > 0) {
+        socket.emit('room:denied', 'Já tem alguém transmitindo a tela nesta sala.');
+        socket.emit('room:state', snapshot(room));
+        return;
+      }
+
+      const stream = startStream(room, user, typeof title === 'string' ? title : '');
+
+      room.playlist.push({
+        id: newId(),
+        kind: 'stream',
+        src: '',
+        title: stream.title,
+        addedBy: user.name,
+        addedById: user.userId,
+        streamId: stream.id,
+      });
+      room.currentIndex = room.playlist.length - 1;
+      room.isPlaying = true;
+      commitPosition(room, 0);
+      await persistRoom(room);
+
+      socket.emit('stream:started', { stream: publicStream(stream) });
+      io.to(room.id).emit('room:state', snapshot(room));
+      system(room.id, 'info', `${user.name} começou a compartilhar a tela`);
+    });
+
+    socket.on('stream:unpublish', async ({ streamId }: { streamId?: string } = {}) => {
+      const room = await currentRoom();
+      if (!room || typeof streamId !== 'string') return;
+      const stream = getStream(room, streamId);
+      if (!stream || stream.ownerSessionId !== socket.id) return;
+
+      stopStream(room, streamId);
+      await persistRoom(room);
+      io.to(room.id).emit('stream:stopped', { streamId });
+      io.to(room.id).emit('room:state', snapshot(room));
+      system(room.id, 'info', `${stream.ownerName} parou de compartilhar a tela`);
+    });
+
+    socket.on('stream:subscribe', async ({ streamId }: { streamId?: string } = {}) => {
+      const room = await currentRoom();
+      if (!room || typeof streamId !== 'string') return;
+      const stream = getStream(room, streamId);
+      if (!stream) {
+        // A transmissão acabou entre a pessoa pedir e o servidor responder.
+        socket.emit('stream:stopped', { streamId });
+        return;
+      }
+      if (stream.ownerSessionId === socket.id) return;
+
+      // Só o dono cria a conexão, então é para ele que o pedido vai.
+      io.to(stream.ownerSessionId).emit('stream:peer-join', {
+        streamId,
+        peerSessionId: socket.id,
+        peerName: room.users[socket.id]?.name ?? 'Convidado',
+      });
+    });
+
+    socket.on('stream:unsubscribe', async ({ streamId }: { streamId?: string } = {}) => {
+      const room = await currentRoom();
+      if (!room || typeof streamId !== 'string') return;
+      const stream = getStream(room, streamId);
+      if (!stream || stream.ownerSessionId === socket.id) return;
+
+      io.to(stream.ownerSessionId).emit('stream:peer-leave', {
+        streamId,
+        peerSessionId: socket.id,
+      });
+    });
+
+    /**
+     * Entrega a mensagem de negociação para um destino.
+     *
+     * `io.to(sessionId)` alcança o socket em todas as instâncias, o que é
+     * obrigatório: o dono e o espectador podem estar em processos diferentes.
+     *
+     * O relay é cego, então o tamanho é limitado. Um cliente com o
+     * `maxHttpBufferSize` default empurraria payload grande por aqui sem que
+     * ninguém o visse; 64 KB sobra para um SDP completo.
+     */
+    socket.on(
+      'stream:signal',
+      async ({ to, streamId, data }: { to?: string; streamId?: string; data?: unknown }) => {
+        const room = await currentRoom();
+        if (!room || typeof to !== 'string' || typeof streamId !== 'string') return;
+        if (data === undefined || data === null) return;
+
+        const stream = getStream(room, streamId);
+        // Só quem transmite, ou quem está na sala, participa do handshake. Sem
+        // isto qualquer um se passaria pelos dois lados e injetaria mídia
+        // arbitrária.
+        if (!stream || !room.users[socket.id]) return;
+
+        const tamanho = Buffer.byteLength(JSON.stringify(data) ?? '', 'utf8');
+        if (tamanho > 64 * 1024) {
+          socket.emit('room:denied', 'Mensagem de conexão grande demais.');
+          return;
+        }
+
+        io.to(to).emit('stream:signal', { from: socket.id, streamId, data });
+      },
+    );
+
     socket.on('disconnect', async () => {
       clearRateLimit(socket.id);
       const room = await currentRoom();
       if (!room) return;
+
+      // Transmissão que morre junto com a janela de quem transmitia. Sem isto
+      // o estado da sala guardaria um stream para sempre, e todo mundo ficaria
+      // esperando mídia que nunca chega.
+      const encerradas = dropStreamsOwnedBy(room, socket.id);
+      if (encerradas.length > 0) {
+        await persistRoom(room);
+        for (const streamId of encerradas) {
+          io.to(room.id).emit('stream:stopped', { streamId });
+        }
+        system(room.id, 'info', 'A transmissão de tela foi encerrada');
+      }
+
       const user = markUserDisconnected(room, socket.id);
       if (user) {
         system(room.id, 'leave', `${user.name} saiu da sala`);

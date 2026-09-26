@@ -33,6 +33,11 @@ interface Props {
    */
   captionsOn?: boolean;
   /**
+   * Transmissão ao vivo. Troca o relógio por um selo e desliga a barra de
+   * progresso, que num `MediaStream` não tem para onde apontar.
+   */
+  live?: boolean;
+  /**
    * Só existe no player do YouTube. Passar os controles para o YouTube é a
    * única forma de alcançar o botão de CC nativo, que é o único jeito de
    * *desligar* legenda (a API não tem esse comando).
@@ -60,6 +65,7 @@ export function PlayerControls({
   isFullscreen,
   sidebarOpen,
   captionsOn,
+  live,
   onHandOverToNative,
   onTogglePlay,
   onSeek,
@@ -91,27 +97,37 @@ export function PlayerControls({
         visible ? 'opacity-100' : 'pointer-events-none opacity-0',
       )}
     >
-      <label className="sr-only" htmlFor="seek">
-        Posição do vídeo
-      </label>
-      <input
-        id="seek"
-        type="range"
-        min={0}
-        max={Math.max(duration, 1)}
-        step={0.5}
-        value={Math.min(current, duration || 0)}
-        onChange={handleSeek}
-        disabled={!canControl || duration === 0}
-        style={{ ['--progress' as string]: `${progress}%` }}
-        /* A trilha fica com 4px, mas o alvo sensível é o dobro. O `py-2`
-           adiciona 16px de área clicável sem engrossar o desenho — no toque
-           uma trilha de 4px é quase impossível de acertar. */
-        className="seek-track w-full cursor-pointer appearance-none rounded-full transition-[height] duration-150 hover:h-1.5 disabled:cursor-not-allowed
-          [@media(pointer:coarse)]:h-1.5 [@media(pointer:coarse)]:py-2.5
-          [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
-          [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white"
-      />
+      {/*
+        * A barra some inteira numa transmissão ao vivo. Deixá-la desabilitada
+        * parecia mais seguro, mas um range desabilitado e vazio é pior do que
+        * nada: parece quebrado, e não dá pista do que houve. O selo "Ao vivo" e
+        * o estado do palco é que explicam.
+        */}
+      {!live && (
+        <>
+          <label className="sr-only" htmlFor="seek">
+            Posição do vídeo
+          </label>
+          <input
+            id="seek"
+            type="range"
+            min={0}
+            max={Math.max(duration, 1)}
+            step={0.5}
+            value={Math.min(current, duration || 0)}
+            onChange={handleSeek}
+            disabled={!canControl || duration === 0}
+            style={{ ['--progress' as string]: `${progress}%` }}
+            /* A trilha fica com 4px, mas o alvo sensível é o dobro. O `py-2`
+               adiciona 16px de área clicável sem engrossar o desenho — no toque
+               uma trilha de 4px é quase impossível de acertar. */
+            className="seek-track w-full cursor-pointer appearance-none rounded-full transition-[height] duration-150 hover:h-1.5 disabled:cursor-not-allowed
+              [@media(pointer:coarse)]:h-1.5 [@media(pointer:coarse)]:py-2.5
+              [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
+              [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white"
+          />
+        </>
+      )}
 
       {/* Uma linha só (`flex-nowrap`): quebrar em duas empurraria a barra para
           baixo do player. O que cede espaço aqui é o volume e o tempo corrente,
@@ -183,11 +199,22 @@ export function PlayerControls({
 
         {/* O tempo cede espaço antes de qualquer botão: `shrink` + `truncate`
             deixa só o total aparecer quando a barra aperta, em vez de empurrar
-            o botão de tela cheia para fora da tela. */}
-        <span className="ml-1 min-w-0 shrink select-none truncate font-mono text-xs tabular-nums text-white/70">
-          <span className="[@media(max-width:400px)]:hidden">{formatTime(current)} </span>
-          <span className="text-white/35">/ {formatTime(duration)}</span>
-        </span>
+            o botão de tela cheia para fora da tela.
+
+            Numa transmissão ao vivo não há tempo: a imagem não tem começo nem
+            fim, e mostrar "0:00 / 0:00" seria pior que não mostrar nada. No
+            lugar, o selo deixa claro que o que está na tela é outra pessoa. */}
+        {live ? (
+          <span className="ml-1 flex shrink-0 items-center gap-1.5 rounded-md bg-live/90 px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-white">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+            Ao vivo
+          </span>
+        ) : (
+          <span className="ml-1 min-w-0 shrink select-none truncate font-mono text-xs tabular-nums text-white/70">
+            <span className="[@media(max-width:400px)]:hidden">{formatTime(current)} </span>
+            <span className="text-white/35">/ {formatTime(duration)}</span>
+          </span>
+        )}
 
         {/* `ml-auto` joga este par para a direita quando cabe em uma linha. Por
             ter `shrink-0`, ele não é comprimido quando a linha aperta: em vez

@@ -10,6 +10,7 @@ servidor de salas e o mesmo contrato de socket.
 |---|---|---|
 | Bloqueio de iframe do YouTube | player às vezes não toca | User-Agent de Chrome puro resolve |
 | Áudio do sistema na captura | impossível (`getDisplayMedia` só dá microfone) | `loopback`, com o áudio da máquina inteira |
+| Transmitir tela para a sala | o navegador entrega o fluxo só para a própria aba | WebRTC um-para-muitos |
 | Autoplay do vídeo da fila | bloqueado sem gesto | liberado |
 | Origem | a da hospedagem | `http://localhost:3210`, fixa |
 
@@ -88,17 +89,38 @@ lista que ele mesmo enumerou.
 `%APPDATA%\Juntos\logs\`, um arquivo por dia. É o primeiro lugar a olhar quando
 o app não abre.
 
-## O que ainda não faz
+## Transmissão de tela
 
-**A tela capturada não chega aos outros participantes.** A captura local
-funciona — inclusive com áudio do sistema —, mas transmitir para a sala exige
-sinalização WebRTC no servidor, um `MediaKind` novo (`stream`) e o `FilePlayer`
-aceitando `MediaStream` além de `src`. Nada disso existe, e o backend não foi
-tocado nesta entrega. O painel diz isso na tela, em vez de fingir que transmitiu.
+A tela capturada **chega aos outros participantes** por WebRTC. O servidor não
+transporta mídia: ele entrega só as mensagens de negociação (offer, answer,
+candidate) entre as duas pessoas, e depois disso elas se falam direto. A
+mídia não passa pelo Redis nem custa banda do servidor.
 
-Para a tela chegar aos outros, o caminho é: sinalização no `server/src/socket.ts`
-(o padrão de sala já tem o formato), um `stream` no contrato de `MediaItem`, e o
-`FilePlayer` pegando o `MediaStream` do painel em vez de um `src`.
+Uma pessoa transmite por vez, e quem transmite cria uma `RTCPeerConnection` por
+espectador — todas alimentadas pelo mesmo `MediaStream`, então a captura é única
+mesmo com dez pessoas assistindo.
+
+### O limite honesto
+
+**Não há servidor TURN.** A conexão só sai entre duas pessoas que se alcançam
+por rede local ou por STUN direto. Duas pessoas em redes diferentes — uma atrás
+de NAT corporativo, outra em 4G — podem não se ver. Isso não é um bug de
+implementação: relay exige um servidor de mídia, que o projeto não tem, e é
+infraestrutura, não código.
+
+O palco não gira em falso: quando a conexão falha, a tela mostra o motivo.
+
+### Como a autorização funciona no servidor
+
+- `stream:publish` — registra a transmissão e põe a faixa `stream` tocando
+- `stream:subscribe` / `stream:unsubscribe` — o espectador pede e larga
+- `stream:signal` — o relay cego, com teto de 64 KB por mensagem
+- `stream:peer-join` / `stream:peer-leave` — para o dono criar e fechar uma
+  conexão por espectador
+- `stream:stopped` — chega a todos, inclusive quando o dono fecha a janela
+
+Quem transmite é identificado pelo `userId`, não pelo socket: a conexão pode
+cair e voltar, e a transmissão continua sendo a mesma.
 
 ## Notas de plataforma
 

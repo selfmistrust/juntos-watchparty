@@ -7,6 +7,7 @@ import { RoomExpired } from '@/components/RoomExpired';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoStage } from '@/components/player/VideoStage';
 import { useRoom } from '@/hooks/useRoom';
+import { useStreamBridge } from '@/hooks/useStreamBridge';
 
 const NAME_KEY = 'juntos:name';
 const AVATAR_SEED_KEY = 'juntos:avatarSeed';
@@ -97,6 +98,25 @@ export default function RoomPage() {
   } = useRoom({ roomId, name, enabled: Boolean(roomId && name), avatarSeed, avatarUrl, color });
 
   /**
+   * Ponte de WebRTC da sala. Fica na página, e não dentro do `useRoom`, porque
+   * quem transmite precisa do `MediaStream` que o painel de captura produz — e
+   * esse fluxo é mídia local de uma máquina só, não estado da sala.
+   */
+  const streamBridge = useStreamBridge();
+
+  /**
+   * A mídia que o palco toca depende de dois papéis. Quem transmite já tem a
+   * captura local: tocar o que veio de volta da própria conexão WebRTC
+   * atrasaria a própria tela em um round-trip. Quem assiste usa o que chegou.
+   */
+  const souDono = Boolean(
+    streamBridge.transmitting && streamBridge.transmitting.id === currentItem?.streamId,
+  );
+  const liveStream = souDono ? streamBridge.meuStream : streamBridge.remoto;
+  const liveConectando =
+    !souDono && Boolean(currentItem?.streamId) && !streamBridge.remoto;
+
+  /**
    * Troca de nome, avatar ou cor feita depois de já estar na sala (painel de
    * pessoas) só passa pelo socket — sem isso aqui, ela nunca volta para o
    * localStorage nem para o estado desta página. Reabrir a aba (comum no
@@ -127,6 +147,22 @@ export default function RoomPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me]);
+
+  /**
+   * Assina (ou cancela) a transmissão conforme a faixa atual.
+   *
+   * Fica na página porque depende de `currentItem`, que o palco já consome.
+   * Quem transmite não assina a própria — o bridge recusa, e o efeito abaixo
+   * sai cedo para não emitir pedido à toa.
+   */
+  useEffect(() => {
+    const streamId = currentItem?.kind === 'stream' ? currentItem.streamId : undefined;
+    if (!streamId || souDono) return;
+    streamBridge.assinar(streamId);
+    return () => streamBridge.cancelar(streamId);
+    // `streamBridge` é recriado a cada render; o que importa é o id da faixa.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentItem?.streamId, souDono]);
 
   // Sem id não há nem o que mostrar — nem onde procurar a sala. Um estado de
   // carregamento é melhor que `null`: tela branca não dá nenhuma pista do que
@@ -179,6 +215,9 @@ export default function RoomPage() {
             sidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen((v) => !v)}
             reactions={reactions}
+            liveStream={liveStream}
+            liveConnecting={liveConectando}
+            liveError={streamBridge.erro}
           />
           {currentItem && (
             <div className="shrink-0 px-1 pt-3 lg:px-5 lg:pb-4">
@@ -202,6 +241,7 @@ export default function RoomPage() {
           canControl={canControl}
           isHost={isHost}
           replyingTo={replyingTo}
+          streamBridge={streamBridge}
         />
       </div>
 

@@ -6,10 +6,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Portal } from '@/components/ui/Portal';
 import { Button } from '@/components/ui/Button';
 import { desktop, type CaptureSource } from '@/lib/desktop';
+import type { StreamController } from '@/hooks/useStreamBridge';
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  /**
+   * Publica a captura na sala. Injetado em vez de importado direto porque quem
+   * tem a ponte é a página, que é onde o palco consome a mídia — manter o hook
+   * aqui criaria uma segunda ponte, com conexões WebRTC duplicadas.
+   */
+  bridge: StreamController;
 }
 
 /**
@@ -24,7 +31,7 @@ interface Props {
  * `getDisplayMedia` devolve o fluxo sem abrir nenhuma caixa do sistema — por
  * isso o seletor é o nosso, e não o do Windows.
  */
-export function ScreenSharePanel({ open, onClose }: Props) {
+export function ScreenSharePanel({ open, onClose, bridge }: Props) {
   const api = desktop();
   const [fontes, setFontes] = useState<CaptureSource[]>([]);
   const [escolhida, setEscolhida] = useState<string | null>(null);
@@ -55,14 +62,18 @@ export function ScreenSharePanel({ open, onClose }: Props) {
     if (open) void listar();
   }, [open, listar]);
 
-  /** Encerra o fluxo e devolve os controles de tela ao sistema. */
+  /** Encerra a transmissão e devolve os controles de tela ao sistema. */
   const parar = useCallback(async () => {
+    // Primeiro tira da sala, depois solta a captura. Ao contrário, o servidor
+    // continuaria achando que existe transmissão para entregar enquanto a tela
+    // já estava desligada.
+    bridge.parar();
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setTransmitindo(false);
     await api?.stopCapture();
-  }, [api]);
+  }, [api, bridge]);
 
   // Sair do painel sem parar antes deixaria a luz de "transmitindo" acesa no
   // Windows com nada consumindo o fluxo — a tela continuaria congelada para o
@@ -113,15 +124,21 @@ export function ScreenSharePanel({ open, onClose }: Props) {
       await api.selectCaptureSource(escolhida);
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       streamRef.current = stream;
+
       // A pessoa pode parar pelo próprio SO (a barra de compartilhamento do
-      // Windows). O `track.onended` é o único jeito de saber disso.
-      stream.getVideoTracks()[0]?.addEventListener('ended', () => setTransmitindo(false));
+      // Windows). O `track.onended` é o único jeito de saber disso — e sem
+      // tratar, a sala ficaria com uma transmissão que nunca mais chega mídia.
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => void parar());
+
+      // A captura local sozinha não é transmissão: é preciso registrá-la na
+      // sala, que é quem vai parear as conexões WebRTC.
+      await bridge.publicar(stream, 'Tela compartilhada');
       setTransmitindo(true);
     } catch {
       setErro('Não foi possível iniciar a captura. Tente outra tela.');
       await api.stopCapture();
     }
-  }, [api, escolhida]);
+  }, [api, bridge, escolhida, parar]);
 
   if (!open || !api) return null;
 
@@ -211,7 +228,7 @@ export function ScreenSharePanel({ open, onClose }: Props) {
 
             <p className="mt-3 text-2xs leading-relaxed text-ink-faint">
               {transmitindo
-                ? 'A captura está só nesta janela por enquanto — falta a sinalização no servidor para ela chegar aos outros participantes da sala.'
+                ? 'A tela vai para quem está na sala. Sem um servidor TURN, quem estiver em outra rede pode não conseguir ver.'
                 : 'Escolha uma tela ou janela. O áudio do sistema só é capturado no Windows.'}
             </p>
           </div>

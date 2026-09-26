@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { TruncatedText } from '@/components/ui/TruncatedText';
+import type { StreamController } from '@/hooks/useStreamBridge';
 import { MediaSourceModal } from '@/components/media/MediaSourceModal';
 import type { UploadTokenResult } from '@/hooks/useRoom';
 import type { PlaylistItem } from '@/types';
@@ -20,6 +21,8 @@ interface Props {
     fileSize: number;
     mimeType: string;
   }) => Promise<UploadTokenResult>;
+  /** Ponte de WebRTC, repassada ao modal para o painel de tela compartilhada. */
+  streamBridge: StreamController;
 }
 
 export function PlaylistPanel({
@@ -31,6 +34,7 @@ export function PlaylistPanel({
   onReorder,
   onSelect,
   requestUploadToken,
+  streamBridge,
 }: Props) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const dragFrom = useRef<number | null>(null);
@@ -52,6 +56,7 @@ export function PlaylistPanel({
         canControl={canControl}
         addToPlaylist={onAdd}
         requestUploadToken={requestUploadToken}
+        streamBridge={streamBridge}
       />
 
       {/*

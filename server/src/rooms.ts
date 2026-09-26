@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { customAlphabet } from 'nanoid';
 import { redis } from './redis.js';
-import type { Room, RoomSnapshot, User } from './types.js';
+import type { LiveStream, Room, RoomSnapshot, User } from './types.js';
 
 /** IDs de sala curtos e fáceis de ditar por voz. */
 export const newRoomId = customAlphabet('abcdefghjkmnpqrstuvwxyz23456789', 12);
@@ -376,6 +376,98 @@ export function canControl(room: Room, sessionId: string): boolean {
   return room.openControl || room.hostId === sessionId;
 }
 
+// --- Transmissões ao vivo ---------------------------------------------------
+
+/**
+ * `streams` pode não existir em sala gravada antes do recurso, então a leitura
+ * sempre passa por aqui.
+ */
+export function streamsDe(room: Room): Record<string, LiveStream> {
+  if (!room.streams) room.streams = {};
+  return room.streams;
+}
+
+export function getStream(room: Room, streamId: string): LiveStream | undefined {
+  return streamsDe(room)[streamId];
+}
+
+/**
+ * Registra uma transmissão e devolve o id.
+ *
+ * O dono é identificado pelo `userId`, e não pelo sessionId: a conexão pode
+ * cair e voltar com outro socket, e a transmissão continua sendo a mesma. O
+ * `ownerSessionId` é atualizado junto para que o relay de sinal encontre o
+ * socket certo agora.
+ */
+export function startStream(
+  room: Room,
+  owner: User,
+  title: string,
+): LiveStream {
+  const stream: LiveStream = {
+    id: newId(),
+    ownerSessionId: owner.sessionId,
+    ownerUserId: owner.userId,
+    ownerName: owner.name,
+    title: title.slice(0, 60) || `${owner.name} compartilhando a tela`,
+    startedAt: Date.now(),
+  };
+  streamsDe(room)[stream.id] = stream;
+  return stream;
+}
+
+/**
+ * Encerra a transmissão e tira da fila o item que a representava.
+ *
+ * Uma transmissão não é "pular faixa": ela está tocando agora, e quem chega
+ * depois precisa ver que acabou. Por isso o item é removido e o player volta
+ * para o vazio, em vez de ficar em um item morto.
+ */
+export function stopStream(room: Room, streamId: string): boolean {
+  const streams = streamsDe(room);
+  if (!streams[streamId]) return false;
+  delete streams[streamId];
+
+  const item = room.playlist.find((i) => i.kind === 'stream' && i.streamId === streamId);
+  if (!item) return true;
+
+  const eraATocando = room.currentIndex === room.playlist.indexOf(item);
+  room.playlist = room.playlist.filter((i) => i.id !== item.id);
+
+  if (eraATocando) {
+    // Não tenta escolher a próxima: uma fila que tinha só a transmissão (ou que
+    // era a última) fica sem nada tocando, que é o estado correto.
+    const seguinte = room.playlist[Math.min(room.currentIndex, room.playlist.length - 1)];
+    room.currentIndex = seguinte ? room.playlist.indexOf(seguinte) : -1;
+    if (!seguinte) room.isPlaying = false;
+  } else {
+    // A faixa removida estava antes da que toca: o índice anda junto, senão a
+    // sala pula uma faixa.
+    room.currentIndex = Math.max(0, room.currentIndex - 1);
+  }
+
+  commitPosition(room, 0);
+  return true;
+}
+
+/**
+ * Remove transmissões cujo dono saiu.
+ *
+ * Chamado no `disconnect`. Sem isto, uma transmissão que morre junto com a
+ * janela de quem transmitia ficaria no estado da sala para sempre, com todo
+ * mundo esperando um stream que nunca chega.
+ */
+export function dropStreamsOwnedBy(room: Room, sessionId: string): string[] {
+  const removidas: string[] = [];
+  for (const stream of Object.values(streamsDe(room))) {
+    if (stream.ownerSessionId === sessionId) {
+      stopStream(room, stream.id);
+      removidas.push(stream.id);
+    }
+  }
+  return removidas;
+}
+
 /**
  * Projeta a posição do vídeo para agora. É esta função que faz um usuário
  * atrasado entrar exatamente no mesmo segundo que os demais.
@@ -398,6 +490,9 @@ export function snapshot(room: Room): RoomSnapshot {
   const connectedUsers = Object.values(room.users).filter(u => u.connected);
   // Envia apenas as últimas 100 mensagens para o cliente
   const recentMessages = (room.messages ?? []).slice(-100);
+  // `ownerSessionId` fica de fora: é o socket de uma instância específica, que
+  // o cliente não consegue usar (ver o comentário em `RoomSnapshot.streams`).
+  const streams = Object.values(streamsDe(room)).map(({ ownerSessionId: _omit, ...pub }) => pub);
   return {
     id: room.id,
     name: room.name,
@@ -415,6 +510,7 @@ export function snapshot(room: Room): RoomSnapshot {
     // socket cair do nada quando a chave sumir.
     expiresAt: expiresAt(room),
     messages: recentMessages,
+    streams,
   };
 }
 

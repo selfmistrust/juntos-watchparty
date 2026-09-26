@@ -1,4 +1,12 @@
-export type MediaKind = 'youtube' | 'file';
+/**
+ * `stream` é uma transmissão ao vivo, não um arquivo.
+ *
+ * A diferença molda o player inteiro: um arquivo tem `src` e posição
+ * seekável, e a sincronização da sala é construída sobre isso. Uma tela
+ * compartilhada não tem posição — o mesmo instante chega pelo relógio da
+ * mídia. Por isso o item referencia a transmissão e o `src` fica vazio.
+ */
+export type MediaKind = 'youtube' | 'file' | 'stream';
 
 export interface PlaylistItem {
   id: string;
@@ -10,6 +18,23 @@ export interface PlaylistItem {
   addedBy: string;
   /** id de quem adicionou, usado para o badge de "DJ" na faixa que está tocando. */
   addedById: string;
+  /** Transmissão referenciada, quando `kind === 'stream'`. */
+  streamId?: string;
+}
+
+/**
+ * Uma transmissão ao vivo, como o servidor a publica.
+ *
+ * Sem `ownerSessionId`: é o id do socket de uma instância específica, e o
+ * cliente não tem o que fazer com o de outra. A identidade estável do dono é o
+ * `ownerUserId`, que sobrevive a reconexão.
+ */
+export interface LiveStream {
+  id: string;
+  ownerUserId: string;
+  ownerName: string;
+  title: string;
+  startedAt: number;
 }
 
 export interface User {
@@ -79,6 +104,8 @@ export interface RoomSnapshot {
   expiresAt?: number;
   /** Últimas mensagens do chat (últimas 100). */
   messages: ChatMessage[];
+  /** Transmissões ao vivo ativas na sala. */
+  streams: LiveStream[];
 }
 
 export type JoinErrorReason = 'wrong_password' | 'password_required';

@@ -2,7 +2,10 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
-    "moduleResolution": "node",
+    // `node10` é o nome atual do que era `node`, e é o que o Node usa por
+    // padrão com CommonJS. O nome antigo está deprecado e exigia um
+    // `ignoreDeprecations` que o TypeScript não aceita mais em toda versão.
+    "moduleResolution": "node10",
     "lib": ["ES2022", "DOM"],
     "outDir": "dist",
     "rootDir": "electron",

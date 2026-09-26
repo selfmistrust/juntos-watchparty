@@ -119,8 +119,28 @@ fs.rmSync(path.join(destino, 'node_modules', 'electron-builder'), { recursive: t
 
 // Verificação final no destino, e não na origem: o que importa é o que o
 // processo principal vai encontrar em `web-standalone/server.js`.
-if (!fs.existsSync(path.join(destino, 'server.js'))) {
-  console.error('\nO destino ficou sem server.js — o app não sobe assim.');
+//
+// Estes caminhos são os que o servidor do Next exige para subir. Sem esta
+// checagem, uma cópia interrompida — que acontece quando o app está rodando e
+// segura arquivos do diretório — gerava um pacote que instalava, abria, e
+// morria com "Cannot find module '@next/env'". O aviso é sobre o
+// `desktop/web-standalone`, e o sintoma só apareceria na máquina de quem
+// instalasse.
+const exigidos = [
+  'server.js',
+  'package.json',
+  path.join('node_modules', 'next', 'package.json'),
+  path.join('node_modules', '@next', 'env', 'package.json'),
+  path.join('.next', 'static'),
+];
+const faltando = exigidos.filter((p) => !fs.existsSync(path.join(destino, p)));
+if (faltando.length > 0) {
+  console.error(
+    '\nA cópia do servidor ficou incompleta. Faltou:\n' +
+      faltando.map((p) => `  - ${p}`).join('\n') +
+      '\n\nO app estiver aberto segura os arquivos deste diretório. Feche o ' +
+      'Juntos e rode de novo.',
+  );
   process.exit(1);
 }
 

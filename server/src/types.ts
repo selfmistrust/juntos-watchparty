@@ -1,9 +1,18 @@
-export type MediaKind = 'youtube' | 'file';
+/**
+ * `stream` é uma transmissão ao vivo, não um arquivo.
+ *
+ * A diferença não é cosmética: um arquivo tem `src` e posição seekável, e a
+ * sincronização da sala (projetar posição, corrigir deriva) é construída em
+ * cima disso. Uma tela compartilhada não tem posição nenhuma — o mesmo
+ * instante chega pelo relógio da mídia, não por `position`. Por isso o item
+ * carrega `streamId` e o `src` fica vazio, e o player não tenta sincronizar.
+ */
+export type MediaKind = 'youtube' | 'file' | 'stream';
 
 export interface PlaylistItem {
   id: string;
   kind: MediaKind;
-  /** videoId do YouTube ou URL direta de um .mp4 */
+  /** videoId do YouTube, URL direta de um .mp4, ou vazio em `stream`. */
   src: string;
   title: string;
   thumbnail?: string;
@@ -11,6 +20,28 @@ export interface PlaylistItem {
   addedBy: string;
   /** id de quem adicionou, usado para o badge de "DJ" na faixa que está tocando. */
   addedById: string;
+  /** Transmissão ao vivo referenciada, quando `kind === 'stream'`. */
+  streamId?: string;
+}
+
+/**
+ * Uma transmissão ao vivo em andamento.
+ *
+ * Fica na sala (e não em memória do processo) por dois motivos: o estado da
+ * sala vive no Redis e o adapter do Socket.IO pode ter várias instâncias
+ * atendendo sockets diferentes da mesma sala. Uma transmissão que só existisse
+ * na memória de um processo quebraria assim que as pessoas caíssem em
+ * instâncias diferentes.
+ */
+export interface LiveStream {
+  id: string;
+  /** sessionId de quem transmite. Muda a cada reconexão do dono. */
+  ownerSessionId: string;
+  /** userId do dono, estável entre reconexões. */
+  ownerUserId: string;
+  ownerName: string;
+  title: string;
+  startedAt: number;
 }
 
 export interface User {
@@ -79,6 +110,11 @@ export interface Room {
   createdAt: number;
   /** Histórico de mensagens do chat (últimas 500). */
   messages: ChatMessage[];
+  /**
+   * Transmissões ao vivo ativas, por id. Ausente em salas antigas — a leitura
+   * usa `room.streams ?? {}` para não quebrar dado gravado antes do recurso.
+   */
+  streams?: Record<string, LiveStream>;
 }
 
 /** Recorte serializável enviado aos clientes. */
@@ -100,6 +136,15 @@ export interface RoomSnapshot {
   expiresAt?: number;
   /** Últimas mensagens do chat (últimas 100). */
   messages: ChatMessage[];
+  /**
+   * Transmissões ativas, sem o `ownerSessionId`.
+   *
+   * O sessionId fica de fora de propósito: ele é o id do socket de *uma*
+   * instância, e o cliente não tem o que fazer com o de outra. Quem precisa
+   * saber quem transmite — para assinar ou para recusar — se identifica pelo
+   * `ownerUserId`, que é estável entre reconexões.
+   */
+  streams: Array<Omit<LiveStream, 'ownerSessionId'>>;
 }
 
 export interface ChatMessage {
@@ -131,7 +176,9 @@ export type SystemEventKind =
   | 'pause'
   | 'seek'
   | 'track'
-  | 'host';
+  | 'host'
+  /** Anúncio que não corresponde a um comando do player (usado pela tela compartilhada). */
+  | 'info';
 
 export interface SystemEvent {
   id: string;

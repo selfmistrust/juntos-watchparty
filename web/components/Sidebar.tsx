@@ -7,6 +7,7 @@ import { PlaylistPanel } from '@/components/playlist/PlaylistPanel';
 import { IconButton } from '@/components/ui/Button';
 import { Tabs, type TabDef } from '@/components/ui/Tabs';
 import type { RoomActions } from '@/hooks/useRoom';
+import type { StreamController } from '@/hooks/useStreamBridge';
 import type { FeedEntry, RoomSnapshot, User, ChatMessage } from '@/types';
 
 type TabId = 'chat' | 'queue' | 'people';
@@ -22,6 +23,8 @@ interface Props {
   canControl: boolean;
   isHost: boolean;
   replyingTo?: ChatMessage | null;
+  /** Ponte de WebRTC, repassada até o painel de tela compartilhada. */
+  streamBridge: StreamController;
 }
 
 export function Sidebar({
@@ -35,6 +38,7 @@ export function Sidebar({
   canControl,
   isHost,
   replyingTo,
+  streamBridge,
 }: Props) {
   const [tab, setTab] = useState<TabId>('chat');
   const [unread, setUnread] = useState(0);
@@ -108,6 +112,7 @@ export function Sidebar({
             onReorder={actions.reorderPlaylist}
             onSelect={actions.selectTrack}
             requestUploadToken={actions.requestUploadToken}
+            streamBridge={streamBridge}
           />
         )}
         {tab === 'people' && (

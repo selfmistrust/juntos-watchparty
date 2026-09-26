@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { ScreenSharePanel } from '@/components/screen/ScreenSharePanel';
 import { isDesktop } from '@/lib/desktop';
+import type { StreamController } from '@/hooks/useStreamBridge';
 import type { MediaSourceContext, MediaSourceProvider, MediaSourceState } from './types';
 import { READY, unavailable } from './types';
 import { screenShareProvider } from './screenShare';
@@ -14,13 +15,12 @@ import { screenShareProvider } from './screenShare';
  * fontes, escolha, pré-visualização) e um card de duas linhas não comporta
  * nada disso. O modal só recebe um `ReactNode` para desenhar.
  *
- * A diferença para o navegador é o `resolveState`: dentro do app desktop a
- * fonte fica disponível, porque o processo principal concede a captura. Fora
- * dele continua indisponível, com a explicação de sempre — e o texto dessa
- * explicação mudou, porque a parte de "falta sinalização no servidor" é a mesma
- * nos dois lugares, mas a de "o navegador não deixa" só existe no site.
+ * A ponte de WebRTC chega por parâmetro, e não por import: quem a tem é a
+ * página, que é onde o palco consome a mídia. Se este hook chamasse
+ * `useStreamBridge`, haveria uma segunda ponte — e duas pontes assinariam
+ * `stream:publish` ao mesmo tempo, criando duas transmissões para uma tela só.
  */
-export function useScreenShare(): { provider: MediaSourceProvider; panel: ReactNode } {
+export function useScreenShare(bridge: StreamController): { provider: MediaSourceProvider; panel: ReactNode } {
   const [context, setContext] = useState<MediaSourceContext | null>(null);
 
   // Estável pelo mesmo motivo do `useYoutubePanel`: o provider é memoizado
@@ -47,6 +47,6 @@ export function useScreenShare(): { provider: MediaSourceProvider; panel: ReactN
 
   return {
     provider,
-    panel: context ? <ScreenSharePanel open onClose={close} /> : null,
+    panel: context ? <ScreenSharePanel open onClose={close} bridge={bridge} /> : null,
   };
 }

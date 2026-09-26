@@ -7,6 +7,7 @@ import { Portal } from '@/components/ui/Portal';
 import { TruncatedText } from '@/components/ui/TruncatedText';
 import { useYoutubeSource } from '@/lib/mediaSources/useYoutubeSource';
 import { useScreenShare } from '@/lib/mediaSources/useScreenShare';
+import type { StreamController } from '@/hooks/useStreamBridge';
 import {
   MEDIA_SOURCES,
   type MediaSourceContext,
@@ -20,6 +21,8 @@ interface Props {
   canControl: boolean;
   addToPlaylist: MediaSourceContext['addToPlaylist'];
   requestUploadToken: MediaSourceContext['requestUploadToken'];
+  /** Ponte de WebRTC, repassada ao painel de tela compartilhada. */
+  streamBridge: StreamController;
   /** Chamado quando o fluxo de uma fonte é iniciado com sucesso. */
   onSourceStarted?: (id: string) => void;
 }
@@ -42,6 +45,7 @@ export function MediaSourceModal({
   canControl,
   addToPlaylist,
   requestUploadToken,
+  streamBridge,
   onSourceStarted,
 }: Props) {
   const [states, setStates] = useState<Record<string, CardState>>({});
@@ -54,7 +58,7 @@ export function MediaSourceModal({
    * misturam aqui, num só lugar: o resto do modal não sabe a diferença.
    */
   const youtube = useYoutubeSource();
-  const tela = useScreenShare();
+  const tela = useScreenShare(streamBridge);
   const sources = useMemo<MediaSourceProvider[]>(
     () =>
       MEDIA_SOURCES.flatMap((f) => {
