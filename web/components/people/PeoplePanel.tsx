@@ -1,4 +1,4 @@
-import { Check, Crown, Disc, PencilSimple, Shuffle, UploadSimple, X } from '@phosphor-icons/react';
+import { CheckIcon, CrownIcon, DiscIcon, PencilSimpleLineIcon, ShuffleIcon, UploadSimpleIcon, X } from '@phosphor-icons/react';
 import { useRef, useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
 import { AvatarCropper } from '@/components/ui/AvatarCropper';
@@ -93,7 +93,7 @@ export function PeoplePanel({
                     aria-label="Salvar nome"
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-accent transition-colors duration-150 hover:bg-hover disabled:opacity-40"
                   >
-                    <Check size={14} />
+                    <CheckIcon size={14} />
                   </button>
                   <button
                     type="button"
@@ -111,7 +111,7 @@ export function PeoplePanel({
                   className="group flex min-w-0 items-center gap-1.5 text-left"
                 >
                   <span className="truncate text-sm text-ink">{me.name}</span>
-                  <PencilSimple size={12} className="shrink-0 text-ink-faint opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
+                  <PencilSimpleLineIcon size={12} className="shrink-0 text-ink-faint opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
                 </button>
               )}
               <div className="flex flex-wrap gap-1.5">
@@ -138,7 +138,7 @@ export function PeoplePanel({
               onClick={() => onSetAvatar({ seed: randomAvatarSeed(), url: '' })}
               className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
             >
-              <Shuffle size={13} />
+              <ShuffleIcon size={13} />
               Novo avatar
             </button>
             <input
@@ -153,7 +153,7 @@ export function PeoplePanel({
               onClick={() => fileRef.current?.click()}
               className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg border border-hairline bg-raised text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink"
             >
-              <UploadSimple size={13} />
+              <UploadSimpleIcon size={13} />
               Usar foto
             </button>
           </div>
@@ -183,13 +183,13 @@ export function PeoplePanel({
             </span>
             {djUserId === user.userId && (
               <span className="flex shrink-0 items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-2xs text-ink-muted">
-                <Disc size={11} weight="fill" />
+                <DiscIcon size={11} weight="fill" />
                 DJ
               </span>
             )}
             {state.hostId === user.sessionId && (
               <span className="flex shrink-0 items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-2xs text-accent">
-                <Crown size={11} weight="fill" />
+                <CrownIcon size={11} weight="fill" />
                 host
               </span>
             )}
