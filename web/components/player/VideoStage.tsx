@@ -50,6 +50,12 @@ export function VideoStage({
   const [muted, setMuted] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [drifting, setDrifting] = useState(false);
+  /*
+   * Legenda é preferência de cada pessoa, não estado da sala: fica só no
+   * player de quem assistiu e não vai pelo socket. É por isso que a intenção
+   * sobrevive à troca de faixa — quem ligou quer ler no próximo vídeo também.
+   */
+  const [captionsOn, setCaptionsOn] = useState(false);
 
   const { isFullscreen, rotate, toggle: toggleFullscreen } = useFullscreenLandscape({ targetRef: stageRef });
 
@@ -62,6 +68,8 @@ export function VideoStage({
     lastRateRef.current = 1; // o player novo já nasce em 1x
     setCurrent(0);
     setDuration(0);
+    // `captionsOn` é de propósito preservado entre faixas: quem ligou a legenda
+    // quer lê-la no próximo vídeo também.
   }, [currentItem?.id]);
 
   const handleReady = useCallback(() => {
@@ -182,6 +190,17 @@ export function VideoStage({
     });
   }, []);
 
+  const toggleCaptions = useCallback(() => {
+    // Trocar a legenda recria o player do YouTube (é a única forma de o
+    // `cc_load_policy` valer). Enquanto o novo não fica pronto, o player está
+    // no meio do caminho, e o laço de deriva mandaria `seek`/velocidade para
+    // ele. Marcar como "não pronto" suspende esses comandos até o `onReady`
+    // chegar — o mesmo que a troca de faixa já faz.
+    readyRef.current = false;
+    lastRateRef.current = 1;
+    setCaptionsOn((prev) => !prev);
+  }, []);
+
   /** Reações e sons não exigem controle da sala — qualquer participante pode mandar. */
   const handleReaction = useCallback((emoji: ReactionEmoji) => actions.sendReaction(emoji), [actions]);
   const handleSound = useCallback((soundId: SoundId) => actions.sendSound(soundId), [actions]);
@@ -197,11 +216,12 @@ export function VideoStage({
       } else if (e.key === 'ArrowRight') handleSeek(current + 10);
       else if (e.key === 'ArrowLeft') handleSeek(Math.max(0, current - 10));
       else if (e.key.toLowerCase() === 'm') toggleMute();
+      else if (e.key.toLowerCase() === 'c') toggleCaptions();
       else if (e.key.toLowerCase() === 'f') toggleFullscreen();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [current, handleSeek, togglePlay, toggleFullscreen, toggleMute]);
+  }, [current, handleSeek, toggleCaptions, togglePlay, toggleFullscreen, toggleMute]);
 
   return (
     <div
@@ -223,6 +243,7 @@ export function VideoStage({
             key={currentItem.id}
             ref={playerRef}
             videoId={currentItem.src}
+            captionsOn={captionsOn}
             onReady={handleReady}
             onEnded={actions.ended}
           />
@@ -285,11 +306,13 @@ export function VideoStage({
           hasNext={hasNext}
           isFullscreen={isFullscreen}
           sidebarOpen={sidebarOpen}
+          captionsOn={currentItem?.kind === 'youtube' ? captionsOn : undefined}
           onTogglePlay={togglePlay}
           onSeek={handleSeek}
           onNext={() => state && actions.selectTrack(state.currentIndex + 1)}
           onVolume={handleVolume}
           onToggleMute={toggleMute}
+          onToggleCaptions={toggleCaptions}
           onToggleFullscreen={toggleFullscreen}
           onToggleSidebar={onToggleSidebar}
         />

@@ -8,6 +8,7 @@ import {
   SpeakerHigh,
   SpeakerSimpleX,
   SidebarSimple,
+  Subtitles,
 } from '@phosphor-icons/react';
 import { useCallback, type ChangeEvent } from 'react';
 import { IconButton } from '@/components/ui/Button';
@@ -24,11 +25,18 @@ interface Props {
   hasNext: boolean;
   isFullscreen: boolean;
   sidebarOpen: boolean;
+  /**
+   * Só o player do YouTube tem legenda. `undefined` esconde o botão — é
+   * assim que o `VideoStage` diz "este item não tem legenda para ligar",
+   * sem o `PlayerControls` precisar saber de onde vem o vídeo.
+   */
+  captionsOn?: boolean;
   onTogglePlay: () => void;
   onSeek: (seconds: number) => void;
   onNext: () => void;
   onVolume: (value: number) => void;
   onToggleMute: () => void;
+  onToggleCaptions: () => void;
   onToggleFullscreen: () => void;
   onToggleSidebar: () => void;
 }
@@ -44,11 +52,13 @@ export function PlayerControls({
   hasNext,
   isFullscreen,
   sidebarOpen,
+  captionsOn,
   onTogglePlay,
   onSeek,
   onNext,
   onVolume,
   onToggleMute,
+  onToggleCaptions,
   onToggleFullscreen,
   onToggleSidebar,
 }: Props) {
@@ -134,6 +144,27 @@ export function PlayerControls({
               [&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white"
           />
         </div>
+
+        {/*
+          * Legenda não é controle da sala: cada pessoa escolhe, igual ao volume.
+          * Não ganha `disabled={!canControl}` de propósito — quem não controla a
+          * reprodução também pode querer ler.
+          *
+          * Fica escondido quando o item não é do YouTube (`captionsOn` é
+          * `undefined` nesse caso, o FilePlayer não manda a prop), porque não
+          * há legenda para ligar.
+          */}
+          {captionsOn !== undefined && (
+            <IconButton
+              label={captionsOn ? 'Desligar legenda' : 'Ligar legenda'}
+              onClick={onToggleCaptions}
+              active={captionsOn}
+              aria-pressed={captionsOn}
+              className="shrink-0"
+            >
+              <Subtitles size={18} weight={captionsOn ? 'fill' : 'regular'} />
+            </IconButton>
+          )}
 
         {/* O tempo cede espaço antes de qualquer botão: `shrink` + `truncate`
             deixa só o total aparecer quando a barra aperta, em vez de empurrar

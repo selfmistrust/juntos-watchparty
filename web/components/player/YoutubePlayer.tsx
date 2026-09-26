@@ -5,6 +5,8 @@ import type { PlayerHandle } from '@/types';
 
 interface Props {
   videoId: string;
+  /** Intenção da pessoa: legenda ligada ou desligada. Controlled pelo VideoStage. */
+  captionsOn: boolean;
   onReady: () => void;
   onEnded: () => void;
 }
@@ -12,12 +14,48 @@ interface Props {
 /**
  * Os controles nativos ficam desligados: quem comanda é a barra customizada,
  * para que nenhum clique escape da sincronização do servidor.
+ *
+ * Legenda é o caso interesante de `controls: 0`: sem a barra nativa, o botão de
+ * CC do YouTube some junto, e quem depende de legenda não tem por onde ligar.
+ * Por isso o controle é nosso.
+ *
+ * ## Como a legenda é controlada aqui
+ *
+ * A IFrame Player API não tem como desligar legenda em um player que já existe.
+ * A opção `captions.track` só aceita uma faixa válida: passar `{}`, `null`,
+ * `{languageCode: ''}`, `{kind: 'none'}` ou `false` não faz nada, e
+ * `unloadModule('captions')` também não — o player segue com a faixa
+ * selecionada. Foi verificado no navegador, um caso por caso.
+ *
+ * A única alavanca documentada é o playerVar `cc_load_policy`, lido na
+ * construção do player. Então ligar e desligar legenda significa **recriar o
+ * player** com o playerVar diferente.
+ *
+ * Isso custa um recarregamento, e é o motivo de o botão ser preferência de
+ * quem assiste e não estado da sala: cada navegador tem o seu `YT.Player`, então
+ * só quem mexe no botão vê o recarregar. Posição e estado de play voltam
+ * sozinhos, porque `onReady` chama o `handleReady` do VideoStage, que já faz
+ * `seek` para a posição da sala.
+ *
+ * ## Por que o botão não some em vídeo sem legenda
+ *
+ * Dá para saber se o vídeo tem faixa (`getOption('captions', 'tracklist')`), mas
+ * só depois que o módulo `captions` acorda — e ele só acorda com
+ * `cc_load_policy: 1` ou com um `setOption('captions', 'reload', true)`, e o
+ * `tracklist` vem vazio enquanto a legenda está desligada. Ou seja: sondar
+ * significa carregar as legendas de um vídeo que a pessoa não pediu, e não dá
+ * para garantir o efeito colateral disso.
+ *
+ * Então o botão segue a mesma convenção do próprio YouTube: aparece nos vídeos
+ * do YouTube e, se não houver faixa, não há nada a exibir. Um botão que some
+ * conforme o vídeo é pior para quem depende de legenda do que um botão que
+ * às vezes não faz nada visível.
  */
 export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePlayer(
-  { videoId, onReady, onEnded },
+  { videoId, captionsOn, onReady, onEnded },
   ref,
 ) {
-  const hostRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const callbacks = useRef({ onReady, onEnded });
   callbacks.current = { onReady, onEnded };
@@ -49,18 +87,39 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
     return () => clearInterval(id);
   }, [hideChrome, videoId]);
 
+  /**
+   * Cria o player.
+   *
+   * Recria quando o vídeo ou a preferência de legenda mudam, porque
+   * `cc_load_policy` só é lido na construção. O player anterior é destruído
+   * antes do novo nascer, senão os dois ficam vivos e o antigo rouba o vídeo.
+   */
   useEffect(() => {
+    // Capturado aqui, e não lido no cleanup: o wrapper já está montado quando o
+    // efeito roda, e o cleanup precisa do mesmo nó que o efeito usou.
+    const wrap = wrapRef.current;
     let cancelled = false;
 
     loadYoutubeApi().then((YT) => {
-      if (cancelled || !hostRef.current) return;
+      if (cancelled || !wrap) return;
 
+      // O host é nosso, não do React: o construtor do YT.Player o substitui
+      // por um `<iframe>` e não existe mais o div original.
       if (playerRef.current) {
-        playerRef.current.loadVideoById(videoId);
-        return;
+        try {
+          playerRef.current.destroy?.();
+        } catch {
+          // Já destruído.
+        }
+        playerRef.current = null;
       }
+      wrap.innerHTML = '';
 
-      playerRef.current = new YT.Player(hostRef.current, {
+      const host = document.createElement('div');
+      host.className = 'pointer-events-none h-full w-full';
+      wrap.appendChild(host);
+
+      playerRef.current = new YT.Player(host, {
         videoId,
         playerVars: {
           controls: 0,
@@ -72,6 +131,12 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
           // Sem o botão de tela cheia do próprio YouTube: quem manda é o
           // controle da watchparty, e os dois se sobrepunham.
           fs: 0,
+          // A única forma de pedir legenda — e de pedir que ela não apareça.
+          cc_load_policy: captionsOn ? 1 : 0,
+          // Português como faixa preferida: é o idioma da maioria das pessoas
+          // da sala, e o YouTube respeita a ordem da lista quando a faixa
+          // pedida não existe.
+          cc_lang_pref: 'pt',
         },
         events: {
           onReady: () => {
@@ -93,20 +158,17 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
 
     return () => {
       cancelled = true;
-    };
-    // `hideChrome` é um `useCallback` sem dependências, então é estável: hoje
-    // incluí-la não muda quando o efeito roda. Fica explícita porque os
-    // callbacks do player a usam, e se ela um dia passar a depender de algo,
-    // o efeito tem de refazer junto.
-  }, [videoId, hideChrome]);
-
-  useEffect(
-    () => () => {
-      playerRef.current?.destroy?.();
+      try {
+        playerRef.current?.destroy?.();
+      } catch {
+        // Já destruído.
+      }
       playerRef.current = null;
-    },
-    [],
-  );
+      // Limpa o que o YT deixou no wrapper. Precisa ser aqui, e não no JSX,
+      // porque o React não pode remover o `<iframe>` que o player criou.
+      if (wrap) wrap.innerHTML = '';
+    };
+  }, [videoId, captionsOn, hideChrome]);
 
   useImperativeHandle(ref, (): PlayerHandle => ({
     // Cada comando enviado ao player do YouTube acaba fazendo a UI nativa
@@ -145,10 +207,19 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
 
   return (
     <div className="absolute inset-0">
-      {/* O wrapper do player recebe os estilos do YT; o `pointer-events-none`
-          garante que nenhum clique, toque ou arrasto chegue no embed, mesmo
-          antes do div de bloqueio abaixo existir. */}
-      <div ref={hostRef} className="pointer-events-none h-full w-full" />
+      {/*
+        * O `wrapRef` é um div que o React nunca troca. O div que o
+        * `YT.Player` recebe é criado dentro dele imperativamente, porque o
+        * construtor *substitui* o elemento que recebe por um `<iframe>` — se o
+        * React administrasse esse nó, ele tentaria remover um div que já não
+        * seria mais filho do wrapper e quebraria com `removeChild`. Como aqui o
+        * React só enxerga o wrapper, que é estável, quem limpa é o efeito, via
+        * `innerHTML = ''`.
+        *
+        * O `pointer-events-none` no host garante que nenhum clique, toque ou
+        * arrasto chegue no embed, mesmo antes do div de bloqueio abaixo existir.
+        */}
+      <div ref={wrapRef} className="h-full w-full" />
       {/* Bloqueia cliques no iframe: todo controle passa pela barra customizada. */}
       <div className="absolute inset-0" />
     </div>
