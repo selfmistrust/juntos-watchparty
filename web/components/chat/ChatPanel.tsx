@@ -379,109 +379,121 @@ export function ChatPanel({
         )}
       </div>
 
-      <div className="relative border-t border-hairline p-3">
-        {gifOpen && <GifPicker onPick={pickGif} onClose={() => setGifOpen(false)} />}
-        {emojiOpen && (
-          <EmojiPicker
-            anchorRef={emojiAnchorRef}
-            onSelect={(emoji) => {
-              setDraft((prev) => prev + emoji);
-            }}
-            onClose={() => setEmojiOpen(false)}
-          />
-        )}
-
-        {replyingTo && (
-          <ReplyPreview
-            key="active-reply-preview"
-            message={replyingTo}
-            onCancel={onCancelReply}
-            currentUserName={me?.name}
-          />
-        )}
-
+      <div className="border-t border-hairline p-3">
         {/*
-         * `items-center` e não `items-end`: os botões são de 36px e o campo de
-         * 32px, então alinhar pelo fundo deixava os ícones pendurados 4px acima
-         * do campo. Centralizar é o que alinha as duas fileiras.
+         * A barra é centralizada e com largura limitada, em vez de sangrar de
+         * ponta a ponta do painel.
          *
-         * Não é uma regra global de `.items-end`: o overlay dos modais e o
-         * ReactionDock dependem do comportamento de baixo, e sobrescrever
-         * aquilo quebraria o bottom-sheet no celular.
-         *
-         * `gap-0.5` no lugar de `gap-1`: são quatro ícones numa fileira de
-         * 32px, e 4px de respiro entre eles deixava a fileira solta.
-         *
-         * No celular o respiro externo também aperta (`px-1.5 py-1.5`) e os
-         * quatro botões vão para 40px com `dense`. A conta fechava assim: a
-         * 390px, os quatro alvos de 44px comiam 176px e o campo ficava com
-         * 164px — 22 caracteres visíveis, e o placeholder "Mandar mensagem" já
-         * não cabia inteiro. O que resolve de vez é o auto-crescimento do
-         * campo, logo abaixo; isto é só para dar mais largura de entrada.
+         * Este wrapper também é o âncora de posicionamento dos pickers: eles
+         * são `absolute bottom-full left-0 right-0`, e se o `relative`
+         * ficasse no container de fora, abririam com a largura da tela cheia
+         * enquanto a barra teria 336px — desalinhados na borda direita. Por
+         * isso o `relative` desceu para cá, junto do `max-w`.
          */}
-        <div className="flex items-center gap-0.5 rounded-xl border border-hairline bg-raised px-1.5 py-1.5 transition-colors duration-150 focus-within:border-accent/60 sm:px-2 sm:py-2">
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => pickImage(e.target.files?.[0])}
-          />
-          <IconButton dense label="Enviar imagem" onClick={() => fileRef.current?.click()} disabled={sendingImage}>
-            <ImageIcon size={17} />
-          </IconButton>
+        <div className="relative mx-auto w-full max-w-[21rem]">
+          {gifOpen && <GifPicker onPick={pickGif} onClose={() => setGifOpen(false)} />}
+          {emojiOpen && (
+            <EmojiPicker
+              anchorRef={emojiAnchorRef}
+              onSelect={(emoji) => {
+                setDraft((prev) => prev + emoji);
+              }}
+              onClose={() => setEmojiOpen(false)}
+            />
+          )}
 
-          <IconButton
-            dense
-            label="Enviar GIF"
-            active={gifOpen}
-            onClick={() => {
-              setEmojiOpen(false);
-              setGifOpen((v) => !v);
-            }}
-          >
-            <Sticker size={17} />
-          </IconButton>
+          {replyingTo && (
+            <ReplyPreview
+              key="active-reply-preview"
+              message={replyingTo}
+              onCancel={onCancelReply}
+              currentUserName={me?.name}
+            />
+          )}
 
-          <IconButton
-            ref={emojiAnchorRef}
-            dense
-            label={emojiOpen ? 'Fechar emojis' : 'Inserir emoji'}
-            active={emojiOpen}
-            onClick={() => {
-              setGifOpen(false);
-              setEmojiOpen((v) => !v);
-            }}
-          >
-            <Smiley size={17} />
-          </IconButton>
+          {/*
+           * `items-center` e não `items-end`: os botões são de 36px e o campo de
+           * 32px, então alinhar pelo fundo deixava os ícones pendurados 4px acima
+           * do campo. Centralizar é o que alinha as duas fileiras.
+           *
+           * Não é uma regra global de `.items-end`: o overlay dos modais e o
+           * ReactionDock dependem do comportamento de baixo, e sobrescrever
+           * aquilo quebraria o bottom-sheet no celular.
+           *
+           * `gap-0.5` no lugar de `gap-1`: são quatro ícones numa fileira de
+           * 32px, e 4px de respiro entre eles deixava a fileira solta.
+           *
+           * No celular o respiro externo também aperta (`px-1.5 py-1.5`) e os
+           * quatro botões vão para 40px com `dense`. A conta fechava assim: a
+           * 390px, os quatro alvos de 44px comiam 176px e o campo ficava com
+           * 164px — 22 caracteres visíveis, e o placeholder "Mandar mensagem" já
+           * não cabia inteiro. O que resolve de vez é o auto-crescimento do
+           * campo, logo abaixo; isto é só para dar mais largura de entrada.
+           */}
+          <div className="flex items-center gap-0.5 rounded-xl border border-hairline bg-raised px-1.5 py-1.5 transition-colors duration-150 focus-within:border-accent/60 sm:px-2 sm:py-2">
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => pickImage(e.target.files?.[0])}
+            />
+            <IconButton dense label="Enviar imagem" onClick={() => fileRef.current?.click()} disabled={sendingImage}>
+              <ImageIcon size={17} />
+            </IconButton>
 
-          <textarea
-            ref={draftRef}
-            rows={1}
-            value={draft}
-            onChange={(e) => signalTyping(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            placeholder="Mandar mensagem"
-            maxLength={600}
-            /*
-             * `focus-visible:shadow-none` cancela o anel roxo que o
-             * `:focus-visible` global desenha em todo campo do app. Aqui ele
-             * ficaria *dentro* da barra, que já acende a borda no
-             * `focus-within` — dois indicadores de foco aninhados, com raios
-             * de canto diferentes. A borda da barra continua sendo o
-             * indicador, então a acessibilidade não perde nada.
-             */
-            className="scroll-thin max-h-28 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
-          />
-          <IconButton dense label="Enviar mensagem" onClick={send} disabled={!draft.trim()}>
-            <PaperPlaneRight size={17} weight="fill" />
-          </IconButton>
+            <IconButton
+              dense
+              label="Enviar GIF"
+              active={gifOpen}
+              onClick={() => {
+                setEmojiOpen(false);
+                setGifOpen((v) => !v);
+              }}
+            >
+              <Sticker size={17} />
+            </IconButton>
+
+            <IconButton
+              ref={emojiAnchorRef}
+              dense
+              label={emojiOpen ? 'Fechar emojis' : 'Inserir emoji'}
+              active={emojiOpen}
+              onClick={() => {
+                setGifOpen(false);
+                setEmojiOpen((v) => !v);
+              }}
+            >
+              <Smiley size={17} />
+            </IconButton>
+
+            <textarea
+              ref={draftRef}
+              rows={1}
+              value={draft}
+              onChange={(e) => signalTyping(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder="Mandar mensagem"
+              maxLength={600}
+              /*
+               * `focus-visible:shadow-none` cancela o anel roxo que o
+               * `:focus-visible` global desenha em todo campo do app. Aqui ele
+               * ficaria *dentro* da barra, que já acende a borda no
+               * `focus-within` — dois indicadores de foco aninhados, com raios
+               * de canto diferentes. A borda da barra continua sendo o
+               * indicador, então a acessibilidade não perde nada.
+               */
+              className="scroll-thin max-h-28 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
+            />
+            <IconButton dense label="Enviar mensagem" onClick={send} disabled={!draft.trim()}>
+              <PaperPlaneRight size={17} weight="fill" />
+            </IconButton>
+          </div>
         </div>
       </div>
     </div>
