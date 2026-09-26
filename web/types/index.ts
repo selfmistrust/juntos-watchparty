@@ -140,4 +140,9 @@ export interface PlayerHandle {
   setVolume: (value: number) => void;
   setMuted: (muted: boolean) => void;
   setPlaybackRate: (rate: number) => void;
+  /**
+   * Esconde a barra de controles nativa, quando o player tem uma. Só o player
+   * do YouTube tem; o de arquivo não implementa e a UI trata a ausência.
+   */
+  hideNativeControls?: () => void;
 }

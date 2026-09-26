@@ -15,6 +15,15 @@ const HARD_SYNC_THRESHOLD = 1.5;
 /** Abaixo disto a diferença é imperceptível; entre os dois, ajustamos a velocidade. */
 const SOFT_SYNC_THRESHOLD = 0.35;
 const CONTROLS_TIMEOUT = 2800;
+/**
+ * Altura da barra de controles nativa do YouTube, no rodapé do vídeo.
+ *
+ * As duas barras não podem coexistir — as duas ocupam esta mesma faixa. Então
+ * elas se revezam, e este valor é o que faz o click-catcher de play/pause parar
+ * acima dela enquanto a barra nativa está no ar, para o botão de CC receber o
+ * clique.
+ */
+const NATIVE_BAR = 48;
 
 interface Props {
   state: RoomSnapshot | null;
@@ -58,6 +67,15 @@ export function VideoStage({
    * sobrevive à troca de faixa — quem ligou quer ler no próximo vídeo também.
    */
   const [captionsOn, setCaptionsOn] = useState(false);
+  /*
+   * As duas barras de controle se revezam. A nativa do YouTube só existe para
+   * dar acesso ao botão de CC — que é o único jeito de *desligar* legenda, já
+   * que a API não tem esse comando. Empilhá-las não funciona: as duas ocupam os
+   * mesmos 48px do rodapé, e a de cima chegava a cobrir 98% do vídeo num
+   * celular de 320px.
+   */
+  const [nativeControls, setNativeControls] = useState(false);
+  const isYoutube = currentItem?.kind === 'youtube';
 
   const { isFullscreen, rotate, toggle: toggleFullscreen } = useFullscreenLandscape({ targetRef: stageRef });
 
@@ -229,6 +247,26 @@ export function VideoStage({
   const handleReaction = useCallback((emoji: ReactionEmoji) => actions.sendReaction(emoji), [actions]);
   const handleSound = useCallback((soundId: SoundId) => actions.sendSound(soundId), [actions]);
 
+  /**
+   * Entrega os controles ao YouTube, ou os traz de volta.
+   *
+   * Ao voltar para a nossa barra, esconde a nativa na hora: o `YT.Player`
+   * reconstrói a UI a cada comando nosso, e sem isso a barra do YouTube
+   * reapareceria por cima assim que a correção de deriva fizesse o próximo
+   * `seek`.
+   */
+  const toggleNativeControls = useCallback(() => {
+    setNativeControls((prev) => {
+      if (prev) playerRef.current?.hideNativeControls?.();
+      return !prev;
+    });
+  }, []);
+
+  // A nativa é do player do YouTube: trocar de item tem que devolver a nossa.
+  useEffect(() => {
+    setNativeControls(false);
+  }, [currentItem?.id]);
+
   /** Atalhos de teclado clássicos de player. */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -284,13 +322,24 @@ export function VideoStage({
         <EmptyStage />
       )}
 
-      {/* Clique no meio da tela para dar play/pause, como em qualquer player. */}
+      {/*
+        * Clique na imagem para dar play/pause, como em qualquer player.
+        *
+        * Com a barra nativa no ar, a faixa de baixo fica de fora: é onde ela
+        * fica, e o botão de CC mora nela. Se este click-catcher cobrisse até o
+        * rodapé, o botão de CC nunca receberia o clique — que é justamente o
+        * motivo de a barra nativa existir.
+        */}
       {currentItem && (
         <button
           aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
           onClick={togglePlay}
           disabled={!canControl}
-          className="absolute inset-0 z-10 cursor-default disabled:cursor-not-allowed"
+          className="absolute inset-x-0 top-0 z-10 cursor-default disabled:cursor-not-allowed"
+          /* Sempre com `bottom`: sem ele o elemento colapsa para altura zero,
+             já que o `top-0` está fixo. Só o valor muda — 0 no normal, a altura
+             da barra nativa quando ela está no ar. */
+          style={{ bottom: nativeControls ? NATIVE_BAR : 0 }}
         />
       )}
 
@@ -318,7 +367,22 @@ export function VideoStage({
         />
       )}
 
-      {currentItem && (
+      {/*
+        * Com a barra nativa no ar, a nossa dá lugar. E, no canto, um botão
+        * pequeno traz a nossa de volta — sem ele não haveria caminho para
+        * partir dos controles do YouTube.
+        */}
+      {currentItem && nativeControls && (
+        <button
+          type="button"
+          onClick={toggleNativeControls}
+          className="animate-fade-up absolute bottom-3 right-3 z-20 rounded-lg bg-black/70 px-2.5 py-1.5 text-2xs text-white/80 backdrop-blur-sm transition-colors duration-150 hover:bg-black/85 hover:text-white"
+        >
+          Voltar aos controles juntos
+        </button>
+      )}
+
+      {currentItem && !nativeControls && (
         <PlayerControls
           visible={controlsVisible || !isPlaying}
           isPlaying={isPlaying}
@@ -337,6 +401,7 @@ export function VideoStage({
           onVolume={handleVolume}
           onToggleMute={toggleMute}
           onToggleCaptions={toggleCaptions}
+          onHandOverToNative={isYoutube ? toggleNativeControls : undefined}
           onToggleFullscreen={toggleFullscreen}
           onToggleSidebar={onToggleSidebar}
         />

@@ -5,6 +5,7 @@ import {
   Pause,
   Play,
   SkipForward,
+  GearSix,
   SpeakerHigh,
   SpeakerSimpleX,
   SidebarSimple,
@@ -31,6 +32,12 @@ interface Props {
    * sem o `PlayerControls` precisar saber de onde vem o vídeo.
    */
   captionsOn?: boolean;
+  /**
+   * Só existe no player do YouTube. Passar os controles para o YouTube é a
+   * única forma de alcançar o botão de CC nativo, que é o único jeito de
+   * *desligar* legenda (a API não tem esse comando).
+   */
+  onHandOverToNative?: () => void;
   onTogglePlay: () => void;
   onSeek: (seconds: number) => void;
   onNext: () => void;
@@ -53,6 +60,7 @@ export function PlayerControls({
   isFullscreen,
   sidebarOpen,
   captionsOn,
+  onHandOverToNative,
   onTogglePlay,
   onSeek,
   onNext,
@@ -72,7 +80,14 @@ export function PlayerControls({
   return (
     <div
       className={clsx(
-        'absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-3 pt-10 transition-opacity duration-300 ease-out sm:px-5 sm:pb-4',
+        /*
+         * O `pt` é o fade do gradiente, e ele é o que mais come o vídeo nas
+         * telas pequenas: num palco de 167px de altura, 40px de fade são um
+         * quarto da imagem. Por isso ele cai para 20px no celular e volta a 40px
+         * a partir de `sm`, onde o palco é grande o bastante para o fade
+         * readability-count. O `pb` acompanha a mesma ideia, menor.
+         */
+        'absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pb-2 pt-5 transition-opacity duration-300 ease-out sm:px-5 sm:pb-4 sm:pt-10',
         visible ? 'opacity-100' : 'pointer-events-none opacity-0',
       )}
     >
@@ -178,6 +193,20 @@ export function PlayerControls({
             ter `shrink-0`, ele não é comprimido quando a linha aperta: em vez
             de sumir, os botões da esquerda é que descem na quebra. */}
         <div className="ml-auto flex shrink-0 items-center gap-1">
+          {/*
+            * Entrega os controles ao YouTube e some. As duas barras não podem
+            * coexistir: as duas ocupam os mesmos ~48px do rodapé, e empilhar
+            * uma sobre a outra cobria até 98% do vídeo num celular de 320px.
+            * Então elas se revezam, e este botão é a chave da vez.
+            *
+            * Só existe quando o item é do YouTube, que é onde a barra nativa
+            * existe. Sem ele, não há como chegar ao botão de CC.
+            */}
+          {onHandOverToNative && (
+            <IconButton label="Usar os controles do YouTube" onClick={onHandOverToNative}>
+              <GearSix size={18} />
+            </IconButton>
+          )}
           <IconButton
             label={sidebarOpen ? 'Ocultar painel lateral' : 'Mostrar painel lateral'}
             onClick={onToggleSidebar}
