@@ -1,8 +1,15 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import { CHAT_REACTION_EMOJIS, type ChatReactionEmoji } from '@/types';
 import { Portal } from '@/components/ui/Portal';
+
+/**
+ * `useLayoutEffect` roda antes da pintura, então o picker já aparece no lugar
+ * certo no primeiro frame. Cai para `useEffect` no servidor, onde o primeiro
+ * geraria aviso de SSR.
+ */
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
 interface ReactionData {
   emoji: string;
@@ -37,7 +44,15 @@ export function ReactionPicker({
   anchorRef,
 }: Props) {
   const [showFull, setShowFull] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  /**
+   * O nó do container em `state`, e não em `useRef`, de propósito: o `Portal`
+   * resolve o alvo num `useLayoutEffect` e só então monta os filhos, ou seja,
+   * o div chega ao DOM um render depois de `isOpen` virar `true`. Com um ref
+   * comum o efeito de posicionamento rodaria antes do elemento existir e,
+   * como as dependências não mudariam, ele nunca mais rodaria — o picker
+   * ficaria no canto da tela até o próximo scroll.
+   */
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
 
   // Fecha o estado expandido caso o picker feche
   useEffect(() => {
@@ -52,10 +67,7 @@ export function ReactionPicker({
 
     function handleClickOutside(event: MouseEvent) {
       const target = event.target as Node;
-      if (
-        containerRef.current?.contains(target) ||
-        anchorRef.current?.contains(target)
-      ) {
+      if (container?.contains(target) || anchorRef.current?.contains(target)) {
         return;
       }
       onClose();
@@ -63,12 +75,11 @@ export function ReactionPicker({
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isOpen, onClose, anchorRef]);
+  }, [isOpen, onClose, anchorRef, container]);
 
   // Recálculo dinâmico da posição em relação à âncora
   const updatePosition = useCallback(() => {
     const anchor = anchorRef.current;
-    const container = containerRef.current;
     if (!anchor || !container) return;
 
     const rect = anchor.getBoundingClientRect();
@@ -99,10 +110,10 @@ export function ReactionPicker({
 
     container.style.top = `${top}px`;
     container.style.left = `${left}px`;
-  }, [anchorRef]);
+  }, [anchorRef, container]);
 
   // Atualiza posição no scroll, resize e quando abre/expande
-  useEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (!isOpen) return;
 
     updatePosition();
@@ -123,7 +134,7 @@ export function ReactionPicker({
   return (
     <Portal>
       <div
-        ref={containerRef}
+        ref={setContainer}
         className="fixed z-50 transition-opacity duration-150 opacity-100"
         role="menu"
         aria-label="Reações"

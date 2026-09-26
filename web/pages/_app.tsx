@@ -22,7 +22,7 @@ export default function App({ Component, pageProps }: AppProps) {
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <meta
           name="description"
-          content="Salas de watchparty com vídeo sincronizado, chat em tempo real e fila colaborativa."
+          content="Salas de watchparty com video sincronizado, chat em tempo real e fila colaborativa."
         />
         <meta name="theme-color" content="#08080A" />
 
@@ -37,6 +37,11 @@ export default function App({ Component, pageProps }: AppProps) {
         <YoutubeAccountProvider>
           <Component {...pageProps} />
         </YoutubeAccountProvider>
+        {/* Alvo dos portais (pickers, dropdowns). Fica dentro deste wrapper de
+            propósito: é daqui que o conteúdo teleportado herda a tipografia do
+            design system. Se for movido para o <body>, tudo que passar pelo
+            `Portal` volta a ser renderizado na serifada padrão. */}
+        <div id="portal-root" />
       </div>
     </>
   );
