@@ -108,10 +108,17 @@ export function PeoplePanel({
                 <button
                   type="button"
                   onClick={startEditingName}
-                  className="group flex min-w-0 items-center gap-1.5 text-left"
+                  title="Mudar nome"
+                  className="group flex min-w-0 items-center gap-1.5 rounded-md text-left transition-colors duration-150 hover:text-ink"
                 >
                   <span className="truncate text-sm text-ink">{me.name}</span>
-                  <PencilSimpleLineIcon size={12} className="shrink-0 text-ink-faint opacity-0 transition-opacity duration-150 group-hover:opacity-100" />
+                  {/* Sempre visível: o botão só aparecia no `group-hover`, e
+                      toque não tem hover — no celular o lápis ficava invisível
+                      e não havia nenhuma pista de que o nome era editável. */}
+                  <PencilSimpleLineIcon
+                    size={12}
+                    className="shrink-0 text-ink-faint transition-colors duration-150 group-hover:text-ink"
+                  />
                 </button>
               )}
               <div className="flex flex-wrap gap-1.5">
