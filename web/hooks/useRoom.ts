@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { getSocket } from '@/lib/socket';
+import { getUserId } from '@/lib/identity';
 import { playSound } from '@/lib/sfx';
 import type {
   ChatMessage,
@@ -38,7 +39,7 @@ export interface RoomActions {
   reorderPlaylist: (from: number, to: number) => void;
   selectTrack: (index: number) => void;
   setOpenControl: (open: boolean) => void;
-  sendMessage: (text: string) => void;
+  sendMessage: (payload: { kind?: 'text' | 'gif' | 'image'; text?: string; mediaUrl?: string; parentMessageId?: string }) => void;
   sendGif: (gif: GifResult) => void;
   sendImage: (dataUrl: string) => void;
   setTyping: (isTyping: boolean) => void;
@@ -47,8 +48,8 @@ export interface RoomActions {
   setColor: (color: string) => void;
   setAvatar: (avatar: { seed?: string; url?: string }) => void;
   setName: (name: string) => void;
-  /** Reagir a uma mensagem do chat. */
-  react: (messageId: string, emoji: string) => void;
+  /** Reage a uma mensagem do chat, ou desfaz a reação se o usuário já reagiu. */
+  toggleReaction: (messageId: string, emoji: string) => void;
   /** Responder a uma mensagem do chat. */
   reply: (message: ChatMessage) => void;
   /** Cancelar resposta em andamento. */
@@ -92,6 +93,31 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
   const avatarRef = useRef({ avatarSeed, avatarUrl });
   /** serverTime - clientTime, já descontada metade do round-trip. */
   const clockOffset = useRef(0);
+  /**
+   * Espelhos de `feed` e `me.userId` usados por `toggleReaction`, que
+   * precisa decidir entre `chat:reaction:add` e `chat:reaction:remove` no
+   * instante do clique. O `actions` abaixo é memoizado com `[emit]`, então
+   * não pode depender do `feed` diretamente sem recriar todas as ações a cada
+   * mensagem nova. A leitura é sempre a do último render, o que basta — o
+   * clique acontece depois que a tela atualizou.
+   */
+  const feedRef = useRef<FeedEntry[]>([]);
+  const userIdRef = useRef('');
+  /**
+   * O histórico chega no `room:welcome`/`room:state` (últimas 100 mensagens),
+   * mas o `feed` só crescia com eventos ao vivo. Sem semear uma única vez, cada
+   * recarregamento da página abria o chat vazio — e junto sumiam as reações já
+   * dadas nas mensagens antigas, que só existem guardadas no snapshot.
+   */
+  const seededFromSnapshot = useRef(false);
+
+  useEffect(() => {
+    feedRef.current = feed;
+  }, [feed]);
+
+  useEffect(() => {
+    userIdRef.current = me?.userId ?? '';
+  }, [me]);
 
   /**
    * Sem isto, o `useRef` acima só congela o avatar que existia no primeiro
@@ -112,6 +138,8 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
     if (!enabled || !roomId) return;
     const socket = getSocket();
     socketRef.current = socket;
+    // Trocar de sala precisa relemer o histórico: o guard abaixo é por sessão.
+    seededFromSnapshot.current = false;
 
     const pushFeed = (entry: FeedEntry) =>
       setFeed((prev) => [...prev, entry].slice(-MAX_FEED));
@@ -122,6 +150,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
         roomId,
         name,
         password: passwordRef.current || undefined,
+        userId: getUserId(),
         avatarSeed: avatarRef.current.avatarSeed,
         avatarUrl: avatarRef.current.avatarUrl,
       });
@@ -149,35 +178,36 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
 
     // Handlers para reações e respostas no chat
     const onReactionAdd = ({ messageId, emoji, userId }: { messageId: string; emoji: string; userId: string }): void => {
-      setFeed((prev: FeedEntry[]) => {
-        return prev.map((entry: FeedEntry): FeedEntry => {
-          if (entry.type === 'message' && entry.id === messageId) {
-            const reactions = { ...entry.reactions };
-            if (!reactions[emoji]) reactions[emoji] = { count: 0, users: [] };
-            reactions[emoji].count += 1;
-            reactions[emoji].users.push(userId);
-            return { ...entry, reactions };
-          }
-          return entry;
-        });
-      });
+      setFeed((prev: FeedEntry[]) =>
+        prev.map((entry: FeedEntry): FeedEntry => {
+          if (entry.type !== 'message' || entry.id !== messageId) return entry;
+          const current = entry.reactions?.[emoji];
+          // O servidor já ignora o segundo like da mesma pessoa, mas o mesmo
+          // evento pode chegar duas vezes (reconexão, snapshot + broadcast).
+          // Contar de novo deixaria o número e a lista de usuários divergentes.
+          if (current?.users.includes(userId)) return entry;
+          const users = current ? [...current.users, userId] : [userId];
+          return {
+            ...entry,
+            reactions: { ...entry.reactions, [emoji]: { count: users.length, users } },
+          };
+        })
+      );
     };
 
     const onReactionRemove = ({ messageId, emoji, userId }: { messageId: string; emoji: string; userId: string }): void => {
-      setFeed((prev: FeedEntry[]) => {
-        return prev.map((entry: FeedEntry) => {
-          if (entry.type === 'message' && entry.id === messageId) {
-            const reactions = { ...entry.reactions };
-            if (reactions[emoji]) {
-              reactions[emoji].count -= 1;
-              reactions[emoji].users = reactions[emoji].users.filter((u) => u !== userId);
-              if (reactions[emoji].count <= 0) delete reactions[emoji];
-            }
-            return { ...entry, reactions };
-          }
-          return entry;
-        });
-      });
+      setFeed((prev: FeedEntry[]) =>
+        prev.map((entry: FeedEntry): FeedEntry => {
+          if (entry.type !== 'message' || entry.id !== messageId) return entry;
+          const current = entry.reactions?.[emoji];
+          if (!current) return entry;
+          const users = current.users.filter((u) => u !== userId);
+          const reactions = { ...entry.reactions };
+          if (users.length === 0) delete reactions[emoji];
+          else reactions[emoji] = { count: users.length, users };
+          return { ...entry, reactions };
+        })
+      );
     };
 
     const onDenied = (message: string) => setNotice(message);
@@ -241,6 +271,18 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, roomId, name]);
 
+  /**
+   * Semelha o histórico do snapshot no feed — uma única vez por sessão, para
+   * não duplicar as mensagens a cada `room:state` emitido durante a sessão.
+   */
+  useEffect(() => {
+    if (!state || seededFromSnapshot.current) return;
+    seededFromSnapshot.current = true;
+    const history = state.messages ?? [];
+    if (history.length === 0) return;
+    setFeed(history.map((m) => ({ type: 'message', ...m })));
+  }, [state]);
+
   /** Mantém `me` em dia quando o próprio usuário muda nome/cor/avatar (o broadcast chega em `state`). */
   useEffect(() => {
     if (!me || !state) return;
@@ -275,7 +317,7 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
   const retryPassword = useCallback(
     (password: string) => {
       passwordRef.current = password;
-      socketRef.current?.emit('room:join', { roomId, name, password: password || undefined });
+      socketRef.current?.emit('room:join', { roomId, name, userId: getUserId(), password: password || undefined });
     },
     [roomId, name],
   );
@@ -291,7 +333,10 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
       reorderPlaylist: (from, to) => emit('playlist:reorder', { from, to }),
       selectTrack: (index) => emit('playlist:select', index),
       setOpenControl: (open) => emit('room:setOpenControl', open),
-      sendMessage: (text) => emit('chat:message', { kind: 'text', text }),
+      sendMessage: (payload: { kind?: 'text' | 'gif' | 'image'; text?: string; mediaUrl?: string; parentMessageId?: string }) => {
+        emit('chat:message', payload);
+        if (payload.parentMessageId) setReplyingTo(null);
+      },
       sendGif: (gif) => emit('chat:message', { kind: 'gif', mediaUrl: gif.url, text: gif.title }),
       sendImage: (dataUrl) => emit('chat:message', { kind: 'image', mediaUrl: dataUrl }),
       setTyping: (isTyping) => emit('chat:typing', isTyping),
@@ -303,7 +348,14 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl }: UseRoo
       setColor: (color) => emit('user:setColor', color),
       setAvatar: (avatar) => emit('user:setAvatar', avatar),
       setName: (newName) => emit('user:setName', newName),
-      react: (messageId, emoji) => emit('chat:reaction:add', { messageId, emoji }),
+      toggleReaction: (messageId, emoji) => {
+        const entry = feedRef.current.find(
+          (e): e is FeedEntry & { type: 'message' } => e.type === 'message' && e.id === messageId
+        );
+        const mine = entry?.reactions?.[emoji]?.users.includes(userIdRef.current) ?? false;
+        emit(mine ? 'chat:reaction:remove' : 'chat:reaction:add', { messageId, emoji });
+      },
+
       reply: (message) => setReplyingTo(message),
       cancelReply: () => setReplyingTo(null),
       requestUploadToken: (payload) =>

@@ -3,6 +3,7 @@ node_modules/
 dist/
 .next/
 out/
+*.tsbuildinfo
 
 # Configurações sensíveis e uploads locais
 .env

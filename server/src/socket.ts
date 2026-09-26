@@ -120,7 +120,16 @@ export function registerSocketHandlers(io: Server) {
         roomId = rid;
         socket.join(rid);
         const sessionId = socket.id;
-        const user = addUser(room, sessionId, userId, name, {
+        // O `userId` é a identidade estável da pessoa. Se um cliente antigo (ou
+        // adulterado) entrar sem ele, gerar um local: sem isso o `undefined`
+        // batia com o `undefined` de todo mundo na hora de casar reconexões, e
+        // a segunda pessoa a entrar na sala acabava ocupando o lugar da
+        // primeira — inclusive sites, reações e host.
+        const stableUserId =
+          typeof userId === 'string' && userId.length > 0 && userId.length <= 64
+            ? userId
+            : newId();
+        const user = addUser(room, sessionId, stableUserId, name, {
           seed: avatarSeed,
           url: avatarUrl ? sanitizeImageDataUrl(avatarUrl) ?? undefined : undefined,
         }, color);
@@ -410,11 +419,10 @@ export function registerSocketHandlers(io: Server) {
         const clean = sanitizeMessage(raw.text ?? '');
         if (!clean) return;
         text = clean;
-        // Verifica se há parentMessageId no payload (para respostas)
-        if (typeof payload === 'object' && payload.parentMessageId) {
-          parentMessageId = payload.parentMessageId;
-          // Busca a mensagem original para preview
-          const parentMsg = Object.values(room.users).flatMap(() => []); // placeholder - we'll look in a messages store
+        // Guarda o id da mensagem respondida; o preview é montado abaixo,
+        // depois que a lista de mensagens da sala já está carregada.
+        if (typeof payload === 'object' && payload?.parentMessageId) {
+          parentMessageId = String(payload.parentMessageId);
         }
       } else if (kind === 'gif') {
         const url = sanitizeGifUrl(raw.mediaUrl);
@@ -468,12 +476,15 @@ export function registerSocketHandlers(io: Server) {
     });
 
     // Reação a mensagem
-    socket.on('chat:reaction:add', async ({ messageId, emoji }: { messageId: string; emoji: string }) => {
+    socket.on('chat:reaction:add', async (payload: unknown) => {
+      const { messageId, emoji } = (payload ?? {}) as { messageId?: unknown; emoji?: unknown };
+      if (typeof messageId !== 'string' || !messageId) return;
+      if (typeof emoji !== 'string' || !CHAT_REACTION_EMOJIS.includes(emoji as any)) return;
+
       const room = await currentRoom();
       const user = room?.users[socket.id];
       if (!room || !user) return;
 
-      if (!CHAT_REACTION_EMOJIS.includes(emoji as any)) return;
       if (isReactionRateLimited(socket.id)) return;
 
       if (!room.messages) return;
@@ -482,32 +493,41 @@ export function registerSocketHandlers(io: Server) {
 
       if (!msg.reactions) msg.reactions = {};
       if (!msg.reactions[emoji]) msg.reactions[emoji] = { count: 0, users: [] };
-      if (msg.reactions[emoji].users.includes(user.sessionId)) return; // Já reagiu
+      // Guarda o `userId` persistente, não o `sessionId`: se fosse o id do
+      // socket, um F5 trocaria a identidade e a pessoa perderia o destaque da
+      // própria reação (e poderia reagir de novo sem querer).
+      if (msg.reactions[emoji].users.includes(user.userId)) return; // Já reagiu
 
       msg.reactions[emoji].count += 1;
-      msg.reactions[emoji].users.push(user.sessionId);
+      msg.reactions[emoji].users.push(user.userId);
 
       await persistRoom(room);
-      io.to(room.id).emit('chat:reaction:add', { messageId, emoji, userId: user.sessionId });
+      io.to(room.id).emit('chat:reaction:add', { messageId, emoji, userId: user.userId });
     });
 
     // Remover reação
-    socket.on('chat:reaction:remove', async ({ messageId, emoji }: { messageId: string; emoji: string }) => {
+    socket.on('chat:reaction:remove', async (payload: unknown) => {
+      const { messageId, emoji } = (payload ?? {}) as { messageId?: unknown; emoji?: unknown };
+      if (typeof messageId !== 'string' || !messageId) return;
+      if (typeof emoji !== 'string' || !CHAT_REACTION_EMOJIS.includes(emoji as any)) return;
+
       const room = await currentRoom();
       const user = room?.users[socket.id];
       if (!room || !user) return;
 
+      if (isReactionRateLimited(socket.id)) return;
+
       if (!room.messages) return;
       const msg = room.messages.find((m: any) => m.id === messageId);
       if (!msg || !msg.reactions?.[emoji]) return;
-      if (!msg.reactions[emoji].users.includes(user.sessionId)) return; // Não reagiu
+      if (!msg.reactions[emoji].users.includes(user.userId)) return; // Não reagiu
 
       msg.reactions[emoji].count -= 1;
-      msg.reactions[emoji].users = msg.reactions[emoji].users.filter((u: string) => u !== user.sessionId);
+      msg.reactions[emoji].users = msg.reactions[emoji].users.filter((u: string) => u !== user.userId);
       if (msg.reactions[emoji].count === 0) delete msg.reactions[emoji];
 
       await persistRoom(room);
-      io.to(room.id).emit('chat:reaction:remove', { messageId, emoji, userId: user.sessionId });
+      io.to(room.id).emit('chat:reaction:remove', { messageId, emoji, userId: user.userId });
     });
 
     socket.on('chat:typing', async (isTyping: boolean) => {

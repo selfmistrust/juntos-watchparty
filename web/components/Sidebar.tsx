@@ -92,7 +92,7 @@ export function Sidebar({
             onTyping={actions.setTyping}
             onSendGif={actions.sendGif}
             onSendImage={actions.sendImage}
-            onReact={actions.react}
+            onToggleReaction={actions.toggleReaction}
             onReply={actions.reply}
             onCancelReply={actions.cancelReply}
             replyingTo={replyingTo ?? null}
