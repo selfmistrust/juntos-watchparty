@@ -1,10 +1,10 @@
 'use client';
 
-import { YoutubeLogo } from '@phosphor-icons/react';
 import { useMemo } from 'react';
 import { useYouTubeAccount } from '@/hooks/useYouTubeAccount';
 import type { MediaSourceProvider, MediaSourceState } from './types';
 import { READY, checking } from './types';
+import { youtubeProvider } from './youtube';
 import { useYoutubePanel } from '@/components/media/useYoutubePanel';
 
 /**
@@ -28,13 +28,14 @@ export function useYoutubeSource(): {
   // O provider é memoizado: sem isso ele mudaria de identidade a cada render,
   // e o modal — que depende da lista de fontes — reconsultaria o estado
   // indefinidamente, deixando os cards presos em "carregando".
+  //
+  // Espalha `youtubeProvider` em vez de repetir id/nome/descrição/ícone/cor
+  // aqui: a versão daqui é a mesma fonte, só com o `resolveState` e o `start`
+  // que dependem da conta conectada e do painel. Duplicar os campos fixos
+  // fazia o ícone do YouTube ter duas definições para divergirem.
   const provider = useMemo<MediaSourceProvider>(
     () => ({
-      id: 'youtube',
-      name: 'YouTube',
-      description: 'Busque um vídeo ou cole um link do YouTube.',
-      icon: <YoutubeLogo size={22} weight="fill" />,
-      accent: 'text-live',
+      ...youtubeProvider,
       // Sem conta, a busca não roda, mas colar link continua funcionando, então
       // a fonte nunca fica realmente indisponível — só demora um instante.
       resolveState: async (): Promise<MediaSourceState> => (loading ? checking() : READY),
