@@ -16,6 +16,7 @@ export type {
   MediaSourceProvider,
   MediaSourceState,
   MediaSourceContext,
+  MediaSourceAccount,
   DraftMediaItem,
 } from './types';
 export { READY, unavailable, checking } from './types';

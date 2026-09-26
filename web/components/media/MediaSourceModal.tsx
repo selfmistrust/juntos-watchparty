@@ -1,6 +1,7 @@
 'use client';
 
 import clsx from 'clsx';
+import { CheckCircle } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Portal } from '@/components/ui/Portal';
 import { useYoutubeSource } from '@/lib/mediaSources/useYoutubeSource';
@@ -131,12 +132,17 @@ export function MediaSourceModal({
   // Só a abertura dispara a consulta. `refresh` é lido pela ref porque muda de
   // identidade sempre que `sources` muda, e depender dele aqui reiniciaria a
   // consulta a cada render, deixando os cards presos em loading.
+  //
+  // `sources` também é dependência: conectar ou desconectar troca a identidade
+  // do provider enquanto o modal está aberto, e sem isso o card ficaria
+  // mostrando o status velho. Não entra em loop porque `sources` é memoizado e
+  // só muda de identidade quando a conta muda de verdade.
   refreshRef.current = refresh;
   useEffect(() => {
     if (!open) return;
     setStates({});
     void refreshRef.current?.();
-  }, [open]);
+  }, [open, sources]);
 
   // Guarda de onde o foco veio e devolve ao fechar — o modal é aberto por
   // botão, então sem isso o foco cai no body e o teclado perde o caminho.
@@ -297,11 +303,18 @@ function SourceCard({
         aria-busy={ocupado || undefined}
         aria-describedby={state.error ? `${source.id}-erro` : undefined}
         className={clsx(
-          'flex h-full w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors duration-150',
+          'flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors duration-150',
+          // `h-full` só sem a linha de conta: com ela, o `100%` passing a
+          // incluir a linha de baixo e o botão esticaria por cima dela. A
+          // uniformidade entre cards vem do `stretch` do grid no wrapper.
+          !source.account && 'h-full',
           bloqueado
             ? 'cursor-not-allowed border-hairline bg-raised/40 opacity-60'
             : 'border-hairline bg-raised hover:border-accent/50 hover:bg-hover',
           state.error && 'border-live/50',
+          // Com conta embaixo, o card precisa da borda: os dois blocos ficam
+          // parted pelo `overflow-hidden` do wrapper abaixo.
+          source.account && 'rounded-b-none border-b-0',
         )}
       >
         <span
@@ -352,6 +365,14 @@ function SourceCard({
         </span>
       </button>
 
+      {/*
+        * A conta é gerenciada aqui e em mais lugar nenhum do app. Ela fica
+        * *fora* do `<button>` de cima porque botão dentro de botão é HTML
+        * inválido, e o botão de conectar precisa ser clicável por conta
+        * própria.
+        */}
+      {source.account && <AccountRow account={source.account} />}
+
       {state.error && (
         <p
           id={`${source.id}-erro`}
@@ -359,6 +380,83 @@ function SourceCard({
         >
           {state.error}
         </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Status da conta e os botões de conectar/desconectar de uma fonte.
+ *
+ * Não sabe nada da integração: lê o que o provider declarou em `account`. Uma
+ * fonte nova que exija login aparece aqui sem nenhuma linha nova neste arquivo.
+ */
+function AccountRow({ account }: { account: NonNullable<MediaSourceProvider['account']> }) {
+  const [trocando, setTrocando] = useState(false);
+
+  const ocupado = Boolean(account.busy) || trocando;
+
+  return (
+    <div
+      className={clsx(
+        'rounded-b-xl border border-t-0 px-3 py-2',
+        account.connected ? 'border-hairline bg-raised' : 'border-hairline bg-raised/60',
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          {account.connected ? (
+            <>
+              <CheckCircle weight="fill" size={13} className="shrink-0 text-live" />
+              <span className="min-w-0 truncate text-2xs text-ink-muted">
+                {account.detail || 'Conta conectada'}
+              </span>
+            </>
+          ) : (
+            /*
+             * Este texto quebra em duas linhas em vez de ser cortado: o card é
+             * meia largura no desktop, e "Nenhuma conta conectada" não cabe ao
+             * lado do botão. Cortar mostrava "Nenhuma conta conect…", que é
+             * pior que quebrar — o nome do canal, quando existe, é curto e
+             * continua em uma linha só.
+             */
+            <span className="min-w-0 text-2xs leading-snug text-ink-faint">
+              {account.configured
+                ? 'Nenhuma conta conectada'
+                : 'Integração não configurada no servidor'}
+            </span>
+          )}
+        </span>
+
+        {account.connected ? (
+          <button
+            type="button"
+            onClick={() => {
+              setTrocando(true);
+              void account.disconnect().finally(() => setTrocando(false));
+            }}
+            disabled={ocupado}
+            className="shrink-0 rounded-md border border-hairline px-2 py-1 text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-9 [@media(pointer:coarse)]:px-3"
+          >
+            {ocupado ? 'Saindo…' : 'Trocar de conta'}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={account.connect}
+            disabled={!account.configured || account.busy}
+            className="shrink-0 rounded-md bg-accent px-2 py-1 text-2xs font-medium text-white transition-colors duration-150 hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-9 [@media(pointer:coarse)]:px-3"
+          >
+            {account.busy ? 'Conectando…' : 'Conectar'}
+          </button>
+        )}
+      </div>
+
+      {account.error && (
+        <p className="animate-fade-up mt-1 text-2xs leading-relaxed text-live/90">{account.error}</p>
+      )}
+      {account.message && !account.error && (
+        <p className="animate-fade-up mt-1 text-2xs leading-relaxed text-ink-faint">{account.message}</p>
       )}
     </div>
   );

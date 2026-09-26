@@ -46,6 +46,12 @@ export interface MediaSourceProvider {
   /** Cor de acento do card (fundo do ícone), quando a marca tiver uma. */
   accent?: string;
   /**
+   * A fonte exige login? Preenchendo isto, o card mostra o status da conta e
+   * os botões de conectar/desconectar. Ausente, a fonte não tem conta nenhuma e
+   * o card não mostra nada além do que já tinha.
+   */
+  account?: MediaSourceAccount;
+  /**
    * O que o provider precisa da sala.
    *
    * Só marque isto quando a fonte realmente não puder funcionar para quem não
@@ -79,6 +85,34 @@ export interface MediaSourceProvider {
    * progresso). O padrão é fechar.
    */
   start?: (context: MediaSourceContext) => Promise<void | 'keepOpen'>;
+}
+
+/**
+ * Conta externa de uma fonte que exige login.
+ *
+ * Isto é declarado pelo provider, e não desenhado pelo modal: uma integração
+ * nova que peça OAuth preenche `account` no provider e aparece no card com
+ * status e botões sem que nada seja escrito no modal. É o que mantém o modal
+ * como o único lugar do app onde se gerencia conta externa — a aba Pessoas não
+ * mostra nem o status nem os botões.
+ */
+export interface MediaSourceAccount {
+  /** A integração tem como conectar? Sem isso, nem faz sentido oferecer o botão. */
+  configured: boolean;
+  /** Tem conta vinculada agora. */
+  connected: boolean;
+  /** Quem está vinculado: canal, workspace, e-mail. */
+  detail?: string;
+  /** Conectando ou desconectando — desabilita o botão enquanto corre. */
+  busy?: boolean;
+  /** Mensagem de retorno do login (a pessoa voltou do OAuth). */
+  message?: string | null;
+  /** Falha ao conectar ou desconectar. */
+  error?: string | null;
+  /** Começa o login. Normalmente navega para o servidor. */
+  connect: () => void;
+  /** Desconecta. Trocar de conta é desconectar e conectar de novo. */
+  disconnect: () => Promise<void>;
 }
 
 export interface MediaSourceContext {

@@ -30,7 +30,7 @@ export function YoutubeSearchPanel({ open, onClose, context }: Props) {
   const [results, setResults] = useState<YoutubeResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { status, connect } = useYouTubeAccount();
+  const { status } = useYouTubeAccount();
 
   const submit = useCallback(async () => {
     const value = query.trim();
@@ -131,14 +131,20 @@ export function YoutubeSearchPanel({ open, onClose, context }: Props) {
             {error && <p className="animate-fade-up p-3 text-2xs leading-relaxed text-live/90">{error}</p>}
 
             {!podeBuscar && !error && (
+              /*
+               * Aqui não há botão de conectar, de propósito: o gerenciador de
+               * conta é o card da fonte no modal de Aplicações, um nível acima.
+               * Um segundo lugar para a mesma ação é exatamente o que o
+               * projeto parou de fazer — a mesma conta aparecia no perfil e na
+               * busca, e divergiam. Quem não tem conta ainda cola link direto
+               * no campo acima, que não depende de login.
+               */
               <div className="p-3">
                 <p className="text-2xs leading-relaxed text-ink-faint">
                   Sem uma conta conectada, a busca não roda. Você ainda pode colar um link do YouTube
-                  direto no campo acima.
+                  direto no campo acima — para a busca por termo, conecte a conta no card do YouTube,
+                  na lista de aplicações.
                 </p>
-                <Button size="sm" onClick={connect} className="mt-2.5">
-                  Conectar YouTube
-                </Button>
               </div>
             )}
 

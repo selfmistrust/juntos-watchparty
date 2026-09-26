@@ -2,7 +2,6 @@ import { CheckIcon, CrownIcon, DiscIcon, PencilSimpleLineIcon, ShuffleIcon, Uplo
 import { useRef, useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
 import { AvatarCropper } from '@/components/ui/AvatarCropper';
-import { YouTubeConnect } from '@/components/youtube/YouTubeConnect';
 import { randomAvatarSeed } from '@/lib/avatar';
 import type { RoomSnapshot, User } from '@/types';
 
@@ -175,8 +174,14 @@ export function PeoplePanel({
               }}
             />
           )}
-
-          <YouTubeConnect />
+          {/*
+            * O perfil é só identidade: nome, avatar, cor. Nenhuma conta externa
+            * aparece aqui — quem gerencia login de YouTube (e de qualquer outra
+            * integração que surgir) é o modal de Aplicações, no card da fonte.
+            * Foi decisão de arquitetura, não esquecimento: cada integração nova
+            * acrescentaria mais um bloco aqui, e a aba ia encolhendo no que
+            * importa, que é a lista de quem está na sala.
+            */}
         </div>
       )}
 
