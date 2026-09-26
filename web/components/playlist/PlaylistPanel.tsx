@@ -2,11 +2,12 @@ import { DotsSixVertical, MagnifyingGlass, Plus, Trash, WaveTriangle } from '@ph
 import clsx from 'clsx';
 import { useCallback, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
+import { MediaSourceModal } from '@/components/media/MediaSourceModal';
 import { VideoUploadField } from '@/components/playlist/VideoUploadField';
 import type { UploadTokenResult } from '@/hooks/useRoom';
 import { YouTubeConnect } from '@/components/youtube/YouTubeConnect';
 import { parseMediaUrl, youtubeThumb } from '@/lib/media';
-import { SERVER_URL } from '@/lib/socket';
+import { searchYoutube } from '@/lib/mediaSources';
 import type { PlaylistItem, YoutubeResult } from '@/types';
 
 interface Props {
@@ -39,12 +40,23 @@ export function PlaylistPanel({
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<YoutubeResult[]>([]);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [initialSourceId, setInitialSourceId] = useState<string | null>(null);
   const dragFrom = useRef<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
+
+  const abrirFontes = useCallback((id?: string) => {
+    setInitialSourceId(id ?? null);
+    setSourcesOpen(true);
+  }, []);
 
   /**
    * Um único campo resolve os dois casos: se o texto for uma URL reproduzível,
    * entra direto na fila; caso contrário, vira uma busca no YouTube.
+   *
+   * A lógica de rede foi para `lib/mediaSources/youtube`, agora compartilhada
+   * com o painel do modal — o comportamento daqui é o mesmo de antes, sem a
+   * duplicata que existiria se cada tela tivesse a sua cópia.
    */
   const submit = useCallback(async () => {
     const value = query.trim();
@@ -66,40 +78,11 @@ export function PlaylistPanel({
 
     setStatus({ kind: 'loading' });
     try {
-      const res = await fetch(`${SERVER_URL}/api/youtube/search?q=${encodeURIComponent(value)}`, {
-        credentials: 'include',
-      });
-      if (res.status === 501) {
-        setStatus({
-          kind: 'error',
-          message: 'A busca precisa de uma conta YouTube conectada ou de uma chave da API. Cole um link para adicionar mesmo assim.',
-        });
-        return;
-      }
-      if (res.status === 401) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        setStatus({
-          kind: 'error',
-          message:
-            body.error === 'youtube_reauth_required'
-              ? 'A autorização do YouTube expirou ou foi revogada. Conecte a conta de novo.'
-              : 'Conecte sua conta do YouTube para buscar, ou cole um link.',
-        });
-        return;
-      }
-      if (res.status === 403) {
-        setStatus({
-          kind: 'error',
-          message: 'O YouTube recusou esta busca. Tente outro termo ou cole um link.',
-        });
-        return;
-      }
-      if (!res.ok) throw new Error();
-      const data = (await res.json()) as { items: YoutubeResult[] };
-      setResults(data.items);
+      const data = await searchYoutube(value);
+      setResults(data);
       setStatus({ kind: 'idle' });
-    } catch {
-      setStatus({ kind: 'error', message: 'A busca não respondeu. Tente de novo ou cole um link.' });
+    } catch (e) {
+      setStatus({ kind: 'error', message: e instanceof Error ? e.message : 'A busca não respondeu. Tente de novo ou cole um link.' });
     }
   }, [onAdd, query]);
 
@@ -119,7 +102,29 @@ export function PlaylistPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <MediaSourceModal
+        open={sourcesOpen}
+        onClose={() => {
+          setSourcesOpen(false);
+          setInitialSourceId(null);
+        }}
+        canControl={canControl}
+        addToPlaylist={onAdd}
+        requestUploadToken={requestUploadToken}
+        initialSourceId={initialSourceId}
+      />
+
       <div className="border-b border-hairline p-3">
+        <Button
+          variant="outline"
+          onClick={() => abrirFontes()}
+          disabled={!canControl}
+          className="mb-2 h-9 w-full justify-center gap-2"
+        >
+          <Plus size={15} weight="bold" />
+          Adicionar de uma aplicação
+        </Button>
+
         <div className="flex items-center gap-2 rounded-xl border border-hairline bg-raised px-3 transition-colors duration-150 focus-within:border-accent/60">
           <MagnifyingGlass size={16} className="shrink-0 text-ink-faint" />
           <input
@@ -145,7 +150,16 @@ export function PlaylistPanel({
           <YouTubeConnect compact />
         </div>
 
-        <VideoUploadField canControl={canControl} onUploaded={onAdd} requestUploadToken={requestUploadToken} />
+        {/* Atalho direto do upload, sem passar pela escolha no modal. O modal
+            continua sendo a entrada única para escolher a aplicação; este
+            botão é o caminho de um clique para quem já sabe que quer enviar do
+            computador, e abre o modal já com o upload iniciado. */}
+        <VideoUploadField
+          canControl={canControl}
+          onUploaded={onAdd}
+          requestUploadToken={requestUploadToken}
+          onRequestOpenModal={() => abrirFontes('upload')}
+        />
       </div>
 
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">

@@ -12,6 +12,8 @@ interface Props {
     mimeType: string;
   }) => Promise<UploadTokenResult>;
   onUploaded: (item: Omit<PlaylistItem, 'id' | 'addedBy' | 'addedById'>) => void;
+  /** Pede que o modal de Aplicações abra já com o upload como fonte escolhida. */
+  onRequestOpenModal?: () => void;
 }
 
 type UploadState =
@@ -38,7 +40,7 @@ function titleFromFileName(fileName: string): string {
   return (withoutExt || fileName).slice(0, 120);
 }
 
-export function VideoUploadField({ canControl, requestUploadToken, onUploaded }: Props) {
+export function VideoUploadField({ canControl, requestUploadToken, onUploaded, onRequestOpenModal }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<UploadState>({ kind: 'idle' });
   const previewUrlRef = useRef<string | null>(null);
@@ -158,8 +160,15 @@ export function VideoUploadField({ canControl, requestUploadToken, onUploaded }:
       ) : (
         <button
           type="button"
-          onClick={() => inputRef.current?.click()}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-hairline py-2 text-2xs text-ink-faint transition-colors duration-150 hover:border-accent/50 hover:text-ink"
+          onClick={() => {
+            // Preferimos o modal: ele é a entrada única para escolher a
+            // aplicação. O `input` local só é usado se o modal não estiver
+            // disponível (neste componente montado isolado), preservando o
+            // comportamento antigo.
+            if (onRequestOpenModal) onRequestOpenModal();
+            else inputRef.current?.click();
+          }}
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-hairline py-2 text-2xs text-ink-faint transition-colors duration-150 hover:border-accent/50 hover:text-ink [@media(pointer:coarse)]:py-3"
         >
           <CloudArrowUp size={14} />
           Enviar vídeo do computador (.mp4, .webm, .mkv)
