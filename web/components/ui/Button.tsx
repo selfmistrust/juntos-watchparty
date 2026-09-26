@@ -50,11 +50,21 @@ export function Button({ variant = 'primary', size = 'md', className, children, 
 interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   label: string;
   active?: boolean;
+  /**
+   * `dense` reduz o alvo no toque grosso, de 44px para 40px.
+   *
+   * Existe para fileiras de botões na largura toda do celular, onde quatro
+   * alvos de 44px comem 176px e sobram pouco para o campo de texto ao lado. Não
+   * é padrão porque 44px é o alvo certo para o dedo e baixar isso por conta
+   * própria prejudica todo mundo; aqui a troca é deliberada porque o campo de
+   * mensagem é mais usado que os quatro botões.
+   */
+  dense?: boolean;
   children: ReactNode;
 }
 
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
-  ({ label, active, className, children, ...rest }, ref) => {
+  ({ label, active, dense, className, children, ...rest }, ref) => {
     return (
       <button
         ref={ref}
@@ -64,7 +74,9 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
           'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ease-out',
           // Só onde o ponteiro é grosso (celular/tablet): 36px fica pequeno
           // demais para o dedo. No desktop o `h-9 w-9` de antes é preservado.
-          '[@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11',
+          dense
+            ? '[@media(pointer:coarse)]:h-10 [@media(pointer:coarse)]:w-10'
+            : '[@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11',
           active ? 'bg-accent-soft text-accent' : 'text-ink-muted hover:bg-white/10 hover:text-ink',
           'disabled:cursor-not-allowed disabled:opacity-40',
           className,

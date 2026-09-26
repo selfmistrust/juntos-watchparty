@@ -55,6 +55,7 @@ export function ChatPanel({
   const [reactionPickerOpen, setReactionPickerOpen] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const draftRef = useRef<HTMLTextAreaElement>(null);
   const typingTimeout = useRef<ReturnType<typeof setTimeout>>();
   const isTypingRef = useRef(false);
   const emojiAnchorRef = useRef<HTMLButtonElement>(null);
@@ -65,6 +66,32 @@ export function ChatPanel({
    * picker e remontaria os listeners de scroll/resize a cada tecla digitada.
    */
   const reactionAnchors = useRef<Map<string, { current: HTMLButtonElement | null }>>(new Map());
+
+  /**
+   * O campo cresce com o texto, até o teto do CSS.
+   *
+   * Sem isto o `max-h-28` não servia para nada: o `textarea` ficava nos 32px
+   * do `rows={1}` para sempre, e uma mensagem longa **rolava dentro do campo** —
+   * medi no celular a 390px: 32px de altura, 164px de largura, 22 caracteres
+   * visíveis, com o texto digitado escondido atrás de uma barra de rolagem
+   * minúscula. No desktop passa despercebido porque o campo é largo; no
+   * celular a pessoa escreve às cegas.
+   *
+   * O truque é o `height: auto` antes de medir: sem ele o `scrollHeight` seria
+   * o da altura já fixada, e o campo nunca cresceria. O `max-h` do CSS segura
+   * o teto — passando dele, `scrollHeight` continua crescendo e o campo volta
+   * a rolar, que é o comportamento certo no limite.
+   *
+   * `useEffect` e não `useLayoutEffect` de propósito: este roda no servidor
+   * no SSR do Next e causaria aviso de hydration. O salto de um quadro é
+   * invisível porque o texto aparece uma tecla por vez.
+   */
+  useEffect(() => {
+    const ta = draftRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [draft]);
 
   /** Devolve (criando na primeira vez) o ref estável da âncora de uma mensagem. */
   const getReactionAnchor = (messageId: string) => {
@@ -384,8 +411,15 @@ export function ChatPanel({
          *
          * `gap-0.5` no lugar de `gap-1`: são quatro ícones numa fileira de
          * 32px, e 4px de respiro entre eles deixava a fileira solta.
+         *
+         * No celular o respiro externo também aperta (`px-1.5 py-1.5`) e os
+         * quatro botões vão para 40px com `dense`. A conta fechava assim: a
+         * 390px, os quatro alvos de 44px comiam 176px e o campo ficava com
+         * 164px — 22 caracteres visíveis, e o placeholder "Mandar mensagem" já
+         * não cabia inteiro. O que resolve de vez é o auto-crescimento do
+         * campo, logo abaixo; isto é só para dar mais largura de entrada.
          */}
-        <div className="flex items-center gap-0.5 rounded-xl border border-hairline bg-raised px-2 py-2 transition-colors duration-150 focus-within:border-accent/60">
+        <div className="flex items-center gap-0.5 rounded-xl border border-hairline bg-raised px-1.5 py-1.5 transition-colors duration-150 focus-within:border-accent/60 sm:px-2 sm:py-2">
           <input
             ref={fileRef}
             type="file"
@@ -393,11 +427,12 @@ export function ChatPanel({
             className="hidden"
             onChange={(e) => pickImage(e.target.files?.[0])}
           />
-          <IconButton label="Enviar imagem" onClick={() => fileRef.current?.click()} disabled={sendingImage}>
+          <IconButton dense label="Enviar imagem" onClick={() => fileRef.current?.click()} disabled={sendingImage}>
             <ImageIcon size={17} />
           </IconButton>
 
           <IconButton
+            dense
             label="Enviar GIF"
             active={gifOpen}
             onClick={() => {
@@ -410,6 +445,7 @@ export function ChatPanel({
 
           <IconButton
             ref={emojiAnchorRef}
+            dense
             label={emojiOpen ? 'Fechar emojis' : 'Inserir emoji'}
             active={emojiOpen}
             onClick={() => {
@@ -421,6 +457,7 @@ export function ChatPanel({
           </IconButton>
 
           <textarea
+            ref={draftRef}
             rows={1}
             value={draft}
             onChange={(e) => signalTyping(e.target.value)}
@@ -432,9 +469,17 @@ export function ChatPanel({
             }}
             placeholder="Mandar mensagem"
             maxLength={600}
-            className="scroll-thin max-h-28 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none"
+            /*
+             * `focus-visible:shadow-none` cancela o anel roxo que o
+             * `:focus-visible` global desenha em todo campo do app. Aqui ele
+             * ficaria *dentro* da barra, que já acende a borda no
+             * `focus-within` — dois indicadores de foco aninhados, com raios
+             * de canto diferentes. A borda da barra continua sendo o
+             * indicador, então a acessibilidade não perde nada.
+             */
+            className="scroll-thin max-h-28 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
           />
-          <IconButton label="Enviar mensagem" onClick={send} disabled={!draft.trim()}>
+          <IconButton dense label="Enviar mensagem" onClick={send} disabled={!draft.trim()}>
             <PaperPlaneRight size={17} weight="fill" />
           </IconButton>
         </div>
