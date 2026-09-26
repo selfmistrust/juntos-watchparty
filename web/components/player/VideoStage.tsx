@@ -8,7 +8,7 @@ import { ReactionsOverlay } from './ReactionsOverlay';
 import { YoutubePlayer } from './YoutubePlayer';
 import { useFullscreenLandscape } from '@/hooks/useFullscreenLandscape';
 import type { RoomActions } from '@/hooks/useRoom';
-import type { FloatingReaction, PlaylistItem, PlayerHandle, ReactionEmoji, RoomSnapshot, SoundId } from '@/types';
+import type { FloatingReaction, PlaylistItem, PlayerHandle, ReactionEmoji, RoomSnapshot } from '@/types';
 
 /** Acima disto o salto é audível e vale um seek seco. */
 const HARD_SYNC_THRESHOLD = 1.5;
@@ -243,9 +243,8 @@ export function VideoStage({
     setCaptionsOn((prev) => !prev);
   }, []);
 
-  /** Reações e sons não exigem controle da sala — qualquer participante pode mandar. */
+  /** Reações não exigem controle da sala — qualquer participante pode mandar. */
   const handleReaction = useCallback((emoji: ReactionEmoji) => actions.sendReaction(emoji), [actions]);
-  const handleSound = useCallback((soundId: SoundId) => actions.sendSound(soundId), [actions]);
 
   /**
    * Entrega os controles ao YouTube, ou os traz de volta.
@@ -360,11 +359,7 @@ export function VideoStage({
       <ReactionsOverlay reactions={reactions} />
 
       {currentItem && (
-        <ReactionDock
-          visible={controlsVisible || !isPlaying}
-          onReaction={handleReaction}
-          onSound={handleSound}
-        />
+        <ReactionDock visible={controlsVisible || !isPlaying} onReaction={handleReaction} />
       )}
 
       {/*

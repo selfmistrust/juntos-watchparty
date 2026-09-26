@@ -33,14 +33,12 @@ import {
 } from './rooms.js';
 import {
   ALLOWED_REACTIONS,
-  ALLOWED_SOUNDS,
   CHAT_REACTION_EMOJIS,
   type ChatMessageKind,
   type ChatReactionEmoji,
   type PlaylistItem,
   type ReactionEmoji,
   type Room,
-  type SoundId,
   type SystemEventKind,
 } from './types.js';
 import { createUploadTarget, deleteUploadIfOwned, isAllowedVideoFile, MAX_UPLOAD_BYTES } from './storage.js';
@@ -375,22 +373,6 @@ export function registerSocketHandlers(io: Server) {
       io.to(room.id).emit('reaction:new', {
         id: newId(),
         emoji,
-        userId: user.sessionId,
-        name: user.name,
-      });
-    });
-
-    /** Efeito sonoro rápido — cada cliente sintetiza o áudio localmente ao receber. */
-    socket.on('sound:trigger', async (soundId: string) => {
-      const room = await currentRoom();
-      const user = room?.users[socket.id];
-      if (!room || !user) return;
-      if (!ALLOWED_SOUNDS.includes(soundId as SoundId)) return;
-      if (isReactionRateLimited(socket.id)) return;
-
-      io.to(room.id).emit('sound:play', {
-        id: newId(),
-        soundId,
         userId: user.sessionId,
         name: user.name,
       });

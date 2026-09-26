@@ -44,9 +44,6 @@ export const CHAT_REACTION_EMOJIS = [
 ] as const;
 export type ChatReactionEmoji = (typeof CHAT_REACTION_EMOJIS)[number];
 
-export const ALLOWED_SOUNDS = ['clap', 'laugh', 'wow', 'drum'] as const;
-export type SoundId = (typeof ALLOWED_SOUNDS)[number];
-
 /** Reação recebida do servidor, já com a posição sorteada no cliente para a animação. */
 export interface FloatingReaction {
   id: string;

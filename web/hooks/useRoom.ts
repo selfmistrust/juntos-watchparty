@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { getSocket } from '@/lib/socket';
 import { getUserId } from '@/lib/identity';
-import { playSound } from '@/lib/sfx';
 import type {
   ChatMessage,
   FeedEntry,
@@ -12,7 +11,6 @@ import type {
   PlaylistItem,
   ReactionEmoji,
   RoomSnapshot,
-  SoundId,
   SystemEvent,
   User,
 } from '@/types';
@@ -46,7 +44,6 @@ export interface RoomActions {
   sendImage: (dataUrl: string) => void;
   setTyping: (isTyping: boolean) => void;
   sendReaction: (emoji: ReactionEmoji) => void;
-  sendSound: (soundId: SoundId) => void;
   setColor: (color: string) => void;
   setAvatar: (avatar: { seed?: string; url?: string }) => void;
   setName: (name: string) => void;
@@ -250,8 +247,6 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
       );
     };
 
-    const onSoundPlay = ({ soundId }: { soundId: SoundId }) => playSound(soundId);
-
     if (socket.connected) join();
     socket.on('connect', join);
     socket.on('disconnect', onDisconnect);
@@ -265,7 +260,6 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
     socket.on('chat:reaction:remove', onReactionRemove);
     socket.on('chat:typing', onTyping);
     socket.on('reaction:new', onReaction);
-    socket.on('sound:play', onSoundPlay);
 
     const clockTimer = setInterval(() => syncClock(socket, clockOffset), 15_000);
 
@@ -283,7 +277,6 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
       socket.off('chat:reaction:remove', onReactionRemove);
       socket.off('chat:typing', onTyping);
       socket.off('reaction:new', onReaction);
-      socket.off('sound:play', onSoundPlay);
     };
     // avatarSeed/avatarUrl não entram nas deps de propósito: usá-las direto
     // faria esse efeito inteiro reconectar o socket a cada troca de avatar.
@@ -367,10 +360,6 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
       sendImage: (dataUrl) => emit('chat:message', { kind: 'image', mediaUrl: dataUrl }),
       setTyping: (isTyping) => emit('chat:typing', isTyping),
       sendReaction: (emoji) => emit('reaction:send', emoji),
-      sendSound: (soundId) => {
-        playSound(soundId); // toca na hora pra quem clicou; o eco pros outros vem do servidor
-        emit('sound:trigger', soundId);
-      },
       setColor: (color) => emit('user:setColor', color),
       setAvatar: (avatar) => emit('user:setAvatar', avatar),
       setName: (newName) => emit('user:setName', newName),
