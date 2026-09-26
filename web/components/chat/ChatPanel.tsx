@@ -373,7 +373,19 @@ export function ChatPanel({
           />
         )}
 
-        <div className="flex items-end gap-1 rounded-xl border border-hairline bg-raised px-2 py-2 transition-colors duration-150 focus-within:border-accent/60">
+        {/*
+         * `items-center` e não `items-end`: os botões são de 36px e o campo de
+         * 32px, então alinhar pelo fundo deixava os ícones pendurados 4px acima
+         * do campo. Centralizar é o que alinha as duas fileiras.
+         *
+         * Não é uma regra global de `.items-end`: o overlay dos modais e o
+         * ReactionDock dependem do comportamento de baixo, e sobrescrever
+         * aquilo quebraria o bottom-sheet no celular.
+         *
+         * `gap-0.5` no lugar de `gap-1`: são quatro ícones numa fileira de
+         * 32px, e 4px de respiro entre eles deixava a fileira solta.
+         */}
+        <div className="flex items-center gap-0.5 rounded-xl border border-hairline bg-raised px-2 py-2 transition-colors duration-150 focus-within:border-accent/60">
           <input
             ref={fileRef}
             type="file"
@@ -384,10 +396,10 @@ export function ChatPanel({
           <IconButton label="Enviar imagem" onClick={() => fileRef.current?.click()} disabled={sendingImage}>
             <ImageIcon size={17} />
           </IconButton>
-          
-          <IconButton 
-            label="Enviar GIF" 
-            active={gifOpen} 
+
+          <IconButton
+            label="Enviar GIF"
+            active={gifOpen}
             onClick={() => {
               setEmojiOpen(false);
               setGifOpen((v) => !v);
