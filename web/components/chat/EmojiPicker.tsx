@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, MagnifyingGlass } from '@phosphor-icons/react';
+import { MagnifyingGlass, X } from '@phosphor-icons/react';
 import { CHAT_REACTION_EMOJIS, type ChatReactionEmoji } from '@/types';
-import { Portal } from '@/components/ui/Portal';
 
 /** Categorias de emojis para organização visual. */
 const EMOJI_CATEGORIES: Record<string, ChatReactionEmoji[]> = {
@@ -17,159 +16,131 @@ const EMOJI_CATEGORIES: Record<string, ChatReactionEmoji[]> = {
 const ALL_EMOJIS = CHAT_REACTION_EMOJIS;
 
 interface Props {
-  /** Callback quando um emoji é selecionado. */
   onSelect: (emoji: string) => void;
-  /** Fecha o picker. */
   onClose: () => void;
-  /** Referência ao botão que abriu o picker (para posicionamento). */
-  anchorRef: React.RefObject<HTMLButtonElement | null>;
+  anchorRef?: React.RefObject<HTMLElement | null>;
 }
 
 export function EmojiPicker({ onSelect, onClose, anchorRef }: Props) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('Frequentes');
   const containerRef = useRef<HTMLDivElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const filteredEmojis = useMemo(() => {
-    if (!search) return EMOJI_CATEGORIES[activeCategory] || [];
-    return ALL_EMOJIS.filter((e) => e.includes(search) || getEmojiName(e).includes(search.toLowerCase()));
+    if (!search.trim()) return EMOJI_CATEGORIES[activeCategory] || [];
+    const query = search.toLowerCase();
+    return ALL_EMOJIS.filter((e) => e.includes(query) || getEmojiName(e).includes(query));
   }, [search, activeCategory]);
 
-  // Fecha ao clicar fora
+  // Fecha ao clicar fora do picker
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        onClose();
+      const target = event.target as Node;
+
+      // Se o clique foi dentro do próprio picker, não faz nada
+      if (containerRef.current && containerRef.current.contains(target)) {
+        return;
       }
+
+      // Se o clique foi no botão que abre/fecha o emoji, ignora para o onClick do botão tratar
+      if (anchorRef?.current && anchorRef.current.contains(target)) {
+        return;
+      }
+
+      onClose();
     }
+
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [onClose]);
-
-  // Foca input de busca ao abrir
-  useEffect(() => {
-    searchInputRef.current?.focus();
-  }, []);
-
-  // Posicionamento relativo ao anchor (abre acima se não houver espaço abaixo)
-  useEffect(() => {
-    const anchor = anchorRef.current;
-    const container = containerRef.current;
-    if (!anchor || !container) return;
-
-    const rect = anchor.getBoundingClientRect();
-    const containerHeight = 300; // altura aproximada do picker
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const spaceAbove = rect.top;
-
-    // Decide se abre acima ou abaixo
-    const openAbove = spaceBelow < containerHeight + 8 && spaceAbove > containerHeight + 8;
-
-    if (openAbove) {
-      container.style.top = `${rect.top + window.scrollY - containerHeight - 4}px`;
-    } else {
-      container.style.top = `${rect.bottom + window.scrollY + 4}px`;
-    }
-    container.style.left = `${rect.left + window.scrollX}px`;
-
-    // Ajusta horizontal se passar da tela
-    const containerRect = container.getBoundingClientRect();
-    if (containerRect.right > window.innerWidth - 8) {
-      container.style.left = `${window.innerWidth - containerRect.width - 8}px`;
-    }
-    if (containerRect.left < 8) {
-      container.style.left = `8px`;
-    }
-  }, [anchorRef]);
+  }, [onClose, anchorRef]);
 
   return (
-    <Portal>
-      <div
-        ref={containerRef}
-        className="fixed z-50 w-64 rounded-xl border border-hairline bg-surface shadow-lift overflow-hidden animate-fade-up"
-        role="dialog"
-        aria-label="Seletor de emoji"
-      >
-        {/* Header com busca e categorias */}
-        <div className="px-1.5 py-1.5 border-b border-hairline">
-          {/* Busca */}
-          <div className="relative mb-1.5">
-            <MagnifyingGlass size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-faint" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Pesquisar emoji..."
-              className="w-full h-7 pl-7 pr-2 bg-raised rounded-lg text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:ring-1 focus:ring-accent"
-            />
-          </div>
-
-          {/* Categorias */}
-          <div className="flex gap-0.5 overflow-x-auto pb-1" role="tablist">
-            {Object.keys(EMOJI_CATEGORIES).map((cat) => (
-              <button
-                key={cat}
-                role="tab"
-                aria-selected={activeCategory === cat}
-                onClick={() => {
-                  setActiveCategory(cat);
-                  setSearch('');
-                }}
-                className={`shrink-0 px-1.5 py-0.5 rounded-md text-[0.625rem] font-medium transition-colors whitespace-nowrap ${
-                  activeCategory === cat
-                    ? 'bg-accent-soft text-accent'
-                    : 'text-ink-muted hover:bg-hover hover:text-ink'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Grid de emojis */}
-        <div className="max-h-56 overflow-y-auto p-1">
-          {filteredEmojis.length === 0 ? (
-            <p className="text-center text-2xs text-ink-faint py-3">Nenhum emoji encontrado</p>
-          ) : (
-            <div className="grid grid-cols-9 gap-0.5" role="listbox">
-              {filteredEmojis.map((emoji) => (
-                <button
-                  key={emoji}
-                  role="option"
-                  onClick={() => {
-                    onSelect(emoji);
-                    onClose();
-                  }}
-                  className="flex h-8 w-8 items-center justify-center rounded-md text-lg transition-colors hover:bg-hover active:bg-hover active:scale-95"
-                  aria-label={getEmojiName(emoji)}
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Footer com fechar */}
-        <div className="flex items-center justify-end gap-1.5 px-1.5 py-1 border-t border-hairline">
+    <div
+      ref={containerRef}
+      className="animate-fade-up absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-hairline bg-surface shadow-lift"
+    >
+      {/* Header com Busca e Categorias - Mesma estrutura e classes do GifPicker */}
+      <div className="flex flex-col gap-1.5 border-b border-hairline p-2">
+        <div className="flex items-center gap-2">
+          <MagnifyingGlass size={15} className="ml-1 shrink-0 text-ink-faint" />
+          <input
+            autoFocus
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Pesquisar emoji…"
+            className="h-8 flex-1 bg-transparent text-sm text-ink placeholder:text-ink-faint focus:outline-none"
+          />
           <button
             type="button"
             onClick={onClose}
-            className="flex h-7 items-center gap-1 rounded-md px-2 text-[0.625rem] text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+            aria-label="Fechar busca de emoji"
+            className="rounded-md p-1 text-ink-faint transition-colors duration-150 hover:bg-hover hover:text-ink"
           >
-            <X size={12} />
-            Fechar
+            <X size={15} />
           </button>
         </div>
+
+        {/* Categorias com scroll horizontal oculto. A classe `scrollbar-hide`
+            do globals.css esconde a barra nos navegadores de verdade; um
+            `<style>` com `div::-webkit-scrollbar` esconderia a barra de todo
+            div do app, não só desta fileira. */}
+        <div
+          className="scrollbar-hide flex gap-1 overflow-x-auto pb-0.5 select-none"
+          role="tablist"
+        >
+          {Object.keys(EMOJI_CATEGORIES).map((cat) => (
+            <button
+              key={cat}
+              role="tab"
+              type="button"
+              aria-selected={activeCategory === cat}
+              onClick={() => {
+                setActiveCategory(cat);
+                setSearch('');
+              }}
+              className={`shrink-0 px-2 py-1 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
+                activeCategory === cat
+                  ? 'bg-accent-soft text-accent'
+                  : 'text-ink-muted hover:bg-hover hover:text-ink'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
       </div>
-    </Portal>
+
+      {/* Grid de Emojis - Mantém o mesmo padronizado scroll-thin e altura max-h-56 do GifPicker */}
+      <div className="scroll-thin max-h-56 overflow-y-auto overflow-x-hidden p-2" role="listbox">
+        {filteredEmojis.length === 0 ? (
+          <p className="py-6 text-center text-2xs text-ink-faint">
+            Nenhum emoji encontrado.
+          </p>
+        ) : (
+          <div className="grid grid-cols-8 gap-1">
+            {filteredEmojis.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                role="option"
+                onClick={() => {
+                  onSelect(emoji);
+                  // Não fecha o picker - permite selecionar múltiplos emojis
+                }}
+                className="flex h-9 w-9 items-center justify-center rounded-md text-xl transition-colors hover:bg-hover active:bg-hover active:scale-95 focus:outline-none focus:ring-1 focus:ring-accent"
+                aria-label={getEmojiName(emoji)}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
-/** Nomes simples para acessibilidade dos emojis padrão. */
 function getEmojiName(emoji: string): string {
   const names: Record<string, string> = {
     '❤️': 'coração vermelho',
