@@ -372,8 +372,35 @@ export function setUserName(room: Room, sessionId: string, name: string): boolea
   return true;
 }
 
+/**
+ * Quem controla a **reprodução**: play, pause, seek, remover e reordenar.
+ *
+ * Isto é deliberadamente mais restrito do que adicionar mídia. Encher a fila é
+ * aberto a qualquer participante (veja `podeAdicionarMidia`), porque quem entra
+ * numa sala precisa poder contribute com alguma coisa — e a mídia que entra é
+ * identificada por `addedBy`, então não há um vídeo sem dono.
+ *
+ * Quem só adiciona não ganha nenhum poder sobre o que já está tocando. É a
+ * diferença entre "colocar um filme na fila" e "mandar na fila".
+ */
 export function canControl(room: Room, sessionId: string): boolean {
   return room.openControl || room.hostId === sessionId;
+}
+
+/**
+ * Quem pode **adicionar** mídia à sala.
+ *
+ * Qualquer participante conectado. A validação real é estar na sala — o que
+ * `addUser` garante e o que os handlers checam ao ler a sala —, mais as
+ * validações específicas de cada fonte: tamanho e tipo do arquivo no upload,
+ * `mimeType` de vídeo e `canDownload` no Drive, e uma transmissão por vez na
+ * tela compartilhada.
+ *
+ * Nenhum destes caminhos concede poder de host. O `canControl` acima é
+ * independente e continua de pé.
+ */
+export function podeAdicionarMidia(room: Room, sessionId: string): boolean {
+  return Boolean(room.users[sessionId]);
 }
 
 // --- Transmissões ao vivo ---------------------------------------------------

@@ -14,6 +14,7 @@ import { editarSala } from './roomLock.js';
 import {
   addUser,
   canControl,
+  podeAdicionarMidia,
   checkPassword,
   cleanupStaleUsers,
   commitPosition,
@@ -385,12 +386,21 @@ export function registerSocketHandlers(io: Server) {
 
     /**
      * Autoriza o upload de um vídeo — mas quem recebe o arquivo não é o
-     * nosso servidor, é o bucket S3/R2 diretamente. Aqui a gente só checa
-     * permissão (`canControl`, mais restrito que `playlist:add` por
-     * link/busca) e devolve uma URL assinada de PUT que só serve pra este
-     * objeto específico, por um tempo limitado. O vídeo nunca passa pelo
+     * nosso servidor, é o bucket S3/R2 diretamente. Aqui a gente checa que a
+     * pessoa está na sala e devolve uma URL assinada de PUT que só serve pra
+     * este objeto específico, por um tempo limitado. O vídeo nunca passa pelo
      * nosso processo — sem isso, um host de graça com timeout curto (ex.:
      * Render free tier) derrubaria qualquer envio de arquivo grande.
+     *
+     * **Não exige `canControl`.** Enviar arquivo é adicionar mídia, e qualquer
+     * participante pode adicionar mídia. Quem envia não ganha poder de
+     * reprodução: `player:play`, `player:seek` e `playlist:remove` continuam
+     * exigindo o host ou `openControl`.
+     *
+     * O que continua restrito é o **custo**, não o papel na sala: há limite de
+     * tamanho e limite de taxa por pessoa, e ambos são sobre o bucket. Um
+     * limite por papel na sala impediria alguém de participar sem ser host, o
+     * que é o oposto do que a sala é.
      */
     socket.on(
       'upload:requestToken',
@@ -401,7 +411,7 @@ export function registerSocketHandlers(io: Server) {
         const reply = typeof ack === 'function' ? ack : () => {};
         const room = await currentRoom();
         if (!room) return reply({ ok: false, error: 'no_room' });
-        if (!canControl(room, socket.id)) return reply({ ok: false, error: 'denied' });
+        if (!podeAdicionarMidia(room, socket.id)) return reply({ ok: false, error: 'denied' });
         if (isUploadRateLimited(socket.id)) return reply({ ok: false, error: 'rate_limited' });
 
         const size = Number(payload.fileSize);
@@ -688,7 +698,13 @@ export function registerSocketHandlers(io: Server) {
         const user = room.users[socket.id];
         if (!user) return;
 
-        if (!canControl(room, socket.id)) return denied(room);
+        /*
+         * Transmitir tela é **adicionar** mídia, não controlá-la: qualquer
+         * participante pode transmitir, e quem transmite não ganha poder sobre o
+         * playback. Uma transmissão por vez continua valendo, e a checagem abaixo
+         * está dentro do lock.
+         */
+        if (!podeAdicionarMidia(room, socket.id)) return denied(room);
 
         /*
          * Uma pessoa transmite por vez. Duas telas simultâneas exigiriam um

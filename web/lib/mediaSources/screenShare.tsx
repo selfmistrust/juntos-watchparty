@@ -26,7 +26,16 @@ export const screenShareProvider: MediaSourceProvider = {
   // de terceiro que não existe. Ele não é uma aplicação, é um recurso do
   // navegador, então fica na cor neutra da interface.
   accent: 'text-white',
-  requiresControl: true,
+  /*
+   * Sem `requiresControl`: transmitir tela é **adicionar** mídia, e qualquer
+   * participante pode adicionar mídia à sala. Quem transmite não ganha poder
+   * sobre o playback — o `stream:publish` continua exigindo `canControl` no
+   * servidor, o que é uma permissão separada e mais restrita.
+   *
+   * Só uma transmissão por vez continua valendo, e a checagem está dentro do
+   * lock: duas telas simultâneas exigiriam um modelo de composição que o app não
+   * tem.
+   */
   // Sobrescrito pelo hook; este é o caso do navegador, e existe para o tipo
   // do provider ficar completo mesmo se o hook não for montado.
   resolveState: async () => unavailable('Disponível só no app desktop.'),

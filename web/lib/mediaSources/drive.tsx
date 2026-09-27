@@ -76,7 +76,14 @@ export const driveProvider: MediaSourceProvider = {
   // usado. Fica no azul oficial (#3186FF) para o caso do card cair no
   // `currentColor` em algum caminho.
   accent: 'text-[#3186FF]',
-  requiresControl: true,
-  controlReason:
-    'Escolher um vídeo do Drive é só para quem controla a fila: o stream é servido pelo servidor, com a banda e a cota de quem concedeu o acesso.',
+  /*
+   * Sem `requiresControl`: qualquer participante pode escolher um vídeo do seu
+   * Drive, desde que tenha a própria conta conectada.
+   *
+   * O texto antigo dizia que o stream era servido pelo servidor, e isso já não
+   * é verdade desde que o vídeo passou a vir direto do Google para cada
+   * navegador. O que a escolha custa de verdade é o **acesso**: o Juntos pede
+   * ao Google permissão `reader` para as pessoas da sala, e revoga só as que ele
+   * criou. Isso é preço da fonte, não privilégio de host.
+   */
 };

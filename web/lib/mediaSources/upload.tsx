@@ -74,9 +74,19 @@ export const uploadProvider: MediaSourceProvider = {
   name: 'Dispositivo',
   description: 'Envie um vídeo do seu dispositivo (.mp4, .webm, .mkv).',
   icon: <CloudArrowUp size={22} weight="bold" />,
-  requiresControl: true,
-  controlReason:
-    'O envio de arquivos é só para quem controla a fila: o token de upload é autorizado pelo servidor, e o arquivo vai para um bucket com custo e limite de taxa.',
+  /*
+   * Sem `requiresControl`: qualquer participante pode enviar arquivo para a
+   * sala, e quem enviou fica registrado na fila como `addedBy`.
+   *
+   * A distinção que importa é **adicionar** contra **controlar**. Encher a fila
+   * é uma permissão à parte, e o servidor aceitou `playlist:add` de qualquer
+   * participante o tempo todo. O que continua restrito é o playback — play,
+   * pause, seek, remover e reordenar — e isso não passa por este card.
+   *
+   * O custo e o limite de taxa do bucket são reais, e é por isso que o servidor
+   * ainda limita por pessoa (`isUploadRateLimited`). Ele não limita por papel na
+   * sala, porque isso impediria alguém de participar da sala sem ser host.
+   */
   start: async (context: MediaSourceContext) => {
     const file = await chooseFile();
     if (!file) return;
