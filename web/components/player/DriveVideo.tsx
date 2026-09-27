@@ -61,6 +61,19 @@ interface Props {
   /** Fim de reprodução, para a fila avançar. */
   onEnded: () => void;
   onReady: () => void;
+  /**
+   * Avisa que há um `<video>` montado, e não um painel de preparação.
+   *
+   * O `VideoStage` usa isso para decidir se o click-catcher de play/pause cobre
+   * o palco. Enquanto o painel está na tela — conectando a conta, autorizando o
+   * arquivo, esperando o Google — o catcher ficaria por cima dos botões e eles
+   * pareceriam ativos sem receber o clique.
+   *
+   * `true` desde o primeiro frame com `<video>` na árvore, e não só quando o
+   * vídeo carregou: o que importa é existir algo para o catcher alternar, e um
+   * player ainda sem metadados já é isso.
+   */
+  onMediaPronta?: (pronta: boolean) => void;
 }
 
 /**
@@ -82,7 +95,7 @@ interface Props {
  * assistir.
  */
 export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
-  { fileId, onEnded, onReady },
+  { fileId, onEnded, onReady, onMediaPronta },
   ref,
 ) {
   const router = useRouter();
@@ -95,6 +108,20 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
   const [autorizando, setAutorizando] = useState(false);
   const operacao = useRef<AbortController | null>(null);
   const externo = isDesktop();
+
+  /*
+   * O relatório para o palco sai de um `useEffect`, e não de dentro dos
+   * `setEstado`.
+   *
+   * Chamar `onMediaPronta` durante o render warnings: o pai atualizaria o estado
+   * enquanto este componente ainda está renderizando. O efeito roda depois, e
+   * depende só do booleano — então trocar de painel para player avisa uma vez, e
+   * desmontar avisa de novo para o catcher não ficar sobre o palco vazio.
+   */
+  const temPlayer = estado === 'carregando' || estado === 'sincronizando' || estado === 'pronto';
+  useEffect(() => {
+    onMediaPronta?.(temPlayer);
+  }, [temPlayer, onMediaPronta]);
 
   /*
    * `drive=...` é o que o callback do OAuth deixa na URL quando a pessoa
@@ -228,7 +255,7 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
    * exatamente o que estraga quem entra no meio do filme: ele perde a posição
    * que a sala alcança.
    */
-  if (estado === 'carregando' || estado === 'sincronizando' || estado === 'pronto') {
+  if (temPlayer) {
     return (
       <FilePlayer
         ref={ref}

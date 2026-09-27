@@ -118,6 +118,16 @@ export function VideoStage({
    * `getDuration` devolve `Infinity`.
    */
   const isStream = currentItem?.kind === 'stream';
+  /*
+   * Se há mídia sob o dedo — o que o click-catcher precisa para ter sentido.
+   *
+   * Quem responde é o `DriveVideo`, e não este componente: só ele sabe em que
+   * etapa da preparação o vídeo do Drive está, e a etapa é o que decide se o
+   * painel está pedindo um clique dele. Para o resto das fontes há sempre mídia,
+   * então o padrão é `true` e o catcher se comporta como sempre.
+   */
+  const [driveMediaPronta, setDriveMediaPronta] = useState(false);
+  const mediaPronta = currentItem?.kind === 'drive' ? driveMediaPronta : true;
 
   const { isFullscreen, rotate, toggle: toggleFullscreen } = useFullscreenLandscape({ targetRef: stageRef });
 
@@ -130,6 +140,10 @@ export function VideoStage({
     lastRateRef.current = 1; // o player novo já nasce em 1x
     setCurrent(0);
     setDuration(0);
+    // A faixa anterior não decide se a nova tem mídia pronta: um vídeo de Drive
+    // pode estar em `carregando` e o seguinte ser um upload, e o estado que
+    // sobraria de um para o outro cobriria o painel do Drive sem ele estar em uso.
+    setDriveMediaPronta(false);
     // `captionsOn` é de propósito preservado entre faixas: quem ligou a legenda
     // quer lê-la no próximo vídeo também.
   }, [currentItem?.id]);
@@ -382,6 +396,7 @@ export function VideoStage({
             fileId={currentItem.driveFileId}
             onReady={handleReady}
             onEnded={actions.ended}
+            onMediaPronta={setDriveMediaPronta}
           />
         ) : (
           <>
@@ -420,8 +435,25 @@ export function VideoStage({
         * fica, e o botão de CC mora nela. Se este click-catcher cobrisse até o
         * rodapé, o botão de CC nunca receberia o clique — que é justamente o
         * motivo de a barra nativa existir.
+        *
+        * ## Por que ele não cobre o painel do Drive
+        *
+        * Este botão é `absolute inset-x-0 top-0` com `bottom: 0`: cobre o palco
+        * inteiro, em `z-10`, e é um `<button>` — então **captura o clique de tudo
+        * que estiver por baixo**. O painel do Drive fica dentro do mesmo palco, e
+        * o botão "Conectar o Google Drive" ficava embaixo dele: visível, parecendo
+        * ativo, e sem receber o clique.
+        *
+        * O sintoma é o pior possível para quem tenta usar: um botão que parece
+        * funcionar e não faz nada, sem mensagem nenhuma. A causa não era
+        * `disabled`, era o `z-index`.
+        *
+        * A condição abaixo é `mediaPronta`: sem mídia tocando não há play/pause
+        * para alternar, e o painel precisa dos cliques. Vale para o Drive em
+        * qualquer etapa de preparação e para o YouTube carregando — o catcher só
+        * faz sentido com vídeo sob o dedo.
         */}
-      {currentItem && (
+      {currentItem && mediaPronta && (
         <button
           aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
           onClick={togglePlay}
