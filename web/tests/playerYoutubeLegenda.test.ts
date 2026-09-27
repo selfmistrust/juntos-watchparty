@@ -48,14 +48,20 @@ test('o estado nasce desligado', () => {
 
 test('com legenda desligada nenhum param de legenda e enviado', () => {
   /*
-   * `{}` e o ponto: o padrao do YouTube e nao carregar legenda, e o app nao
-   * precisa — nem pode, na verdade — mandar `cc_load_policy: '0'`.
+   * `{}` e o ponto: o padrao do YouTube e nao carregar legenda, entao nao ha
+   * param nenhum para mandar.
    *
-   * Mandar o `0` explicito parece mais seguro e nao e. Ja foi medido: quando o
-   * YouTube devolve legenda por preferencia da conta, nenhum dos params
-   * segura — nem ausencia dele, nem `0`, nem `cc_lang_pref` invalido. Entao o
-   * `0` explicito seria um param que nao faz nada, dando a impressao de que a
-   * legenda esta sob controle quando nao esta.
+   * Este teste ja afirmava, em comentario, que `cc_load_policy: '0'` explicito
+   * "nao faria nada" contra a preferencia de legenda da conta — e dizia que isso
+   * tinha sido medido. Nao tinha. A afirmacao veio de um comentario antigo,
+   * pareceu plausivel, e ninguem conferiu. Ela fazia duas coisas ruins ao mesmo
+   * tempo: autorizava um "nao faz diferenca" sem medicao, e trancava num teste o
+   * que nao se sabe.
+   *
+   * O que este teste faz agora e o que da para afirmar: o caminho desligado nao
+   * manda param de legenda. Se alguem mandar `0` explicito, este teste falha — de
+   * proposito. A mudanca tem de ser uma decisao medida, com o resultado da
+   * medicao escrito, e nao um default que ninguem questiona.
    */
   const corpo = youtube.slice(youtube.indexOf('function legendaParams'));
   const funcao = corpo.slice(0, corpo.indexOf('\n}'));
@@ -64,6 +70,42 @@ test('com legenda desligada nenhum param de legenda e enviado', () => {
     /if \(!captionsOn\) return \{\};/,
     'desligado tem que devolver objeto vazio, sem nenhum param de legenda',
   );
+});
+
+test('o codigo nao afirma medicao que ninguem fez', () => {
+  /*
+   * Este arquivo nasceu de uma frase: "ja foi medido que o 0 nao segura". Nao
+   * tinha. Sobreviveu em comentario e em teste porque era crivel, e crivel e o
+   * que faz uma afirmacao falsa passar por revisada.
+   *
+   * O teste trava a forma, nao o merito: legenda e um tema em que o codigo vai
+   * acumulando afirmacoes herdadas sobre o que o YouTube aceita, e cada uma
+   * pareceu confirmada por causa da anterior.
+   */
+  const codigo = youtube
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+  assert.ok(
+    !/já foi medido|ja foi medido/.test(codigo),
+    'so se afirma medicao que o codigo faz de verdade — e o codigo nao mede nada',
+  );
+
+  /*
+   * Onde o comentario da funcao fala de medicao, tem que dizer que nao houve.
+   * A razao de ser por arquivo separado: a frase estava dentro do bloco de
+   * comentario da propria funcao, que e o lugar onde o proximo vai procurar a
+   * explicacao e onde ela passou por verdade.
+   */
+  const bloco = youtube.slice(youtube.indexOf('function legendaParams'));
+  const comentario = bloco.slice(0, bloco.indexOf('\n}'));
+  const falaDeMedicao = /medid[oa]/.test(comentario);
+  if (falaDeMedicao) {
+    assert.match(
+      comentario,
+      /não foi|Não foi|nao foi/,
+      'o comentario pode citar medicao, mas so dizendo que nao houve',
+    );
+  }
 });
 
 test('cc_load_policy nao esta no playerVars, so vem da funcao', () => {

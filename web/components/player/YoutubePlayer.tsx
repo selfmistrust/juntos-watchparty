@@ -27,6 +27,11 @@ interface Props {
  * sentidos: ligado pede `cc_load_policy: 1`, desligado não pede nada e o
  * padrão do YouTube é não carregar.
  *
+ * A versão anterior deste texto afirmava que o `0` explícito não seguraria a
+ * legenda que vem da preferência da conta, e que isso fora medido. Não fora, e a
+ * afirmação foi removida em vez de reescrita: era um "não faz diferença" sem
+ * medição, que desiste de uma alavanca possivelmente útil.
+ *
  * ## O que mudou quando a barra nativa saiu
  *
  * Antes, o botão de CC do próprio YouTube era a rede de segurança do desligar:
@@ -44,14 +49,30 @@ interface Props {
  */
 function legendaParams(captionsOn: boolean): Record<string, string> {
   /*
-   * Este é o padrão do player, e é o que garante que vídeo nenhum suba com
-   * legenda sozinha: sem param algum, o YouTube não carrega faixa. O `1` abaixo
-   * só existe depois que alguém clica no botão — não é um default.
+   * Este é o padrão do player: sem param algum, o YouTube não carrega faixa. O
+   * `1` abaixo só existe depois que alguém clica no botão — não é um default.
    *
-   * Deixar o `0` explícito aqui seria mais legível e não faria nada. Já foi
-   * medido: quando o YouTube devolve legenda por preferência da conta, nem a
-   * ausência do param segura, nem `0`, nem `cc_lang_pref` inválido. Mandar o `0`
-   * daria a impressão de controle que não existe.
+   * ## O que não está escrito aqui, e por quê
+   *
+   * Existe uma versão anterior deste comentário que dizia que o `0` explícito
+   * não seguraria a legenda vinda da preferência da conta, e que isso tinha sido
+   * medido. Não foi. Ninguém mediu, e a afirmação sobreviveu porque era crível e
+   * ninguém foi conferir. Está aqui fora de propósito: um "não faz diferença"
+   * sem medição é pior do que o silêncio, porque desiste de uma alavanca que
+   * pode funcionar.
+   *
+   * O que se sabe de fato é mais estreito:
+   *
+   * - o YouTube guarda preferência de legenda por conta e por vídeo, e ela pode
+   *   vir acima do param. Isso é do YouTube, e não tem verbo de API;
+   * - `setOption('captions', 'track', {})` **não lança** — foi executado contra o
+   *   player real. O que ele faz é outra pergunta, e a resposta ainda não está
+   *   medida, porque medir exige uma conta com a preferência ligada;
+   * - `cc_load_policy` só é lida na construção, o que é o motivo de o botão
+   *   recriar o player.
+   *
+   * Ou seja: o botão de legenda é a única saída que temos quando a conta força
+   * legenda. Com a barra nativa desligada, ele virou a única de todas.
    */
   if (!captionsOn) return {};
   return { cc_load_policy: '1', cc_lang_pref: 'pt' };
