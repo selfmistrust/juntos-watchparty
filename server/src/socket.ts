@@ -10,6 +10,7 @@ import {
   sanitizeImageDataUrl,
   sanitizeMessage,
 } from './chatGuard.js';
+import { editarSala } from './roomLock.js';
 import {
   addUser,
   canControl,
@@ -112,9 +113,13 @@ export function registerSocketHandlers(io: Server) {
     socket.on(
       'room:join',
       async ({ roomId: rid, name, roomName, password, userId, avatarSeed, avatarUrl, color }: JoinPayload) => {
-        const room = await ensureRoom(rid, roomName);
+        // A checagem de senha fica **fora** do lock de propósito: `bcrypt`
+        // leva ~100ms, e segurar a fila da sala por isso faria toda entrada
+        // esperar pela senha de quem chegou antes. Ela só lê `passwordHash`,
+        // que ninguém muda, então ler fora do lock é seguro.
+        const paraChecar = await ensureRoom(rid, roomName);
 
-        const passwordOk = await checkPassword(room, password);
+        const passwordOk = await checkPassword(paraChecar, password);
         if (!passwordOk) {
           socket.emit('room:join:error', {
             reason: password ? 'wrong_password' : 'password_required',
@@ -135,18 +140,28 @@ export function registerSocketHandlers(io: Server) {
           typeof userId === 'string' && userId.length > 0 && userId.length <= 64
             ? userId
             : newId();
-        const user = addUser(room, sessionId, stableUserId, name, {
-          seed: avatarSeed,
-          url: avatarUrl ? sanitizeImageDataUrl(avatarUrl) ?? undefined : undefined,
-        }, color);
-        await persistRoom(room);
-        socket.emit('room:welcome', { you: user, state: snapshot(room) });
-        socket.to(rid).emit('room:state', snapshot(room));
-        // Só emite evento de join se for um usuário NOVO (não reconexão)
-        const isReconnect = room.users[sessionId]?.lastSeen !== undefined && room.users[sessionId].lastSeen < Date.now() - 1000;
-        if (!isReconnect) {
-          system(rid, 'join', `${user.name} entrou na sala`);
-        }
+        /*
+         * Carregar, adicionar e gravar tudo sob o lock da sala. Sem isto, dois
+         * joins no mesmo instante liam o mesmo estado e o segundo `SET` apagava
+         * o primeiro: a segunda pessoa ficava sem entrada em `room.users`, o
+         * que a tornava invisível para todos e fazia todo handler posterior
+         * dela sair em silêncio.
+         */
+        await editarSala(rid, async (room) => {
+          const user = addUser(room, sessionId, stableUserId, name, {
+            seed: avatarSeed,
+            url: avatarUrl ? sanitizeImageDataUrl(avatarUrl) ?? undefined : undefined,
+          }, color);
+          await persistRoom(room);
+
+          socket.emit('room:welcome', { you: user, state: snapshot(room) });
+          socket.to(rid).emit('room:state', snapshot(room));
+          // Só emite evento de join se for um usuário NOVO (não reconexão)
+          const isReconnect = room.users[sessionId]?.lastSeen !== undefined && room.users[sessionId].lastSeen < Date.now() - 1000;
+          if (!isReconnect) {
+            system(rid, 'join', `${user.name} entrou na sala`);
+          }
+        });
       },
     );
 
