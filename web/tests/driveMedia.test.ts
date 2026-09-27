@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
-import { explicarFalha, publicarToken, urlDeMidia, type FalhaDrive } from '@/lib/driveMedia';
+import {
+  explicarFalha,
+  explicarPublicacao,
+  publicarToken,
+  urlDeMidia,
+  type FalhaDrive,
+} from '@/lib/driveMedia';
 
 /*
  * O worker do Drive é JavaScript puro em `public/`, e este módulo é a única
@@ -108,7 +114,7 @@ test('o token só é considerado publicado depois que o worker confirma a grava�
 
   assert.ok(espera.liberou, 'o worker deve ter recebido a porta para responder');
   espera.liberou();
-  assert.equal(await pending, true, 'confirmação do worker é o que fecha a publicação');
+  assert.deepEqual(await pending, { ok: true }, 'confirmação do worker é o que fecha a publicação');
 });
 
 test('o worker que não confirma derruba a publicação em vez de deixá-la pendurada', async () => {
@@ -118,17 +124,31 @@ test('o worker que não confirma derruba a publicação em vez de deixá-la pend
   responder = () => {};
 
   const inicio = Date.now();
-  assert.equal(await publicarToken('token-de-teste'), false);
+  assert.deepEqual(await publicarToken('token-de-teste'), { ok: false, motivo: 'sem_confirmacao' });
   const passou = Date.now() - inicio;
   assert.ok(passou >= 4900, `deve esperar o limite antes de desistir, esperou ${passou}ms`);
   assert.ok(passou < 8000, `não deve passar muito do limite, esperou ${passou}ms`);
 });
 
-test('sem service worker a publicação falha em vez de passar calada', async () => {
+test('sem service worker a publicação falha com o motivo, em vez de passar calada', async () => {
   delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker;
-  // Retorna `false`, e não uma exceção: quem chama decide o que mostrar, e um
-  // player que nem tenta é melhor que um player que não sabe o que houve.
-  assert.equal(await publicarToken('token-de-teste'), false);
+  /*
+   * Retorna um motivo, e não um booleano nem uma exceção. Um booleano obrigava a
+   * inventar uma frase que não era verdadeira em nenhum caso, e era a mesma
+   * armadilha do `MediaError` do `<video>`.
+   */
+  assert.deepEqual(await publicarToken('token-de-teste'), { ok: false, motivo: 'sem_suporte' });
+});
+
+test('cada motivo da publicação vira uma frase que diz o que fazer', () => {
+  // Recarregar resolve `sem_controle` e não resolve `sem_suporte`. Uma frase
+  // única para os dois manda a pessoa fazer a coisa errada.
+  const semControle = explicarPublicacao('sem_controle');
+  assert.match(semControle, /Ctrl\+Shift\+R|recarregue/i);
+  assert.ok(!explicarPublicacao('sem_suporte').match(/recarregue/i), 'sem service worker não se resolve recarregando');
+  assert.match(explicarPublicacao('sem_suporte'), /service worker/i);
+  assert.match(explicarPublicacao('registro_falhou'), /registrar/i);
+  assert.match(explicarPublicacao('sem_confirmacao'), /confirmou/i);
 });
 
 test('a página só publica depois de estar controlada pelo worker', async () => {
@@ -180,8 +200,23 @@ test('a página só publica depois de estar controlada pelo worker', async () =>
   await new Promise((r) => setTimeout(r, 10));
   sw.dispatchEvent(new Event('controllerchange'));
 
-  assert.equal(await pending, true);
+  assert.deepEqual(await pending, { ok: true });
   assert.equal(fired, 1, 'publica uma vez só, depois do claim');
+});
+
+test('uma página que nunca é controlada diz isso, em vez de esperar em silêncio', async () => {
+  /*
+   * `sem_controle` é o caso mais provável depois de um deploy: o worker antigo
+   * continua controlando a página e o novo não assume até haver recarregamento.
+   * A pessoa precisa ler "recarregue" na tela, e não uma frase genérica que não
+   * diz o que fazer.
+   */
+  serviceWorkerDoTeste().controller = null;
+  const inicio = Date.now();
+  assert.deepEqual(await publicarToken('token-de-teste'), { ok: false, motivo: 'sem_controle' });
+  const passou = Date.now() - inicio;
+  assert.ok(passou >= 4900, `deve esperar o limite antes de desistir, esperou ${passou}ms`);
+  assert.ok(passou < 8000, `não deve passar muito do limite, esperou ${passou}ms`);
 });
 
 /*

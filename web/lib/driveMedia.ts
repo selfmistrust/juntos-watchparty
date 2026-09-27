@@ -98,16 +98,32 @@ function esperarControle(): Promise<boolean> {
  * carregar e falhar, e um player preto sem explicação é a pior coisa que um
  * player de vídeo pode fazer.
  */
-export async function publicarToken(accessToken: string | null): Promise<boolean> {
-  if (!temSuporte()) return false;
-  await registrarMediaWorker();
-  if (!(await esperarControle())) return false;
-  const worker = navigator.serviceWorker.controller;
-  if (!worker) return false;
+/**
+ * Por que a publicação não aconteceu.
+ *
+ * São três causas sem nada em comum, e cada uma precisa de uma resposta
+ * diferente da pessoa. Devolver um booleano — como era antes — obrigava a
+ * inventar uma frase que não era verdadeira em nenhum dos casos, que é a mesma
+ * armadilha do `MediaError` do `<video>`.
+ */
+export type MotivoPublicacao =
+  | 'sem_suporte'
+  | 'registro_falhou'
+  | 'sem_controle'
+  | 'sem_confirmacao';
 
-  return new Promise<boolean>((resolve) => {
+export async function publicarToken(
+  accessToken: string | null,
+): Promise<{ ok: true } | { ok: false; motivo: MotivoPublicacao }> {
+  if (!temSuporte()) return { ok: false, motivo: 'sem_suporte' };
+  if (!(await registrarMediaWorker())) return { ok: false, motivo: 'registro_falhou' };
+  if (!(await esperarControle())) return { ok: false, motivo: 'sem_controle' };
+  const worker = navigator.serviceWorker.controller;
+  if (!worker) return { ok: false, motivo: 'sem_controle' };
+
+  const ok = await new Promise<boolean>((resolve) => {
     const porta = new MessageChannel();
-    const fechar = (ok: boolean) => {
+    const fechar = (resposta: boolean) => {
       clearTimeout(timer);
       /*
        * Fechar as duas portas não é detalhe: um `MessagePort` aberto segura o
@@ -116,7 +132,7 @@ export async function publicarToken(accessToken: string | null): Promise<boolean
        */
       porta.port1.close();
       porta.port2.close();
-      resolve(ok);
+      resolve(resposta);
     };
     const timer = setTimeout(() => fechar(false), TIMEOUT_TOKEN_MS);
     porta.port1.onmessage = (evento) => fechar((evento.data as { ok?: boolean } | null)?.ok === true);
@@ -127,6 +143,28 @@ export async function publicarToken(accessToken: string | null): Promise<boolean
       [porta.port2],
     );
   });
+  return ok ? { ok: true } : { ok: false, motivo: 'sem_confirmacao' };
+}
+
+/**
+ * A frase que a pessoa lê, por motivo.
+ *
+ * `sem_suporte` e `registro_falhou` são de configuração — o navegador não tem
+ * service worker, ou o arquivo não pôde ser registrado. `sem_controle` é a
+ * hipótese mais comum depois de um deploy: um worker antigo, com a versão
+ * anterior, ainda controla a página, e só troca depois de um recarregamento.
+ */
+export function explicarPublicacao(motivo: MotivoPublicacao): string {
+  switch (motivo) {
+    case 'sem_suporte':
+      return 'Este navegador não tem service worker, que é o que lê o vídeo do Google sem passar pelo nosso servidor.';
+    case 'registro_falhou':
+      return 'O navegador recusou registrar o leitor de vídeo do Google. Verifique se o site não está em modo privado restrito e recarregue a página.';
+    case 'sem_controle':
+      return 'O leitor de vídeo ainda não assumiu esta página. Isso costuma acontecer logo após um deploy: recarregue a página com Ctrl+Shift+R para trocar a versão antiga.';
+    case 'sem_confirmacao':
+      return 'O leitor de vídeo não confirmou que guardou a credencial. Recarregue a página e tente de novo.';
+  }
 }
 
 /** A URL que o `<video>` recebe: mesma origem, para o worker poder interceptar. */

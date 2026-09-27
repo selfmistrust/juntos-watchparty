@@ -7,6 +7,7 @@ import { useDriveAccount } from '@/hooks/useDriveAccount';
 import { fetchDrivePickerToken } from '@/lib/driveAccount';
 import {
   explicarFalha,
+  explicarPublicacao,
   lerFalhaDoWorker,
   publicarToken,
   registrarMediaWorker,
@@ -96,8 +97,12 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
        * leva 401 — que aparece como player preto em 0:00, sem mensagem.
        */
       const publicado = await publicarToken(token);
-      if (!publicado) {
-        setErro('Não foi possível preparar a leitura do Google neste navegador.');
+      if (!publicado.ok) {
+        // O motivo importa: recarregar a página resolve `sem_controle`, que é
+        // o caso comum depois de um deploy, e não resolve nada em
+        // `sem_suporte`. Uma frase única para os dois manda a pessoa fazer a
+        // coisa errada.
+        setErro(explicarPublicacao(publicado.motivo));
         setEstado('indisponivel');
         return;
       }
