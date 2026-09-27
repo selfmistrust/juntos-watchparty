@@ -27,14 +27,67 @@
  * fica no IndexedDB desta origem e some quando a pessoa desconecta a conta.
  */
 
+/**
+ * A versão do worker, e ela precisa mudar sempre que este arquivo mudar.
+ *
+ * ## Por que a versão está no nome
+ *
+ * O sintoma observado: `active: "activated"` com `controller: null`. O worker
+ * instala e ativa, mas a página nunca entra sob controle dele — e o `<video>`
+ * passa a pedir `/__drive_media/...` à rede comum, levando 404 da hospedagem.
+ *
+ * A causa é o `clients.claim()`: ele roda no evento `activate`, e o `activate`
+ * só acontece **uma vez por versão do worker**. Se uma versão já ativou numa
+ * visita anterior e a página foi aberta depois, o `claim` daquele `activate` já
+ * aconteceu e não alcança esta página. Recarregar não resolve, porque recarregar
+ * não gera um `activate` novo — o worker continua sendo o mesmo, já ativado.
+ *
+ * A saída é forçar um `install` novo, e a forma honesta de fazer isso é mudar a
+ * URL do script. Com `?v=N` diferente, o navegador trata como outro script,
+ * instala, ativa, e aí o `claim()` roda de fato.
+ *
+ * Bump este número **sempre** que editar este arquivo. Um `waitUntil` faltando
+ * num `activate` antigo nunca mais vai rodar.
+ */
+const VERSAO = 2;
+
 /** Caminho interceptado. Precisa ser da própria origem para o worker existir. */
 const PREFIXO = '/__drive_media/';
 const DRIVE = 'https://www.googleapis.com/drive/v3/files';
 const BANCO = 'juntos-drive';
 const LOJA = 'credenciais';
 
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (evento) => evento.waitUntil(self.clients.claim()));
+/*
+ * Assume a página imediatamente, e os dois lados disso precisam de `waitUntil`.
+ *
+ * O sintoma era `active: "activated"` com `controller: null`: o worker instala e
+ * ativa, mas a página nunca entra sob controle dele, e o `<video>` passa a pedir
+ * `/__drive_media/...` à rede comum, recebendo 404 da hospedagem. Nenhum
+ * `controllerchange` chega, porque ninguém foi asumido.
+ *
+ * `waitUntil` não é formalidade aqui. Sem ele, o navegador pode encerrar o
+ * evento antes de a promessa resolver: o `skipWaiting` no `install` pode ficar
+ * pela metade, e o `claim` no `activate` — que é o que realmente assume a
+ * página — pode não rodar. O sintoma é exatamente esse: registration criada,
+ * worker ativado, página fora do controle, e nenhuma pista de por quê.
+ */
+/*
+ * Registra a versão, para que o `claim` do `activate` tenha o que assumir.
+ *
+ * `waitUntil` não é formalidade em nenhum dos dois: sem ele, o navegador pode
+ * encerrar o evento antes da promessa resolver, e o `skipWaiting` fica pela
+ * metade. O sintoma é o mesmo nos dois casos — registration criada, worker
+ * ativado, página fora do controle, nenhuma pista de por quê.
+ */
+self.addEventListener('install', (evento) => {
+  evento.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', (evento) => {
+  evento.waitUntil(self.clients.claim());
+});
+
+console.log('[drive-sw] activate', VERSAO);
 
 function abrirBanco() {
   return new Promise((resolve, reject) => {

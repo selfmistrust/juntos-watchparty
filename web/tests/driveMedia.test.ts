@@ -4,6 +4,7 @@ import {
   explicarFalha,
   explicarPublicacao,
   publicarToken,
+  registrarMediaWorker,
   urlDeMidia,
   type FalhaDrive,
 } from '@/lib/driveMedia';
@@ -129,6 +130,9 @@ function instalarServiceWorker(): void {
   registroDoTeste = {
     installing: undefined,
     waiting: undefined,
+    // `update()` é chamado pelo `registrarMediaWorker`; sem ele aqui, o teste
+    // veria uma exceção dentro do `catch` e um `registro_falhou` inventado.
+    update: async () => {},
     // O `active` também é um `ServiceWorker`, e o código registra `statechange`
     // nele. Um objeto sem `addEventListener` fazia a exceção cair dentro do
     // `catch` de `register()`, e o teste via `registro_falhou` — um motivo
@@ -364,6 +368,36 @@ test('cada causa do Google vira uma frase que aponta o conserto', () => {
   // Sem registro do worker, o texto genérico é o fallback honesto.
   assert.equal(explicarFalha(null, FALHA), FALHA);
   assert.equal(explicarFalha({ motivo: 'desconhecido', status: 500 } as FalhaDrive, FALHA).includes(FALHA), false);
+});
+
+test('a URL do worker carrega a versão, porque o claim só roda no activate', () => {
+  /*
+   * `clients.claim()` roda no evento `activate`, e o `activate` só acontece uma
+   * vez por versão. Uma versão já ativada numa visita anterior nunca mais assume
+   * as páginas seguintes, e recarregar não gera um `activate` novo — o sintoma
+   * é `active: "activated"` com `controller: null`, sem nenhuma pista.
+   *
+   * A versão na URL obriga o navegador a tratar como outro script, o que dispara
+   * um `install` e um `activate` de verdade.
+   */
+  const sw = navigator.serviceWorker as unknown as { register: (u: string) => Promise<unknown> };
+  const original = sw.register;
+  let pedida = '';
+  sw.register = async (u: string) => {
+    pedida = u;
+    return registroDoTeste;
+  };
+
+  return registrarMediaWorker().then(
+    () => {
+      assert.match(pedida, /^\/drive-media-sw\.js\?v=\d+$/, `URL sem versão: ${pedida}`);
+      sw.register = original;
+    },
+    (erro) => {
+      sw.register = original;
+      throw erro;
+    },
+  );
 });
 
 test('a url de mídia é um caminho da própria origem, para o worker interceptar', () => {

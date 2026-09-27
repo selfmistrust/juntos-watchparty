@@ -20,7 +20,23 @@
  * anual que um escopo restrito exigiria.
  */
 
-const SW_URL = '/drive-media-sw.js';
+/**
+ * A URL do worker, com a versão no query string.
+ *
+ * A versão precisa mudar a cada alteração no arquivo, e o motivo é o mesmo do
+ * lado do worker: `clients.claim()` roda no `activate`, e o `activate` só
+ * acontece uma vez por versão. Com a URL diferente, o navegador trata como outro
+ * script, instala, ativa, e o `claim` roda de fato.
+ *
+ * Sem isso, uma versão com um `activate` quebrado continua controlando a origem
+ * para sempre, e recarregar a página não conserta — porque recarregar não gera um
+ * `activate` novo. Foi o que aconteceu: `active: "activated"` com
+ * `controller: null`, sem nenhuma pista de por quê.
+ *
+ * **Bump ao editar `public/drive-media-sw.js`.**
+ */
+const VERSAO_WORKER = 2;
+const SW_URL = `/drive-media-sw.js?v=${VERSAO_WORKER}`;
 const MEDIA_PREFIX = '/__drive_media/';
 
 /**
@@ -131,14 +147,26 @@ export function registrarMediaWorker(): Promise<ServiceWorkerRegistration | null
    */
   return navigator.serviceWorker
     .register(SW_URL, { scope: '/' })
-    .then((r) => {
+    .then(async (r) => {
+      /*
+       * `update()` não é redundante com o `?v=`. O navegador só compara a URL
+       * nova com a registrada quando algo o manda verificar, e esse algo é o
+       * `register()` — mas só quando o script muda de verdade. Sem o
+       * `update()`, trocar a constante de versão pode não installar nada, e o
+       * sintoma volta a ser `active` com `controller: null`, agora sem nenhuma
+       * pista nova.
+       *
+       * A falha do `update()` não derruba o registro: uma rede ruim só significa
+       * que ficamos com a versão antiga, que ainda funciona.
+       */
+      await r.update().catch((e) => console.info('[drive] update() não concluiu', e));
       const estado = () => ({
         installing: r.installing?.state ?? null,
         waiting: r.waiting?.state ?? null,
         active: r.active?.state ?? null,
         controller: navigator.serviceWorker.controller?.scriptURL ?? null,
       });
-      console.info('[drive] registration criada', estado());
+      console.info(`[drive] registration criada (v${VERSAO_WORKER})`, estado());
       r.addEventListener('updatefound', () => console.info('[drive] updatefound', estado()));
       for (const w of [r.installing, r.waiting, r.active]) {
         w?.addEventListener('statechange', () => console.info(`[drive] worker ${w.state}`, estado()));
