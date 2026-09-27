@@ -242,6 +242,115 @@ self.addEventListener('fetch', (evento) => {
   evento.respondWith(repassar(evento.request, fileId));
 });
 
+/**
+ * Metadados do arquivo, com o tamanho total.
+ *
+ * ## Por que uma chamada extra
+ *
+ * Porque o `Content-Range` do Google **não é legível de fora**, e ele é o
+ * cabeçalho de que o `<video>` mais depende. A lista de cabeçalhos que o CORS
+ * deixa ler é curta — `Content-Type`, `Content-Length`, `Cache-Control`,
+ * `Content-Language`, `Expires`, `Last-Modified`, `Pragma` — e `Content-Range`
+ * não está nela. Um `fetch` de fora da origem que o peça recebe `null`, mesmo
+ * com o cabeçalho chegando no fio.
+ *
+ * Isso explica o sintoma inteiro: o `206` volta, o `Content-Length` e o
+ * `Content-Type` voltam, o `Content-Range` não, e o player recebe um trecho que
+ * ele não consegue posicionar. O `MEDIA_ELEMENT_ERROR code 4` é a consequência
+ * de um `206` sem intervalo declarado, não de codec — a mesma tela que um
+ * `.mkv` incompatível produziria.
+ *
+ * O tamanho total vem de `files.get`, e é o que permite reconstruir o cabeçalho
+ * que o navegador precisa.
+ */
+async function metadadosDe(fileId, token) {
+  const url = new URL(`${DRIVE}/${fileId}`);
+  url.searchParams.set('fields', 'id,name,mimeType,size,capabilities(canDownload)');
+  url.searchParams.set('supportsAllDrives', 'true');
+  const resposta = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!resposta.ok) return null;
+  const dados = await resposta.json();
+  return {
+    nome: dados.name || '',
+    mimeType: dados.mimeType || '',
+    tamanho: Number(dados.size) || 0,
+    // `canDownload` explícito: o dono do arquivo pode bloquear o download, e
+    // aí o `206` volta com um erro que só o cabeçalho de erro do Google explica.
+    podeBaixar: dados.capabilities ? dados.capabilities.canDownload !== false : true,
+  };
+}
+
+/**
+ * Cache dos metadados, por arquivo.
+ *
+ * Sem isso, cada pedaço de seek chamaria `files.get` de novo, e um arrasto de
+ * barra de meio em meio segundo viraria meia dúzia de chamadas à API. O cache é
+ * por sessão do worker: se ele for encerrado, o próximo `fetch` repopula, e
+ * uma chamada a mais é melhor do que a taxa da API estourada.
+ */
+const METADADOS = new Map();
+
+async function metadadosComCache(fileId, token) {
+  const guardado = METADADOS.get(fileId);
+  if (guardado) return guardado;
+  const dados = await metadadosDe(fileId, token);
+  if (dados) METADADOS.set(fileId, dados);
+  return dados;
+}
+
+/**
+ * Lê o `Range` do navegador e devolve os números.
+ *
+ * Devolve `null` quando o cabeçalho é ausente ou tem mais de um intervalo, e
+ * é aí que o caso muda: um pedido sem `Range` não tem reconstrução a fazer, o
+ * Google devolve o arquivo inteiro e o `Content-Range` é desnecessário.
+ *
+ * Um `bytes=-500` (os últimos 500 bytes) é tratado como sufixo, que é a forma
+ * que o CORS e a spec usam para "deixe-me o fim do arquivo" — e é exatamente o
+ * pedido que um MP4 com `moov` no fim faz para descobrir se consegue tocar.
+ */
+function analisarRange(cabecalho, total) {
+  if (!cabecalho) return null;
+  const achado = /^bytes=(\d*)-(\d*)$/.exec(cabecalho.trim());
+  if (!achado) return null;
+  const inicio = achado[1];
+  const fim = achado[2];
+  if (inicio === '' && fim === '') return null;
+  // Sufixo: `bytes=-N` pede os N últimos bytes.
+  if (inicio === '') {
+    const quantos = Number(fim);
+    if (!Number.isFinite(quantos) || quantos <= 0) return null;
+    return { inicio: Math.max(0, total - quantos), fim: total - 1, sufixo: true };
+  }
+  const comeco = Number(inicio);
+  if (!Number.isFinite(comeco) || comeco < 0) return null;
+  const final = fim === '' ? total - 1 : Number(fim);
+  if (!Number.isFinite(final) || final < comeco) return null;
+  return { inicio: comeco, fim: Math.min(final, total - 1), sufixo: false };
+}
+
+/**
+ * Reconstrui o `Content-Range` que o CORS escondeu.
+ *
+ * O `Content-Length` **é** legível, e é o que fecha a conta: o trecho que o
+ * Google devolveu começa no `start` que pedimos e tem o tamanho que ele mandou,
+ * então `end = start + length - 1`. Só falta o total, que vem dos metadados.
+ *
+ * A alternativa seria deixar o `Content-Range` de fora, e aí o navegador trata
+ * o `206` como incompleto e aborta com `MEDIA_ELEMENT_ERROR` — que é o bug que
+ * estamos corrigindo.
+ */
+function reconstruirContentRange(inicio, tamanho, total) {
+  if (total <= 0 || tamanho <= 0) return null;
+  const fim = inicio + tamanho - 1;
+  // O total vem do metadado, e o `end` não pode passar dele: um valor além do
+  // fim do arquivo é um `Content-Range` inválido, e o player vai recusar.
+  if (fim > total - 1) return null;
+  return `bytes ${inicio}-${fim}/${total}`;
+}
+
 async function repassar(pedido, fileId) {
   const token = await lerToken();
   if (!token) {
@@ -249,6 +358,45 @@ async function repassar(pedido, fileId) {
     // botão de conectar o Drive, em vez de um player quebrado sem explicação.
     await registrarFalha({ motivo: 'sem_token', status: 401 });
     return new Response('sem credencial do drive', { status: 401 });
+  }
+
+  const cabecalhoRange = pedido.headers.get('Range');
+  let total = 0;
+  let mimeDoArquivo = '';
+  if (cabecalhoRange) {
+    /*
+     * O tamanho total vem antes da mídia, e só quando há `Range` a reconstruir.
+     * Um pedido sem `Range` não precisa dele, e a chamada extra seria um custo
+     * à toa no primeiro playback.
+     */
+    const metadados = await metadadosComCache(fileId, token).catch(() => null);
+    if (metadados) {
+      total = metadados.tamanho;
+      mimeDoArquivo = metadados.mimeType;
+      if (!metadados.podeBaixar) {
+        await registrarFalha({ motivo: 'sem_acesso', status: 403, detalhe: 'download bloqueado' });
+        return new Response('download bloqueado', { status: 403 });
+      }
+    }
+  }
+
+  const intervalo = analisarRange(cabecalhoRange, total);
+
+  /*
+   * Um `start` além do fim do arquivo é um `416 Range Not Satisfiable`, com o
+   * total no `Content-Range` — que é o que o RFC pede e o que o player usa para
+   * reposicionar em vez de tentar ler do zero.
+   */
+  if (intervalo && !intervalo.sufixo && intervalo.inicio >= total && total > 0) {
+    console.warn('[drive-sw] intervalo além do fim do arquivo', {
+      pedido: cabecalhoRange,
+      inicio: intervalo.inicio,
+      total,
+    });
+    return new Response(null, {
+      status: 416,
+      headers: { 'Content-Range': `bytes */${total}`, 'Accept-Ranges': 'bytes' },
+    });
   }
 
   const alvo = new URL(`${DRIVE}/${fileId}`);
@@ -260,14 +408,17 @@ async function repassar(pedido, fileId) {
    * O `Range` do navegador vai junto, e é ele que faz o seek.
    *
    * Sem esta linha o player baixa o arquivo inteiro a cada reposicionamento, e
-   * o `Content-Range` que volta não casa com o que foi pedido: o navegador não
+   * o `Content-Length` que volta não casa com o que foi pedido: o navegador não
    * consegue montar a resposta parcial. Encaminhar o cabeçalho e devolver o
-   * `206` com `Content-Range`, `Content-Length` e `Accept-Ranges` é o contrato
-   * inteiro do seek.
+   * `206` com `Content-Range` reconstruído é o contrato inteiro do seek.
    */
-  const range = pedido.headers.get('Range');
-  if (range) cabecalhos.Range = range;
-  console.info('[drive-sw] token recebido, buscando no Drive', { fileId, range });
+  if (cabecalhoRange) cabecalhos.Range = cabecalhoRange;
+  console.info('[drive-sw] token recebido, buscando no Drive', {
+    fileId,
+    range: cabecalhoRange,
+    total,
+    mimeType: mimeDoArquivo,
+  });
 
   let resposta;
   try {
@@ -281,6 +432,7 @@ async function repassar(pedido, fileId) {
     status: resposta.status,
     contentType: resposta.headers.get('content-type'),
     contentRange: resposta.headers.get('content-range'),
+    contentLength: resposta.headers.get('content-length'),
   });
 
   if (!resposta.ok || !resposta.body) {
@@ -320,14 +472,14 @@ async function repassar(pedido, fileId) {
   }
 
   /*
-   * Os cabeçalhos que o player precisa, e a ordem deles não importa — o que
-   * importa é a lista.
+   * Os cabeçalhos que o player precisa.
    *
-   * `Content-Range` é o crítico: sem ele num `206`, o navegador não sabe qual
-   * parte do arquivo recebeu e trata a resposta como incompleta, o que derruba
-   * a reprodução. `ETag` e `Last-Modified` são repassados porque o player os usa
-   * para validar uma nova requisição de intervalo, e inventar um `ETag` falso
-   * faria o navegador recusar um intervalo válido.
+   * `Content-Range` é o crítico, e é o único que este proxy precisa
+   * **reconstruir**: o CORS não deixa o `fetch` de fora da origem lê-lo, mesmo
+   * com o Google mandando. Os demais chegam legíveis e são repassados como
+   * vieram. `ETag` e `Last-Modified` são repassados porque o player os usa para
+   * validar uma nova requisição de intervalo, e inventar um `ETag` falso faria o
+   * navegador recusar um intervalo válido.
    */
   const CABECALHOS_REPASSADOS = [
     'content-type',
@@ -343,24 +495,41 @@ async function repassar(pedido, fileId) {
     if (valor) repassados.set(nome, valor);
   }
   /*
-   * `Accept-Ranges` só é afirmado quando o Google o disse. Declarar `bytes` em
-   * uma resposta que não tem `Content-Range` é anunciar um contrato que a
+   * O `Content-Range` legível tem precedência sobre o reconstruído. Se um dia o
+   * Google passar a expor o cabeçalho, usar o valor dele é mais correto do que
+   * recalcular, e a diferença é quem calcula a conta.
+   */
+  let origemDoRange = 'google';
+  if (resposta.status === 206 && !repassados.has('content-range') && intervalo && total > 0) {
+    const tamanho = Number(resposta.headers.get('content-length')) || 0;
+    const reconstruido = reconstruirContentRange(intervalo.inicio, tamanho, total);
+    if (reconstruido) {
+      repassados.set('Content-Range', reconstruido);
+      origemDoRange = 'reconstruido';
+    }
+  }
+  /*
+   * `Accept-Ranges` é afirmado quando há `Content-Range` — e só então. Declarar
+   * `bytes` numa resposta sem intervalo declarado é anunciar um contrato que a
    * resposta não cumpre, e é assim que o player descobre que o byte pedido não
    * chegou.
    */
-  if (!repassados.has('accept-ranges') && resposta.headers.get('content-range')) {
-    repassados.set('Accept-Ranges', 'bytes');
-  }
+  if (repassados.has('content-range')) repassados.set('Accept-Ranges', 'bytes');
   repassados.set('Cache-Control', 'no-store');
 
   /*
-   * Um `206` sem `Content-Range` é um contrato quebrado, e é a falha exata que
-   * impede o seek: o player recebe 200 bytes e não sabe onde eles estão no
-   * arquivo. O log existe para transformar um sintoma ("não reproduz") em um
-   * dado ("o Google devolveu 206 sem Content-Range").
+   * Um `206` sem `Content-Range` é um contrato quebrado, e é a falha que
+   * produz `MEDIA_ELEMENT_ERROR code 4`: o player recebe bytes e não sabe onde
+   * eles estão. O log transformaria "não reproduz" em "o Google devolveu 206 sem
+   * Content-Range e não deu para reconstruir" — mas a causa já é conhecida e
+   * corrigida, então o que resta é o sinal de que ela voltou.
    */
   if (resposta.status === 206 && !repassados.has('content-range')) {
-    console.error('[drive-sw] 206 sem Content-Range: o player não consegue posicionar o trecho');
+    console.error('[drive-sw] 206 sem Content-Range e sem como reconstruir', {
+      pedido: cabecalhoRange,
+      total,
+      contentLength: resposta.headers.get('content-length'),
+    });
   }
 
   /*
@@ -385,8 +554,9 @@ async function repassar(pedido, fileId) {
   for (const nome of CABECALHOS_REPASSADOS) {
     devolvidos[nome] = repassados.get(nome);
   }
+  console.info('[drive-sw] contentRange', { origem: origemDoRange, valor: devolvidos['content-range'] });
   console.info('[drive-sw] devolvendo ao player', {
-    pedido: range ?? '(sem Range)',
+    pedido: cabecalhoRange ?? '(sem Range)',
     status: resposta.status,
     doGoogle: {
       contentRange: resposta.headers.get('content-range'),

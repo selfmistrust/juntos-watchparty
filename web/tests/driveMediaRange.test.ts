@@ -44,6 +44,51 @@ test('o 206 repassa Content-Range, Content-Length, Content-Type e Accept-Ranges'
   }
 });
 
+test('o Content-Range é reconstruído, porque o CORS não deixa o fetch lê-lo', () => {
+  /*
+   * Este é o bug que produzia `MEDIA_ELEMENT_ERROR code 4`. O CORS só deixa ler
+   * um punhado de cabeçalhos, e `Content-Range` não está entre eles: o Google
+   * manda, o `fetch` devolve `null`, e o player recebe um `206` que não sabe
+   * posicionar.
+   *
+   * A reconstrução precisa dos metadados (o tamanho total) e do
+   * `Content-Length` (que é legível), então as duas peças têm de existir.
+   */
+  assert.ok(
+    fonte.includes("'id,name,mimeType,size,capabilities(canDownload)'"),
+    'os metadados precisam trazer tamanho, mimeType e canDownload',
+  );
+  assert.match(
+    fonte,
+    /!repassados\.has\('content-range'\)/,
+    'a reconstrução só entra quando o cabeçalho do Google não chegou',
+  );
+  assert.match(fonte, /reconstruirContentRange\(/, 'a função de reconstrução precisa ser usada');
+});
+
+test('um start além do fim do arquivo é 416 com o total no cabeçalho', () => {
+  /*
+   * Devolver 200 com o arquivo inteiro nesse caso seria o comportamento
+   * errado: o player pediu bytes que não existem, e é o total no `Content-Range`
+   * que o RFC define e que o player usa para se reposicionar em vez de tentar
+   * ler do zero.
+   */
+  assert.match(fonte, /416/, 'precisa existir o caminho de intervalo não satisfazível');
+  /*
+   * A busca pelo cabeçalho do 416 é por string, não por regex: a sequência que
+   * representa a barra do intervalo seguida do fim do bloco de comentário fecha
+   * o próprio comentário, e o erro que aparece é de sintaxe, longe da causa.
+   */
+  assert.ok(
+    fonte.includes("'Content-Range': `bytes */${total}`"),
+    'o 416 precisa declarar o total no Content-Range',
+  );
+  assert.ok(
+    fonte.includes('intervalo.inicio >= total'),
+    'a comparação com o total precisa existir',
+  );
+});
+
 test('o corpo passa como stream, sem virar memória', () => {
   /*
    * Um filme de 700 MB em memória seria 700 MB de RAM por espectador, que é
@@ -79,7 +124,11 @@ test('o Range do navegador é encaminhado ao Google', () => {
    * arrasta 700 MB a cada reposicionamento — o que explica "não começa
    * rápido" sem que nada pareça quebrado.
    */
-  assert.match(fonte, /cabecalhos\.Range = range/, 'o Range pedido precisa ir no pedido ao Google');
+  assert.match(
+    fonte,
+    /cabecalhos\.Range = cabecalhoRange/,
+    'o Range pedido precisa ir no pedido ao Google',
+  );
   assert.match(fonte, /pedido\.headers\.get\('Range'\)/, 'o Range tem que ser lido da requisição');
 });
 
