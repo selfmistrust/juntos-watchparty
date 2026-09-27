@@ -365,20 +365,32 @@ export async function completeOAuth(params: {
   return { ok: true };
 }
 
+/**
+ * Renova o access token, preservando o motivo da falha.
+ *
+ * Antes isto devolvia só `TokenRecord | null`, e o chamador tinha de inventar um
+ * motivo a partir da ausência. Isso jogava fora a única informação que
+ * interessa: o Google já havia dito *por que* recusou, e a diferença entre "a
+ * conta morreu" e "o Google está having a bad day" é justamente o que decide se
+ * a pessoa reconecta ou espera cinco segundos.
+ */
 async function refreshAccessToken(
   sessionId: string,
   record: TokenRecord,
-): Promise<TokenRecord | null> {
+): Promise<{ record: TokenRecord } | { reason: AuthFailure }> {
   const lockKey = REFRESH_LOCK(sessionId);
   const lockOwner = `${sessionId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   const locked = await redis.set(lockKey, lockOwner, 'EX', 30, 'NX');
   if (!locked) {
+    // Outra renovação está em curso: esperar e ler o resultado dela evita duas
+    // chamadas ao Google para o mesmo token.
     for (let i = 0; i < 5; i++) {
       await new Promise((r) => setTimeout(r, 300));
       const current = await loadTokens(sessionId);
-      if (current && current.accessExpiresAt > Date.now() + 15_000) return current;
+      if (current && current.accessExpiresAt > Date.now() + 15_000) return { record: current };
     }
-    return loadTokens(sessionId);
+    const atual = await loadTokens(sessionId);
+    return atual ? { record: atual } : { reason: 'not_connected' };
   }
   try {
     const token = await exchangeToken({
@@ -392,9 +404,14 @@ async function refreshAccessToken(
       console.error('[drive-oauth] refresh recusado:', err);
       if (isInvalidGrant(err)) {
         await deleteTokens(sessionId);
-        return null;
+        return { reason: 'revoked' };
       }
-      return null;
+      // `isTemporaryError` olha o status HTTP, não só o nome do erro: o Google
+      // responde `http_503` quando o endpoint está sobrecarregado, e esse erro
+      // não tem nome nenhum para casar.
+      return {
+        reason: isTemporaryError(err, token._httpStatus) ? 'temporary' : 'expired',
+      };
     }
     const next: TokenRecord = {
       ...record,
@@ -406,10 +423,10 @@ async function refreshAccessToken(
     };
     if (!hasLimitedDriveScope(next.scope)) {
       await revokeAndDelete(sessionId);
-      return null;
+      return { reason: 'not_connected' };
     }
     await saveTokens(sessionId, next, record.generation);
-    return next;
+    return { record: next };
   } finally {
     const lua = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
     await redis.eval(lua, 1, lockKey, lockOwner);
@@ -429,12 +446,8 @@ export async function getValidAccessToken(
     return { ok: true, accessToken: record.accessToken };
   }
   const refreshed = await refreshAccessToken(sessionId, record);
-  if (!refreshed) {
-    const still = await loadTokens(sessionId);
-    if (!still) return { ok: false, reason: 'revoked' };
-    return { ok: false, reason: 'expired' };
-  }
-  return { ok: true, accessToken: refreshed.accessToken };
+  if ('reason' in refreshed) return { ok: false, reason: refreshed.reason };
+  return { ok: true, accessToken: refreshed.record.accessToken };
 }
 
 async function revokeGoogleToken(token: string): Promise<void> {

@@ -212,7 +212,18 @@ export function registerDriveRoutes(app: Express): void {
     }
   });
 
-  /** Access token curto para o Picker e para o download direto pelo navegador. */
+  /**
+   * Access token curto, para abrir o Picker e para o player reproduzir.
+   *
+   * A distinção que importa aqui é entre **reconectar** e **tentar de novo**:
+   *
+   * - `not_connected`, `revoked` e `expired` são 401, porque a autorização
+   *   guardado não vai mais render token. Reconectar resolve, e o cliente já
+   *   sabe transformar 401 em "conecte de novo".
+   * - `temporary` é 502, porque o Google recusou por algo passageiro e a conta
+   *   está boa. Um 401 aqui mandaria a pessoa refazer o consentimento por causa
+   *   de um 503 do Google, o que é o pior jeito de se errar.
+   */
   app.get('/api/drive/picker-token', async (req, res) => {
     res.set('Cache-Control', 'private, no-store');
     if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
@@ -221,9 +232,16 @@ export function registerDriveRoutes(app: Express): void {
 
     try {
       const token = await getValidAccessToken(sessionId);
-      if (!token.ok) return jsonError(res, ['not_connected', 'revoked'].includes(token.reason) ? 401 : 502, token.reason);
-      res.json({ accessToken: token.accessToken });
-    } catch {
+      if (token.ok) return res.json({ accessToken: token.accessToken });
+      // Só `temporary` é passageiro; todo o resto (`not_connected`, `revoked`,
+      // `expired`) é autorização que não vai mais render token.
+      return jsonError(res, token.reason === 'temporary' ? 502 : 401, token.reason);
+    } catch (err) {
+      // Sem isto, um 500 chegava ao painel como falha genérica e o motivo
+      // ficava só no console de quem desenvolve — ou seja, em lugar nenhum. A
+      // renovação do token é o caminho que mais quebra, e é o que a pessoa
+      // mais precisa ver registrado.
+      console.error('[drive-token] falha inesperada ao obter o token do Picker', err);
       jsonError(res, 500, 'token_unavailable');
     }
   });

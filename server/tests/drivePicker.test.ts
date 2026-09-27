@@ -25,6 +25,18 @@ for (const client of [redis, pubClient, subClient]) client.disconnect();
 
 const entries = new Map<string, { value: string; expiresAt: number }>();
 let timeOffset = 0;
+
+/**
+ * Desloca o relógio do processo, em milissegundos.
+ *
+ * O access token vive por ~1 h e o piso de `expiraEmMs` é 30 s, então nenhum
+ * `expires_in` do mock consegue deixá-lo vencido na hora. Sem isto não há como
+ * exercitar a renovação — que é justamente o caminho que quebrou: o 502 da
+ * pessoa veio de um refresh recusado, e nenhum teste cobria isso.
+ */
+let relogio = 0;
+const agoraReal = Date.now;
+Date.now = () => agoraReal() + relogio;
 const get = (key: string) => {
   const entry = entries.get(key);
   if (!entry || entry.expiresAt <= Date.now() + timeOffset) {
@@ -47,10 +59,29 @@ mock.method(redis, 'set', async (key: string, value: string, ...args: (string | 
   return 'OK';
 });
 mock.method(redis, 'del', async (...keys: string[]) => keys.reduce((count, key) => count + Number(entries.delete(key)), 0));
+/**
+ * O `eval` do bloqueio de renovação: apaga a chave só se o valor ainda for o
+ * nosso, para não derrubar o lock de quem o pegou depois.
+ *
+ * O mock traduz o Lua à mão. Ele só apareceu agora porque nenhum teste renewava
+ * token — a ausência do mock passava despercebida até o primeiro teste de
+ * renovação, que batia em "Connection is closed" num cliente Redis desligado.
+ */
+mock.method(redis, 'eval', async (_script: string, _numKeys: number, key: string, esperado: string) => {
+  if (get(key) !== esperado) return 0;
+  entries.delete(key);
+  return 1;
+});
 
 const realFetch = globalThis.fetch;
 let exchanges: URLSearchParams[] = [];
-let tokenFailure = false;
+/**
+ * Resposta do endpoint de token quando queremos simular uma recusa.
+ *
+ * O formato importa: o Google responde o erro no corpo com HTTP 200 **ou** com
+ * 4xx, e a distinção é o que separa "conta morta" de "Google instável".
+ */
+let tokenError: { http: number; body: Record<string, unknown> } | null = null;
 type DriveCall = { url: string; range: string | null; auth: string | null; method: string; body: unknown };
 let driveCalls: DriveCall[] = [];
 let driveMeta: Record<string, unknown> | null = null;
@@ -141,13 +172,17 @@ mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: Re
   const url = new URL(input instanceof Request ? input.url : input);
   if (url.href === 'https://oauth2.googleapis.com/token') {
     exchanges.push(new URLSearchParams(init?.body as URLSearchParams));
-    return tokenFailure
-      ? new Response('{}', { status: 503 })
-      : Response.json({
-        access_token: 'test-access-token', refresh_token: 'test-refresh-token',
-        expires_in: 3600,
-        scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
+    if (tokenError) {
+      return new Response(JSON.stringify(tokenError.body), {
+        status: tokenError.http,
+        headers: { 'content-type': 'application/json' },
       });
+    }
+    return Response.json({
+      access_token: 'test-access-token', refresh_token: 'test-refresh-token',
+      expires_in: 3600,
+      scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
+    });
   }
   if (url.href === 'https://www.googleapis.com/oauth2/v3/userinfo') {
     return Response.json({ email: userinfoEmail, email_verified: true });
@@ -174,8 +209,9 @@ const videoId = 'video_selecionado_123';
 beforeEach(() => {
   entries.clear();
   timeOffset = 0;
+  relogio = 0;
   exchanges = [];
-  tokenFailure = false;
+  tokenError = null;
   driveCalls = [];
   driveMeta = metaPadrao();
   mediaStatus = 200;
@@ -301,7 +337,7 @@ test('IDs inválidos e falha na troca do código chegam como erro ao app', async
   await callback(invalid.url, { code: 'code', picked_file_ids: '../../outro,video' });
   assert.deepEqual(await (await status(invalid.requestId, cookie)).json(), { status: 'error' });
   assert.equal(exchanges.length, 0);
-  tokenFailure = true;
+  tokenError = { http: 503, body: { error: 'temporarily_unavailable' } };
   const request = await start(cookie);
   await callback(request.url, { code: 'code', picked_file_ids: videoId });
   assert.deepEqual(await (await status(request.requestId, cookie)).json(), { status: 'error' });
@@ -369,6 +405,43 @@ async function registrar(cookie: string, fileId = videoId) {
     body: JSON.stringify({ fileId }),
   });
 }
+
+test('renovação recusada distingue conta morta de Google instável', async () => {
+  const cookie = await conectar();
+  // O token nasce válido; adiantamos o relógio para forçar a renovação, que é o
+  // caminho que o 502 da pessoa percorreu.
+  relogio = 2 * 60 * 60 * 1000;
+
+  const pedir = () => fetch(`${base}/api/drive/picker-token`, { headers: { cookie, origin } });
+
+  /*
+   * 1. Google sobrecarregado. A conta está boa: 502 e "tente de novo". Um 401
+   *    aqui mandaria a pessoa refazer o consentimento por causa de um 503.
+   */
+  tokenError = { http: 503, body: { error: 'temporarily_unavailable' } };
+  const passageiro = await pedir();
+  assert.equal(passageiro.status, 502);
+  assert.equal(((await passageiro.json()) as { error: string }).error, 'temporary');
+  // O status público continua dizendo conectado: a conta não morreu.
+  assert.equal((await (await fetch(`${base}/api/drive/status`, { headers: { cookie } })).json()).connected, true);
+
+  /*
+   * 2. Recusa definitiva que não é revogação — credencial do app trocada, por
+   *    exemplo. A conta está morta mesmo sem o Google dizer `invalid_grant`:
+   *    401, e o cliente passa a oferecer "Trocar de conta".
+   */
+  tokenError = { http: 400, body: { error: 'invalid_client' } };
+  const morto = await pedir();
+  assert.equal(morto.status, 401);
+  assert.equal(((await morto.json()) as { error: string }).error, 'expired');
+
+  // 3. Revogação de verdade: some o registro, e o status volta a desconectado.
+  tokenError = { http: 400, body: { error: 'invalid_grant' } };
+  const revogado = await pedir();
+  assert.equal(revogado.status, 401);
+  assert.equal(((await revogado.json()) as { error: string }).error, 'revoked');
+  assert.equal((await (await fetch(`${base}/api/drive/status`, { headers: { cookie } })).json()).connected, false);
+});
 
 test('registrar a faixa devolve o fileId e o nome, e não baixa nem cria permissão', async () => {
   const cookie = await conectar();

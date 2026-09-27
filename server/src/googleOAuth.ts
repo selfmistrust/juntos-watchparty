@@ -33,7 +33,17 @@ export type AuthFailure =
   | 'not_connected'
   | 'not_configured'
   | 'revoked'
+  /**
+   * A autorização existe mas não renova, e o Google não disse que foi revogada.
+   *
+   * Separado de `temporary` porque a consequência para a pessoa é oposta: aqui
+   * só reconectar resolve, e insistir não adianta. Dizer "tente de novo" para
+   * quem precisa reconectar é pior do que dizer "conecte de novo" para quem
+   * esperava cinco segundos.
+   */
   | 'expired'
+  /** Falha passageira do Google. Vale tentar de novo sem mexer na conta. */
+  | 'temporary'
   | 'denied'
   | 'api_error';
 
@@ -96,7 +106,25 @@ export async function exchangeToken(body: Record<string, string>): Promise<Googl
     clearTimeout(timeout);
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      return { error: `http_${response.status}`, _httpStatus: response.status, _body: text };
+      /*
+       * O Google responde o código do erro OAuth no corpo, inclusive em 4xx —
+       * `invalid_grant` para um refresh token revogado chega como HTTP 400.
+       *
+       * Reportar só `http_400` escondia esse código, e a consequência era séria:
+       * uma revogação real deixava de ser reconhecida, o registro do token não
+       * era apagado, e o status continuava dizendo "conta conectada" para
+       * sempre, com cada chamada repetindo uma renovação que jamais ia
+       * funcionar. O `http_<status>` continua valendo como recurso quando o
+       * corpo não é JSON.
+       */
+      let codigo = `http_${response.status}`;
+      try {
+        const parsed = JSON.parse(text) as { error?: string };
+        if (typeof parsed.error === 'string' && parsed.error) codigo = parsed.error;
+      } catch {
+        // Corpo não-JSON: o status já diz o bastante.
+      }
+      return { error: codigo, _httpStatus: response.status, _body: text };
     }
     const data = (await response.json()) as GoogleTokenResponse;
     if (data.error) {
