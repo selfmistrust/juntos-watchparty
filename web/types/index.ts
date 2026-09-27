@@ -5,21 +5,28 @@
  * seekável, e a sincronização da sala é construída sobre isso. Uma tela
  * compartilhada não tem posição — o mesmo instante chega pelo relógio da
  * mídia. Por isso o item referencia a transmissão e o `src` fica vazio.
+ *
+ * `drive` também tem `src` vazio, por outro motivo: o arquivo vem do Google, de
+ * cada conta para o seu próprio player. Ele tem posição seekável como qualquer
+ * arquivo, então a sincronização trata igual.
  */
-export type MediaKind = 'youtube' | 'file' | 'stream';
+export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive';
 
 export interface PlaylistItem {
   id: string;
   kind: MediaKind;
   /**
-   * videoId do YouTube, URL direta de um .mp4, ou vazio em `stream`.
-   *
-   * Também pode ser a rota `/api/drive/stream/<token>`, para um arquivo escolhido
-   * no Drive de quem adicionou. O `kind` continua `file` porque o player trata
-   * igual, com posição seekável e `Range`; muda de onde os bytes vêm, não como
-   * se reproduz.
+   * videoId do YouTube, URL direta de um .mp4, ou vazio em `stream` e `drive`.
    */
   src: string;
+  /**
+   * Arquivo do Google Drive, quando `kind === 'drive'`.
+   *
+   * O vídeo **não** vem do nosso servidor nem do bucket: cada pessoa pede direto
+   * ao Google com o token da própria conta, e a URL que o `<video>` usa é
+   * montada no cliente, via service worker. Por isso o `src` fica vazio.
+   */
+  driveFileId?: string;
   title: string;
   thumbnail?: string;
   duration?: number;

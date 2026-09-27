@@ -209,35 +209,52 @@ Colar um link do YouTube continua funcionando sem OAuth.
 
 ### Google Drive (Picker + `drive.file`)
 
-A pessoa escolhe um vídeo no Google Picker e ele entra na fila **na hora**, sem esperar o arquivo
-inteiro baixar. A faixa aponta para `/api/drive/stream/<token>`, que repassa o `Range` do `<video>`
-para a Drive API e devolve os bytes por partes: a reprodução começa no primeiro bloco que chega, o
-seek funciona, e a sincronização da sala continua operando como em qualquer outro arquivo. O escopo
-`drive.file` permite trabalhar apenas com arquivos que a pessoa selecionou, e o app não enumera o
-Drive.
+A pessoa escolhe um vídeo no Google Picker e ele entra na fila **na hora**, sem passar pelo
+servidor. O Render não transporta byte de vídeo: ele cuida da sala, do WebSocket e da
+sincronização, e nada mais. O R2 não participa. Cada participante baixa o arquivo **direto do
+Google**, com o token da própria conta, por um service worker que injeta o `Authorization` na
+requisição do `<video>`. O navegador continua pedindo intervalos, então a reprodução começa no
+primeiro bloco que chega e o seek funciona como em qualquer arquivo.
 
-Isso inverte uma decisão anterior do projeto, e vale registrar o motivo e o preço. Antes, o arquivo
-era baixado inteiro do Drive e subido para o bucket antes de a faixa existir: duas transferências
-sequenciais pela mesma conexão de quem escolheu, e um pico de memória no navegador de cerca de duas
-vezes o tamanho do arquivo — 2,2 GB viravam alguns gigabytes de RAM. O preço de hoje é que **o vídeo
-passa pelo servidor**, uma vez por espectador. Numa sala com quatro pessoas, um filme de 2 GB são
-~8 GB de saída do Render. O bucket continua sendo o caminho do envio comum, e não guarda cópia do
-que veio do Drive.
+## Como o acesso chega a cada pessoa
 
-O token do Drive pertence a quem escolheu o arquivo, e é ele que serve o stream para a sala toda.
-Se essa pessoa desconectar a conta ou revogar o acesso, a faixa para de funcionar — e a concessão é
-apagada junto. Não existe cópia de segurança no bucket para esse caso.
+Quando alguém entra na sala, o Juntos olha a faixa de Drive que está tocando e, com o token de
+quem escolheu, pede ao Google a permissão `reader` para quem ainda não tem. Isso vale também para
+quem entra depois, e é refeito a cada troca de faixa.
 
-O `<video>` é servido por um token opaco de 128 bits, criado pelo servidor, e não por `Origin`:
-uma requisição de elemento de mídia não manda esse cabeçalho. O token morre quando o item sai da
-fila, quando a conta é desconectada e no vencimento da sala — garantias que a URL pública do bucket,
-usada no envio comum, não tem.
+Cada `permissionId` criado é guardado. Na saída da sala, na troca de mídia, no fim de sessão e no
+vencimento da sala, apagamos **exatamente esses ids**: um compartilhamento que a pessoa já tinha
+antes nunca entra na lista e nunca é tocado. A lista de permissões é consultada antes de criar
+qualquer coisa, para distinguir "já tinha acesso" de "precisa de acesso" — sem isso, tirar a faixa
+da fila poderia tirar o acesso de alguém que já era de outra pessoa.
+
+## O que o Google exige de cada pessoa
+
+O escopo `drive.file` só dá acesso a arquivo que **aquela pessoa** escolheu no Picker. Conceder
+`reader` no arquivo não é suficiente: quem não o escolheu recebe 404 do Google. Por isso cada
+participante confirma o arquivo uma vez, e o Picker é aberto já filtrado só para ele, com
+`setFileIds` — um clique, uma vez por arquivo por pessoa.
+
+Esse é o preço de manter um escopo não sensível, que dispensa a avaliação de segurança anual. Com
+`drive.readonly` a leitura seria automática, mas o escopo é restrito e exige verificação e
+avaliação de segurança por terceiro, com semanas de prazo.
+
+**Um aviso honesto sobre memória do Google:** a permissão no Drive é reversível aqui, e sai. O
+*vínculo* do app com o arquivo, esse não é: ele pertence à conta de quem autorizou e só some se a
+pessoa desautorizar o juntos por completo. Sair da sala desfaz o compartilhamento, não o vínculo.
+Está na política de privacidade.
+
+O serviço também precisa do e-mail de cada conta, para conceder a permissão. É o escopo
+`userinfo.email`, que é não sensível — a tela de consentimento mostra "seu endereço de e-mail" e
+nada mais. Nem `drive.file` nem `about.get` devolvem o e-mail.
 
 No [Google Cloud Console](https://console.cloud.google.com/):
 
 1. Ative **Google Drive API** e **Google Picker API** no mesmo projeto Cloud que contém o client OAuth.
-2. Configure a tela de consentimento OAuth com o escopo
-   `https://www.googleapis.com/auth/drive.file`. Não solicite `drive.readonly`.
+2. Configure a tela de consentimento OAuth com os escopos
+   `https://www.googleapis.com/auth/drive.file` e
+   `https://www.googleapis.com/auth/userinfo.email`. Não solicite `drive.readonly` — nem
+   `drive`, que também são restritos.
 3. Use o client OAuth Web já configurado para o YouTube, dentro desse mesmo projeto. O callback do
    Drive continua sendo uma URI separada; acrescente `https://<seu-back>/api/drive/oauth/callback` em **URIs de
    redirecionamento** e mantenha `GOOGLE_DRIVE_REDIRECT_URI` em `server/.env`. O `client_secret` e
@@ -265,21 +282,20 @@ chave de API para configurar no desktop, e o `returnTo` do OAuth não importa: o
 página de conclusão em vez de abrir uma segunda cópia do Juntos no navegador.
 
 `drive.file` é um escopo não sensível, o que normalmente evita a verificação de escopos sensíveis
-exigida por `drive.readonly`; isso não dispensa seguir os requisitos de publicação do Google, e a
-política de privacidade precisa dizer que o vídeo é transmitido pelo servidor. Contas que já
-autorizaram a versão antiga precisam reconectar: os tokens locais antigos com acesso amplo são
-descartados, e o novo consentimento solicita somente `drive.file`.
+exigida por `drive.readonly`; isso não dispensa seguir os requisitos de publicação do Google. Contas
+que já autorizaram a versão antiga precisam reconectar: os tokens locais antigos com acesso amplo são
+descartados, e o novo consentimento solicita somente `drive.file` e o e-mail.
 
-**Custo:** banda do servidor por espectador, e cota da Google Drive API por reprodução. O
-`MAX_UPLOAD_MB` do servidor deixou de valer para o Drive — ele limita o envio de arquivo do
-dispositivo, não a reprodução.
+**Custo:** cota da Google Drive API por pessoa, e o arquivo aparece como compartilhado no painel do
+Drive de quem escolheu enquanto a faixa está na sala. O `MAX_UPLOAD_MB` do servidor não vale para o
+Drive — ele limita o envio de arquivo do dispositivo, não a reprodução. Ninguém precisa de conta do
+Google para assistir a um vídeo enviado pelo dispositivo; para um do Drive, precisa.
 
 **Testes do fluxo:** `cd server && npm run test:drive`. A suíte sobe um servidor de salas real em
-uma porta efêmera, com Redis e token do Google simulados, e cobre o vínculo da seleção à sessão do
-app, o `state` de uso único, o PKCE, o cancelamento nos dois lados, a expiração, e a rota de
-reprodução: encaminhamento de `Range`, resposta `206`, recusa de intervalo múltiplo, morte da
-concessão ao desconectar, e a garantia de que a URL do Drive é montada pelo servidor a partir do id
-validado.
+uma porta efêmera, com Redis e Google simulados, e cobre o vínculo da seleção à sessão do app, o
+`state` de uso único, o PKCE, o cancelamento nos dois lados, a expiração, o registro da faixa, a
+concessão de `reader` só para quem não tinha acesso, a não-duplicação, e a revogação que apaga
+exatamente os `permissionId` criados pelo Juntos — nunca os que já existiam.
 
 ### Busca no YouTube (chave de API, opcional)
 

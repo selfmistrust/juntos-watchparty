@@ -14,6 +14,9 @@ interface PickerResponse {
 interface PickerDocsView {
   setMimeTypes(mimeTypes: string): PickerDocsView;
   setIncludeFolders(include: boolean): PickerDocsView;
+  /** Mostra apenas estes arquivos. É o que reduz a autorização a um clique. */
+  setFileIds(fileIds: string): PickerDocsView;
+  setMode(mode: string): PickerDocsView;
 }
 
 interface PickerDialog {
@@ -35,6 +38,7 @@ interface GooglePickerApi {
   Action: { PICKED: string; CANCEL: string };
   Response: { ACTION: string; DOCUMENTS: string };
   ViewId: { DOCS: string };
+  DocsViewMode: { LIST: string; GRID: string };
   DocsView: new (viewId: string) => PickerDocsView;
   PickerBuilder: new () => PickerBuilder;
 }
@@ -105,30 +109,71 @@ async function loadPickerApi(): Promise<GooglePickerApi> {
   return picker;
 }
 
-/** Abre o seletor oficial; `null` significa que a pessoa cancelou. */
+const VIDEOS = [
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'video/x-matroska',
+  'video/x-msvideo',
+  'video/mpeg',
+  'video/ogg',
+  'video/3gpp',
+  'video/x-ms-wmv',
+].join(',');
+
+/** Abre o seletor oficial para escolher um vídeo; `null` significa cancelamento. */
 export async function escolherVideoNoGoogleDrive(accessToken: string, signal?: AbortSignal): Promise<string | null> {
+  const pickerApi = await abrirPicker(accessToken, signal);
+  if (!pickerApi) return null;
+  return mostrar(pickerApi, accessToken, (view) => view.setMimeTypes(VIDEOS).setIncludeFolders(false), signal);
+}
+
+/**
+ * Abre o seletor já filtrado para **um** arquivo.
+ *
+ * É o botão "Autorizar este vídeo" de quem está na sala: o Google só dá o
+ * vínculo do app com o arquivo quando a pessoa o escolhe, e o `drive.file` não
+ * tem como conceder isso sozinho. Mostrar só aquele vídeo transforma o
+ * aproveitamento em um clique, em vez de uma caça ao arquivo certo numa lista
+ * com todo o Drive.
+ *
+ * O `LIST` é o que a documentação recomenda sem escopo amplo: o app não tem
+ * direito a thumbnails do Drive, e o modo de lista não as pede.
+ */
+export async function autorizarArquivoDoGoogleDrive(
+  accessToken: string,
+  fileId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!/^[A-Za-z0-9_-]{10,256}$/.test(fileId)) return false;
+  const pickerApi = await abrirPicker(accessToken, signal);
+  if (!pickerApi) return false;
+  const escolhido = await mostrar(
+    pickerApi,
+    accessToken,
+    (view) => view.setFileIds(fileId).setMode(pickerApi.DocsViewMode.LIST),
+    signal,
+  );
+  return escolhido === fileId;
+}
+
+async function abrirPicker(accessToken: string, signal?: AbortSignal): Promise<GooglePickerApi | null> {
   if (!GOOGLE_PICKER_API_KEY || !GOOGLE_CLOUD_PROJECT_NUMBER) {
     throw new Error('picker_not_configured');
   }
-
   const pickerApi = await loadPickerApi();
   if (signal?.aborted) return null;
-  const videos = new pickerApi.DocsView(pickerApi.ViewId.DOCS)
-    .setMimeTypes(
-      [
-        'video/mp4',
-        'video/webm',
-        'video/quicktime',
-        'video/x-matroska',
-        'video/x-msvideo',
-        'video/mpeg',
-        'video/ogg',
-        'video/3gpp',
-        'video/x-ms-wmv',
-      ].join(','),
-    )
-    .setIncludeFolders(false);
+  return pickerApi;
+}
 
+/** Monta o diálogo, liga a view e resolve com o id escolhido ou `null`. */
+function mostrar(
+  pickerApi: GooglePickerApi,
+  accessToken: string,
+  configurar: (view: PickerDocsView) => PickerDocsView,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const view = configurar(new pickerApi.DocsView(pickerApi.ViewId.DOCS));
   return new Promise<string | null>((resolve, reject) => {
     let settled = false;
     let dialog: PickerDialog | null = null;
@@ -148,7 +193,7 @@ export async function escolherVideoNoGoogleDrive(accessToken: string, signal?: A
         .setOAuthToken(accessToken)
         .setDeveloperKey(GOOGLE_PICKER_API_KEY)
         .setOrigin(window.location.origin)
-        .addView(videos)
+        .addView(view)
         .setCallback((data) => {
           const action = data[pickerApi.Response.ACTION];
           if (action === pickerApi.Action.CANCEL) {

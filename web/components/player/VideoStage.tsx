@@ -6,6 +6,7 @@ import { PlayerControls } from './PlayerControls';
 import { ReactionDock } from './ReactionDock';
 import { ReactionsOverlay } from './ReactionsOverlay';
 import { YoutubePlayer } from './YoutubePlayer';
+import { DriveVideo } from './DriveVideo';
 import { useFullscreenLandscape } from '@/hooks/useFullscreenLandscape';
 import type { RoomActions } from '@/hooks/useRoom';
 import type { FloatingReaction, PlaylistItem, PlayerHandle, ReactionEmoji, RoomSnapshot } from '@/types';
@@ -342,6 +343,21 @@ export function VideoStage({
             ref={playerRef}
             videoId={currentItem.src}
             captionsOn={captionsOn}
+            onReady={handleReady}
+            onEnded={actions.ended}
+          />
+        ) : currentItem.kind === 'drive' && currentItem.driveFileId ? (
+          /*
+           * A faixa `drive` tem player próprio porque depende de uma condição
+           * que nenhum outro tem: se a conta de quem assiste já está autorizada
+           * sobre o arquivo. Ela tem posição seekável como qualquer arquivo, e
+           * por isso a sincronização da sala continua funcionando igual — muda o
+           * de onde vêm os bytes, não o que se faz com o tempo.
+           */
+          <DriveVideo
+            key={currentItem.id}
+            ref={playerRef}
+            fileId={currentItem.driveFileId}
             onReady={handleReady}
             onEnded={actions.ended}
           />

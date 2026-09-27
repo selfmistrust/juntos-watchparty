@@ -1,6 +1,5 @@
 import { redis } from './redis.js';
 import { decryptSecret, encryptSecret } from './secretBox.js';
-import { apagarConcessoesDaSessao } from './driveStream.js';
 import {
   GOOGLE_AUTH,
   GOOGLE_REVOKE,
@@ -19,33 +18,48 @@ import {
 } from './googleOAuth.js';
 
 /**
- * Google Drive: conectar a conta e autorizar a leitura dos arquivos escolhidos
- * explicitamente pela pessoa no Google Picker.
+ * Google Drive: conectar a conta, autorizar a leitura dos arquivos escolhidos
+ * explicitamente pela pessoa no Google Picker, e compartilhar o escolhido com
+ * quem mais está na sala.
  *
- * ## O que o Drive entrega, e o que ele não entrega
+ * ## Como o vídeo chega a cada participante
  *
- * Não existe URL de vídeo reproduzível no navegador para um arquivo do Drive.
- * O `https://drive.google.com/uc?export=download&id=...` redireciona para uma
- * página HTML de confirmação ("Google Drive não consegue fazer a varredura de
- * arquivos vírus") assim que o arquivo passa de algumas dezenas de MB — e é
- * justamente o tamanho de um episódio que a gente quer assistir.
+ * **Não passa pelo nosso servidor.** Quem assiste baixa direto do Google, com
+ * o token da própria conta, por um service worker que injeta o cabeçalho
+ * `Authorization` na requisição do `<video>` — assim `Range` e seek funcionam
+ * de verdade, e o Render não vê byte de vídeo. O R2 também não entra: o
+ * caminho do Drive nunca grava cópia no bucket.
  *
- * Por isso a integração **não** coloca o Drive na fila. O arquivo é copiado para
- * o bucket da sala, pelo navegador de quem escolheu, e a faixa entra como
- * `kind: 'file'` com a URL do R2 — igual a um envio comum. Ninguém mais precisa
- * de token, ninguém precisa de permissão de compartilhamento, e o player não
- * ganha um modo novo.
+ * ## O que o Drive exige de cada pessoa
  *
- * O Picker limita o acesso do app aos arquivos selecionados; o escopo
- * `drive.file` não permite enumerar o Drive inteiro. A faixa não aponta para o
- * Drive, então o proxy não é necessário e o Render não vê o vídeo.
+ * O escopo `drive.file` só dá acesso a arquivo que a pessoa escolheu no
+ * Picker. Conceder `reader` no arquivo **não** é suficiente: quem não o escolheu
+ * recebe 404. Por isso cada participante confirma o arquivo uma vez, e o Picker
+ * é aberto já filtrado só para ele, com `setFileIds`. É o preço de manter um
+ * escopo não sensível, que dispensa a avaliação de segurança anual.
+ *
+ * ## O `userinfo.email`, e por que ele é necessário
+ *
+ * `permissions.create` exige um e-mail, e nem `drive.file` nem `about.get` o
+ * devolvem. `userinfo.email` é o escopo mínimo para isso, e é não sensível: a
+ * tela de consentimento mostra "seu endereço de e-mail", e nada mais.
  */
+const SCOPE = [
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/userinfo.email',
+].join(' ');
 
-const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+/**
+ * O que aceitamos voltar do Google. O ponto é rejeitar os escopos amplos: uma
+ * autorização antiga, vinda de quando o projeto usava `drive.readonly`, não
+ * pode voltar a valer, e o `userinfo.email` é o único acréscimo aceito.
+ */
+const PERMITIDOS = new Set([SCOPE.split(' ')[0], SCOPE.split(' ')[1]]);
 const LEGACY_WIDE_SCOPES = new Set([
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/drive.readonly',
 ]);
+const USERINFO = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const TOKEN_KEY = (sessionId: string) => `drive:tokens:${sessionId}`;
 const PENDING_KEY = (state: string) => `drive:oauth:${state}`;
 const PICKER_KEY = (sessionId: string, requestId: string) => `drive:picker:${sessionId}:${requestId}`;
@@ -73,6 +87,8 @@ type TokenRecord = {
   accessToken: string;
   accessExpiresAt: number;
   scope: string;
+  /**necessário para compartilhar o arquivo com os demais. Vazio se o Google não disser. */
+  email: string;
   connectedAt: number;
   generation: number;
 };
@@ -124,7 +140,9 @@ async function loadTokens(sessionId: string): Promise<TokenRecord | null> {
       await redis.del(TOKEN_KEY(sessionId));
       return null;
     }
-    return parsed as TokenRecord;
+    // `email` passou a existir depois do primeiro deploy; um registro antigo sem
+    // ele continua válido, só não pode compartilhar.
+    return { ...(parsed as TokenRecord), email: parsed.email ?? '' };
   } catch {
     await redis.del(TOKEN_KEY(sessionId));
     return null;
@@ -151,8 +169,12 @@ export async function getPublicStatus(sessionId: string | null): Promise<DrivePu
 
 function hasLimitedDriveScope(scope: string | undefined): boolean {
   if (!scope) return false;
-  const scopes = scope.split(/\s+/);
-  return scopes.includes(SCOPE) && !scopes.some((item) => LEGACY_WIDE_SCOPES.has(item));
+  const scopes = scope.split(/\s+/).filter(Boolean);
+  return (
+    scopes.includes('https://www.googleapis.com/auth/drive.file') &&
+    scopes.every((item) => PERMITIDOS.has(item)) &&
+    !scopes.some((item) => LEGACY_WIDE_SCOPES.has(item))
+  );
 }
 
 export async function createAuthUrl(
@@ -255,6 +277,41 @@ export async function takePending(state: string): Promise<PendingOAuth | null> {
   }
 }
 
+/**
+ * O e-mail da conta conectada.
+ *
+ * É o identificador que o `permissions.create` exige, e é a única forma de o
+ * Juntos compartilhar o arquivo escolhido com quem está na sala. Uma chamada
+ * só, no momento da conexão — nunca durante a reprodução, que é a hora em que
+ * um erro custaria a todo mundo.
+ */
+async function fetchEmail(accessToken: string): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(USERINFO, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return '';
+    const data = (await response.json()) as { email?: string; email_verified?: boolean };
+    // Sem verificação de domínio o Google não confirma a caixa; ainda assim é
+    // o único identificador que temos, e quem usa é o dono da conta.
+    return typeof data.email === 'string' && data.email.includes('@') ? data.email : '';
+  } catch {
+    clearTimeout(timeout);
+    return '';
+  }
+}
+
+/** O e-mail guardado, para o módulo de compartilhamento. */
+export async function emailDaSessao(sessionId: string): Promise<string | null> {
+  const record = await loadTokens(sessionId);
+  if (!record) return null;
+  return record.email || null;
+}
+
 export async function completeOAuth(params: {
   sessionId: string;
   code: string;
@@ -294,11 +351,14 @@ export async function completeOAuth(params: {
     return { ok: false, reason: 'api_error' };
   }
 
+  const email = await fetchEmail(token.access_token);
+
   await saveTokens(params.sessionId, {
     refreshToken,
     accessToken: token.access_token,
     accessExpiresAt: Date.now() + expiraEmMs(token.expires_in),
     scope: grantedScope,
+    email: email || existing?.email || '',
     connectedAt: existing?.connectedAt ?? Date.now(),
     generation: (existing?.generation ?? 0) + 1,
   });
@@ -394,7 +454,5 @@ async function revokeGoogleToken(token: string): Promise<void> {
 export async function revokeAndDelete(sessionId: string): Promise<void> {
   const record = await loadTokens(sessionId);
   await deleteTokens(sessionId);
-  // Desconectar precisa levar junto as reproduções que o token sustentava.
-  await apagarConcessoesDaSessao(sessionId);
   if (record) await revokeGoogleToken(record.refreshToken);
 }

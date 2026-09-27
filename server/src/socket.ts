@@ -51,7 +51,9 @@ import {
   type SystemEventKind,
 } from './types.js';
 import { createUploadTarget, deleteUploadIfOwned, isAllowedVideoFile, MAX_UPLOAD_BYTES } from './storage.js';
-import { apagarStream, extrairTokenDeSrc, lerStream } from './driveStream.js';
+import { emailDaSessao } from './driveOAuth.js';
+import { donoDoTrack, fileIdValido } from './driveTrack.js';
+import { reconciliarCompartilhamento, revogarParaUsuario, revogarTudo } from './driveShare.js';
 import { redis } from './redis.js';
 
 /** Resposta do handler `upload:requestToken`, entregue via callback de ack. */
@@ -106,6 +108,41 @@ export function registerSocketHandlers(io: Server) {
     const denied = (room: Room) => {
       socket.emit('room:denied', 'Só o host controla a reprodução nesta sala.');
       socket.emit('room:state', snapshot(room));
+    };
+
+    /**
+     * Mantém o compartilhamento do Drive batendo com a sala.
+     *
+     * Roda **fora** do lock, de propósito: conceder acesso é uma ida ao Google
+     * por participante, e segurar a fila da sala por isso faria todo mundo
+     * esperar pela rede. O efeito é reconciliador — quem já tem não é concedido
+     * de novo, e quem saiu tem o revoke pedido — então uma corrida com outro
+     * `reconciliar` não deixa estado errado para trás.
+     */
+    const reconciliarDrive = async (alvo: Room | undefined) => {
+      if (!alvo) return;
+      const ativo = alvo.playlist[alvo.currentIndex];
+      const fileId = ativo?.kind === 'drive' ? ativo.driveFileId ?? null : null;
+      const participantes = await Promise.all(
+        Object.values(alvo.users)
+          .filter((u) => u.connected)
+          .map(async (u) => ({ userId: u.userId, email: await emailDaSessao(u.sessionId) })),
+      );
+      try {
+        await reconciliarCompartilhamento({ roomId: alvo.id, fileId, participantes });
+      } catch (err) {
+        console.error('[drive] falha ao reconciliar o compartilhamento', err);
+      }
+    };
+
+    /** Revoga as permissões que criamos para quem está saindo. */
+    const revogarDriveDe = async (alvo: Room | undefined, userId: string) => {
+      if (!alvo) return;
+      try {
+        await revogarParaUsuario(alvo.id, userId);
+      } catch (err) {
+        console.error('[drive] falha ao revogar a saída', err);
+      }
     };
 
     /** Carrega a sala atual da conexão; handlers saem cedo se não houver uma. */
@@ -182,6 +219,14 @@ export function registerSocketHandlers(io: Server) {
             system(rid, 'join', `${user.name} entrou na sala`);
           }
         });
+        // Quem entra depois também recebe acesso. A concessão vai para o Drive
+        // da pessoa que escolheu o arquivo, e é por isso que a partida do
+        // compartilhamento acontece fora do lock e só se a faixa de Drive é a
+        // que está tocando.
+        const entrada = await getRoom(rid);
+        if (entrada?.playlist[entrada.currentIndex]?.kind === 'drive') {
+          await reconciliarDrive(entrada);
+        }
       },
     );
 
@@ -280,33 +325,45 @@ export function registerSocketHandlers(io: Server) {
 
     /** Só o cliente do host reporta o fim para evitar N avanços simultâneos. */
     socket.on('player:ended', async () => {
+      let reconciliar: Room | null = null;
       await editar(async (room) => {
         if (room.hostId !== socket.id) return;
+        const antes = room.playlist[room.currentIndex]?.kind;
         advance(room);
         await persistRoom(room);
         broadcastState(room);
+        // A faixa mudou. Se a que estava tocando era de Drive, as permissões
+        // dela saem; se a nova é, elas entram.
+        if (antes === 'drive' || room.playlist[room.currentIndex]?.kind === 'drive') {
+          reconciliar = room;
+        }
       });
+      if (reconciliar) await reconciliarDrive(reconciliar);
     });
 
     socket.on('playlist:add', async (item: Omit<PlaylistItem, 'id' | 'addedBy'>) => {
+      let reconciliar: Room | null = null;
       await editar(async (room) => {
         const user = room.users[socket.id];
         /*
-         * Um `src` que aponta para a rota de stream do Drive precisa ser um
-         * token que o servidor emitiu. Sem esta checagem, o `playlist:add`
-         * (que hoje aceita qualquer URL) viraria um jeito de mandar o servidor
-         * buscar um endereço qualquer em nome de uma sala — o proxy viraria
-         * aberto. O caminho da requisição é montado no servidor, a partir do
-         * `fileId` que ele validou, então aqui só interessa saber que o token
-         * existe.
+         * Uma faixa de Drive só entra com um `fileId` que o servidor reconhece
+         * como escolhido por alguma sessão conectada. Sem esta checagem, o
+         * `playlist:add` — que hoje aceita qualquer URL — viraria um jeito de
+         * mandar o servidor compartilhar o Drive de quem está na sala com um
+         * arquivo que ele nunca viu, e ainda registrar a permissão em nome de
+         * alguém.
          */
-        const streamToken = extrairTokenDeSrc(item.src);
-        if (streamToken && !(await lerStream(streamToken))) {
-          socket.emit('room:denied', 'Esse vídeo do Drive não está mais disponível.');
-          return;
+        let driveFileId: string | undefined;
+        if (item.kind === 'drive') {
+          if (!fileIdValido(item.driveFileId) || !(await donoDoTrack(item.driveFileId))) {
+            socket.emit('room:denied', 'Esse vídeo do Drive não está mais disponível.');
+            return;
+          }
+          driveFileId = item.driveFileId;
         }
         const entry: PlaylistItem = {
           ...item,
+          ...(driveFileId ? { driveFileId, src: '' } : {}),
           id: newId(),
           addedBy: user?.name ?? 'Convidado',
           addedById: user?.userId ?? '',
@@ -319,7 +376,11 @@ export function registerSocketHandlers(io: Server) {
         await persistRoom(room);
         broadcastState(room);
         system(room.id, 'track', `${entry.addedBy} adicionou "${entry.title}"`);
+        // Se esta faixa passou a ser a que está tocando, o compartilhamento
+        // precisa accompanyar — é aqui que os demais recebem o acesso.
+        if (room.currentIndex === room.playlist.length - 1) reconciliar = room;
       });
+      if (reconciliar) await reconciliarDrive(reconciliar);
     });
 
     /**
@@ -362,6 +423,7 @@ export function registerSocketHandlers(io: Server) {
     );
 
     socket.on('playlist:remove', async (itemId: string) => {
+      let reconciliar: Room | null = null;
       await editar(async (room) => {
         if (!canControl(room, socket.id)) return denied(room);
         const index = room.playlist.findIndex((i) => i.id === itemId);
@@ -370,11 +432,6 @@ export function registerSocketHandlers(io: Server) {
         // A remoção no bucket é uma ida à API externa e não toca na sala: fazer
         // isso dentro do lock seguraria a fila da sala pela latência do S3.
         if (removed?.kind === 'file') void deleteUploadIfOwned(removed.src);
-        // A concessão de stream morre junto com o item. Sem isso, um link de
-        // Drive continuaria servindo o arquivo de quem escolheu mesmo depois
-        // de tirá-lo da fila — o equivalente no R2 é uma URL pública do bucket.
-        const streamToken = extrairTokenDeSrc(removed?.src);
-        if (streamToken) void apagarStream(streamToken);
         if (index < room.currentIndex) room.currentIndex -= 1;
         else if (index === room.currentIndex) {
           room.currentIndex = Math.min(room.currentIndex, room.playlist.length - 1);
@@ -383,7 +440,13 @@ export function registerSocketHandlers(io: Server) {
         }
         await persistRoom(room);
         broadcastState(room);
+        // Tirar uma faixa de Drive tem que derrubar as permissões que criamos
+        // para ela. Reconciliar é idempotente, então roda mesmo quando a faixa
+        // removida não era a que tocava: o estado compartilhado é do arquivo
+        // ativo, e ele só muda se a remoção o afetou.
+        if (removed?.kind === 'drive') reconciliar = room;
       });
+      if (reconciliar) await reconciliarDrive(reconciliar);
     });
 
     socket.on('playlist:reorder', async ({ from, to }: { from: number; to: number }) => {
@@ -401,16 +464,20 @@ export function registerSocketHandlers(io: Server) {
     });
 
     socket.on('playlist:select', async (index: number) => {
+      let reconciliar: Room | null = null;
       await editar(async (room) => {
         if (!canControl(room, socket.id)) return denied(room);
         if (index < 0 || index >= room.playlist.length) return;
+        const antes = room.playlist[room.currentIndex]?.kind;
         room.currentIndex = index;
         commitPosition(room, 0);
         room.isPlaying = true;
         await persistRoom(room);
         broadcastState(room);
         system(room.id, 'track', `Tocando agora: ${room.playlist[index].title}`);
+        if (antes === 'drive' || room.playlist[index].kind === 'drive') reconciliar = room;
       });
+      if (reconciliar) await reconciliarDrive(reconciliar);
     });
 
     socket.on('room:setOpenControl', async (open: boolean) => {
@@ -740,6 +807,13 @@ export function registerSocketHandlers(io: Server) {
 
     socket.on('disconnect', async () => {
       clearRateLimit(socket.id);
+      // A sala é lida de novo depois do lock, e não capturada de dentro dele:
+      // assim o TypeScript não precisa acreditar numa atribuição feita em
+      // closure, e o revoke usa o estado já gravado.
+      const saiuDe = roomId;
+      let saiuUserId: string | null = null;
+      let esvaziou = false;
+
       /*
        * O `disconnect` é a escrita mais perigosa do arquivo: ela apaga a
        * presença de alguém. Sem o lock, um join que estivesse em voo era
@@ -768,17 +842,29 @@ export function registerSocketHandlers(io: Server) {
           // sempre — o timeout de "parou de digitar" do cliente nunca dispara
           // porque o cliente já não está mais lá pra disparar nada.
           socket.to(room.id).emit('chat:typing', { id: user.sessionId, name: user.name, isTyping: false });
+          saiuUserId = user.userId;
         }
         // Se não há usuários conectados, congela o tempo
         const connectedUsers = Object.values(room.users).filter(u => u.connected);
         if (connectedUsers.length === 0) {
           commitPosition(room, projectedPosition(room));
           room.isPlaying = false;
+          esvaziou = true;
         }
         await persistRoom(room);
         broadcastState(room);
       });
       roomId = null;
+
+      if (!saiuDe) return;
+      const alvo = await getRoom(saiuDe);
+      // A pessoa sai e a permissão que criamos para ela vai junto.
+      if (saiuUserId) await revogarDriveDe(alvo, saiuUserId);
+      // A sala ficou vazia, ou a faixa de Drive que tocava mudou de posição: em
+      // qualquer um dos casos o estado compartilhado é reconciliado.
+      if (esvaziou || alvo?.playlist[alvo.currentIndex]?.kind === 'drive') {
+        await reconciliarDrive(alvo);
+      }
     });
   });
 }
@@ -810,6 +896,13 @@ function advance(room: Room) {
  */
 async function expireRoom(io: Server, room: Room): Promise<void> {
   console.log(`[room-expiry] sala ${room.id} encerrada (teto de vida atingido)`);
+
+  // Antes de derrubar a sala: as permissões que criamos no Drive saem junto.
+  // Depois de derrubar, não haveria ninguém para receber o revoke, e elas
+  // ficariam no Drive de quem escolheu até o prazo do Google.
+  await revogarTudo(room.id).catch((err) => {
+    console.error('[drive] falha ao revogar na expiração da sala', err);
+  });
 
   io.to(room.id).emit('room:expired', { id: room.id });
   io.in(room.id).disconnectSockets(true);

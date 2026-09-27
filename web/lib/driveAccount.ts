@@ -3,10 +3,10 @@ import { SERVER_URL } from '@/lib/socket';
 /**
  * Cliente do Google Drive.
  *
- * O servidor cuida da conexão OAuth e do token. O cliente só escolhe o
- * arquivo e pede a concessão de reprodução: a partir daí o vídeo é servido por
- * `/api/drive/stream/<token>`, que encaminha o `Range` do `<video>` para o
- * Drive. Nenhum byte do arquivo passa pela memória do navegador.
+ * O servidor cuida da conexão OAuth, do e-mail da conta e das permissões de
+ * compartilhamento. Nenhum byte de vídeo passa por aqui: o `src` da faixa é
+ * montado no cliente e lido do Google pelo service worker, com o token de quem
+ * assiste.
  */
 
 export type DriveAccountStatus = {
@@ -14,10 +14,9 @@ export type DriveAccountStatus = {
   connected: boolean;
 };
 
-/** O que o servidor devolve ao pedir a reprodução de um arquivo. */
-export type DriveStreamTarget = {
-  /** Caminho da rota; a URL absoluta é `SERVER_URL` + este caminho. */
-  path: string;
+/** O que o servidor devolve ao registrar a faixa. */
+export type DriveTrack = {
+  fileId: string;
   name: string;
   duration?: number;
   size?: number;
@@ -82,14 +81,14 @@ export async function fetchDrivePickerToken(signal?: AbortSignal): Promise<strin
 }
 
 /**
- * Pede ao servidor a concessão de reprodução de um arquivo escolhido.
+ * Registra o arquivo escolhido como faixa de Drive.
  *
- * O servidor monta a URL do Drive a partir do `fileId` e devolve um token
- * opaco; nada é baixado aqui. A URL que vai para a fila é `SERVER_URL` + path,
- * e é ela que o `<video>` vai pedir por partes.
+ * O servidor confere o arquivo com a conta de quem chamou e devolve o `fileId`
+ * e o nome. Não há URL de mídia, não há proxy e o bucket não entra: cada
+ * pessoa vai ler o arquivo do Google com o token da própria conta.
  */
-export async function requestDriveStream(fileId: string, signal?: AbortSignal): Promise<DriveStreamTarget> {
-  const res = await fetch(`${SERVER_URL}/api/drive/stream-token`, {
+export async function registerDriveTrack(fileId: string, signal?: AbortSignal): Promise<DriveTrack> {
+  const res = await fetch(`${SERVER_URL}/api/drive/track`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -98,9 +97,9 @@ export async function requestDriveStream(fileId: string, signal?: AbortSignal): 
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(data?.error ?? 'stream_failed');
+    throw new Error(data?.error ?? 'track_failed');
   }
-  const target = (await res.json()) as DriveStreamTarget;
-  if (!target?.path) throw new Error('stream_failed');
-  return target;
+  const track = (await res.json()) as DriveTrack;
+  if (!track?.fileId) throw new Error('track_failed');
+  return track;
 }

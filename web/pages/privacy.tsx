@@ -92,11 +92,12 @@ export default function PrivacyPolicy() {
               </div>
 
               {/*
-                O Drive é o caso mais delicado desta política, e por isso tem um
-                bloco próprio. Duas coisas precisam ficar explícitas: o app só
-                alcança os arquivos que a pessoa escolheu, e o conteúdo do
-                vídeo passa pelo nosso servidor para chegar aos participantes da
-                sala. A segunda é a que mudou nesta atualização.
+                O Drive é o caso mais delicado desta política, e por isso tem
+                blocos próprios. Três coisas precisam ficar explícitas: o app só
+                alcança os arquivos que a pessoa escolheu, o arquivo é lido do
+                Google por cada participante — não passa pelo nosso servidor — e
+                o Juntos concede compartilhamento no Drive para quem está na
+                sala.
               */}
               <div className="flex gap-3 p-4 rounded-xl border border-hairline bg-raised/60">
                 <Lock size={22} weight="fill" className="mt-1 shrink-0 text-accent" />
@@ -106,16 +107,20 @@ export default function PrivacyPolicy() {
                     <li>
                       Access token e refresh token do Google com o escopo restrito
                       {' '}<code className="font-mono text-xs bg-hover px-1 rounded">drive.file</code>, que permite ao
-                      juntos acessar <strong>somente os arquivos que você selecionar</strong> no seletor do Google.
-                      Não pedimos e não temos acesso ao restante do seu Drive, e não podemos listar seu conteúdo.
+                      juntos acessar <strong>somente os arquivos que você selecionar</strong> no seletor do Google, mais o
+                      escopo <code className="font-mono text-xs bg-hover px-1 rounded">userinfo.email</code>, que entrega o
+                      seu endereço de e-mail — sem o qual o Google não permite compartilhar um arquivo com outra
+                      conta. Não pedimos e não temos acesso ao restante do seu Drive, e não podemos listar seu
+                      conteúdo.
                     </li>
                     <li>Armazenados <strong>criptografados (AES-256-GCM)</strong> no Redis, vinculados à sua sessão</li>
                     <li>
                       O refresh token <strong>nunca</strong> sai do servidor. O access token de curta duração é entregue ao
-                      seu navegador apenas para abrir o seletor oficial do Google, e no app desktop nem isso acontece.
+                      seu navegador para abrir o seletor oficial do Google e para reproduzir o vídeo no seu
+                      player.
                     </li>
                     <li>
-                      Ao escolher um vídeo, guardamos o identificador e o nome do arquivo para reproduzi-lo na sala
+                      Ao escolher um vídeo, guardamos o identificador e o nome do arquivo, além do seu e-mail
                     </li>
                     <li>Revogados no Google e excluídos do nosso lado ao clicar em &ldquo;Trocar de conta&rdquo;</li>
                   </ul>
@@ -125,18 +130,37 @@ export default function PrivacyPolicy() {
               <div className="flex gap-3 p-4 rounded-xl border border-hairline bg-raised/60">
                 <WifiHigh size={22} weight="fill" className="mt-1 shrink-0 text-accent" />
                 <div>
-                  <h3 className="font-medium text-ink">Conteúdo de vídeo do Drive</h3>
+                  <h3 className="font-medium text-ink">Compartilhamento de arquivos do Drive</h3>
                   <p className="mt-2 text-sm text-ink-muted">
-                    Quando você escolhe um vídeo do Drive para a sala, o arquivo <strong>não é copiado</strong> para o
-                    nosso bucket. Ele é lido do Google e <strong>transmitido pelo nosso servidor</strong> para os
-                    participantes da sala, por partes, à medida que cada pessoa assiste. Isso significa que o conteúdo
-                    do arquivo passa pela nossa infraestrutura e pelo provedor de hospedagem, e que
-                    <strong> quem está na sala assiste ao seu arquivo</strong>. Não guardamos cópia do vídeo em
-                    nenhum armazenamento nosso.
+                    Para que todos assistam, o juntos pede ao Google a permissão de leitura do arquivo
+                    escolhido <strong>para cada conta conectada que está na sala</strong>, e revoga essa permissão
+                    quando a pessoa sai, quando a faixa muda, quando a sessão termina ou quando a sala vence.
+                    Quem entra depois recebe o mesmo acesso.
                   </p>
                   <p className="mt-2 text-sm text-ink-muted">
-                    Se você desconectar a conta do Drive, as reproduções que dependiam dela deixam de funcionar
-                    imediatamente e o registro do arquivo é apagado. Não existe cópia de segurança.
+                    <strong>Só removemos o que criamos.</strong> Antes de conceder qualquer coisa, consultamos as
+                    permissões que já existem no arquivo; quem já tinha acesso não recebe permissão nova e,
+                    portanto, nunca tem o acesso revogado por nós. Um compartilhamento anterior continua intacto.
+                  </p>
+                  <p className="mt-2 text-sm text-ink-muted">
+                    <strong>O vínculo com o app não é reversível por nós.</strong> O Google registra, na sua conta,
+                    que o juntos foi autorizado a acessar aquele arquivo. Encerrar a sessão e revogar a permissão
+                    no Drive não apaga esse registro: ele só some se você <strong>desautorizar o juntos por
+                    completo</strong> no seu Google.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 p-4 rounded-xl border border-hairline bg-raised/60">
+                <FileText size={22} weight="fill" className="mt-1 shrink-0 text-accent" />
+                <div>
+                  <h3 className="font-medium text-ink">Reprodução de vídeo do Drive</h3>
+                  <p className="mt-2 text-sm text-ink-muted">
+                    O arquivo <strong>não passa pelo nosso servidor nem fica guardado aqui</strong>. Cada
+                    participante baixa direto do Google, com o token da própria conta, e o nosso servidor recebe
+                    apenas o identificador do arquivo e o estado da sala (play, pause, seek e posição). Pelo mesmo
+                    motivo do escopo acima, <strong>quem assiste precisa ter uma conta do Google conectada</strong> e
+                    autorizar o app naquele arquivo uma vez.
                   </p>
                 </div>
               </div>
@@ -167,8 +191,9 @@ export default function PrivacyPolicy() {
               <li><strong>Busca YouTube autenticada:</strong> se você conectar sua conta, usamos <em>seu</em> token para buscar vídeos na API do YouTube em seu nome</li>
               <li>
                 <strong>Reprodução a partir do Google Drive:</strong> se você escolher um vídeo do seu Drive, usamos
-                o acesso que você concedeu para ler <em>apenas aquele arquivo</em> e repassá-lo aos participantes da
-                sala. Não usamos o arquivo para nenhum outro fim, e não o guardamos
+                o acesso que você concedeu para ler <em>apenas aquele arquivo</em> e, para isso, pedimos ao Google a
+                permissão de leitura para as contas que estão na sala. Não usamos o arquivo para nenhum outro fim, e
+                não o guardamos nem o transmitimos
               </li>
               <li><strong>Segurança e abuso:</strong> rate limiting, prevenção de spam, proteção contra flood</li>
               <li><strong>Melhoria do serviço:</strong> logs agregados e anonimizados de erros e performance</li>
@@ -191,9 +216,15 @@ export default function PrivacyPolicy() {
               </li>
               <li>
                 <strong>Participantes da sala, quanto ao vídeo:</strong> quem estiver na sala recebe os bytes do
-                arquivo escolhido. Ao adicioná-lo à fila, você está autorizando os demais a assistirem
+                arquivo escolhido, direto do Google. Ao adicioná-lo à fila, você está autorizando os demais a
+                assistirem
               </li>
-              <li><strong>Provedores de infraestrutura:</strong> Redis (Upstash), hospedagem (Vercel/Railway/Render), bucket de uploads (Cloudflare R2 ou AWS S3) — todos com acordos de processamento de dados (DPA). O conteúdo do vídeo do Drive atravessa a hospedagem, embora não seja gravado no bucket</li>
+              <li>
+                <strong>Google, como compartilhamento:</strong> o Google recebe o nome e o e-mail de cada conta
+                conectada na sala, porque é assim que um arquivo é compartilhado. Isso aparece para você no painel de
+                compartilhamento do Drive, e some quando a faixa sai da sala
+              </li>
+              <li><strong>Provedores de infraestrutura:</strong> Redis (Upstash), hospedagem (Vercel/Railway/Render), bucket de uploads (Cloudflare R2 ou AWS S3) — todos com acordos de processamento de dados (DPA). O vídeo do Drive não é gravado em nenhum deles</li>
               <li><strong>Nunca vendemos</strong> dados a anunciantes ou brokers de dados</li>
             </ul>
           </section>
@@ -208,9 +239,10 @@ export default function PrivacyPolicy() {
               <li><strong>Salas ativas:</strong> mantidas enquanto houver participantes; expiram 10 min após última pessoa sair</li>
               <li><strong>Tokens OAuth:</strong> mantidos enquanto a conta estiver conectada; excluídos ao desconectar ou revogar</li>
               <li>
-                <strong>Reproduções do Drive:</strong> cada item da fila tem uma concessão de acesso que é apagada
-                quando o item sai da fila, quando você desconecta a conta ou no máximo 24 h depois. Nenhum conteúdo
-                de vídeo é retido
+                <strong>Reproduções e compartilhamentos do Drive:</strong> o registro de quem foi adicionada a um
+                arquivo do Drive é apagado quando a pessoa sai, quando a faixa muda ou quando a sala vence. O
+                <em>vínculo do app com o arquivo</em> na conta de quem autorizou não é nosso para revogar, e dura até a
+                pessoa desautorizar o juntos por completo
               </li>
               <li><strong>Sessão (cookie):</strong> 1 ano de inatividade; renova a cada acesso</li>
               <li><strong>Logs de servidor:</strong> 30 dias, depois anonimizados/agregados</li>
@@ -252,13 +284,12 @@ export default function PrivacyPolicy() {
               <li>Segredos (client_secret, chaves de criptografia) apenas em variáveis de ambiente do servidor</li>
               <li>Rate limiting e validação de entrada em todas as APIs</li>
               <li>
-                <strong>Links de reprodução do Drive</strong> carregam um identificador aleatório gerado pelo
-                servidor, e não o identificador do arquivo nem o seu nome de conta. Ele é revogado quando o item sai
-                da fila, quando você desconecta a conta ou no vencimento da sala
+                Escopo do Google limitado a <code className="font-mono text-xs bg-hover px-1 rounded">drive.file</code> e
+                ao e-mail: o app não tem permissão para ler, listar ou modificar o restante do seu Drive
               </li>
               <li>
-                Escopo do Google limitado a <code className="font-mono text-xs bg-hover px-1 rounded">drive.file</code>:
-                o app não tem permissão para ler, listar ou modificar o restante do seu Drive
+                Ao compartilhar um arquivo do Drive com a sala, o acesso concedido é conferido contra as permissões
+                que já existiam, e só é removido o que o próprio juntos criou
               </li>
             </ul>
           </section>
@@ -299,10 +330,10 @@ export default function PrivacyPolicy() {
               Mudanças materiais serão notificadas na interface ou por email (se tivermos seu contato).
             </p>
             <p className="mt-3 text-sm text-ink-faint">
-              Em 27 de setembro de 2026, a reprodução de vídeos do Google Drive passou a ser feita pelo nosso
-              servidor, por partes, em vez de copiar o arquivo antes de assistir. O escopo solicitado ao Google
-              também foi reduzido para <code className="font-mono text-xs bg-hover px-1 rounded">drive.file</code>.
-              Nenhuma outra informação foi alterada.
+              Em 27 de setembro de 2026, o Drive deixou de ser copiado para o nosso armazenamento e de
+              ser transmitido pelo nosso servidor. Cada participante passa a ler o vídeo direto do
+              Google, com a própria conta, e o juntos apenas concede e revoga o acesso de quem está na
+              sala. Nenhuma outra informação foi alterada.
             </p>
           </section>
 

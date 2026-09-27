@@ -24,20 +24,11 @@ import {
   type DrivePickerResult,
 } from './driveOAuth.js';
 
-import {
-  apagarStream,
-  abrirArquivo,
-  corpoComoStream,
-  criarStream,
-  extrairTokenDeSrc,
-  lerStream,
-  rangeDe,
-  repassarCabecalhos,
-  type DriveStreamFailure,
-} from './driveStream.js';
+import { criarFaixa, registrarDonoDoTrack, type DriveTrackFailure } from './driveTrack.js';
+import { revogarTudoDaSessao } from './driveShare.js';
 
 /** Motivo de recusa virado em resposta HTTP, para o painel saber o que dizer. */
-function motivoDe(reason: DriveStreamFailure): { http: number; error: string } {
+function motivoDe(reason: DriveTrackFailure): { http: number; error: string } {
   switch (reason) {
     case 'not_connected':
       return { http: 401, error: 'not_connected' };
@@ -238,90 +229,34 @@ export function registerDriveRoutes(app: Express): void {
   });
 
   /**
-   * Concede a reprodução de um arquivo escolhido no Picker.
+   * Registra o arquivo escolhido como faixa de Drive.
    *
    * O `fileId` vem do cliente porque foi a pessoa que escolheu, mas é validado
    * contra a concessão dela: sem Drive conectado, ou para um id que não é
-   * vídeo, a resposta é um motivo — nunca uma URL. O `path` volta relativo de
-   * propósito, para o cliente compor com o `SERVER_URL` que ele já tem, tanto
-   * no navegador quanto no app desktop.
+   * vídeo, a resposta é um motivo. O que volta são o `fileId` e o nome — nada de
+   * URL de mídia, porque o vídeo não passa por este servidor.
    */
-  app.post('/api/drive/stream-token', async (req, res) => {
+  app.post('/api/drive/track', async (req, res) => {
     res.set('Cache-Control', 'private, no-store');
     if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
     const sessionId = readSessionId(req);
     if (!sessionId) return jsonError(res, 401, 'no_session');
     try {
       const fileId = typeof req.body?.fileId === 'string' ? req.body.fileId : '';
-      const result = await criarStream(sessionId, fileId);
+      const result = await criarFaixa(sessionId, fileId);
       if (!result.ok) {
         const { http, error } = motivoDe(result.reason);
         return jsonError(res, http, error);
       }
-      res.json(result.target);
+      // O registro indexado por `fileId` é o que permite ao servidor saber de
+      // quem é a concessão que deu acesso, sem que a sessão de quem escolheu
+      // apareça no estado da sala — que é transmitido para todo mundo.
+      await registrarDonoDoTrack(result.track.fileId, sessionId, result.track.name);
+      res.json(result.track);
     } catch (err) {
-      console.error('[drive-stream] falha ao conceder reprodução', err);
-      jsonError(res, 500, 'stream_token_failed');
+      console.error('[drive] falha ao registrar a faixa', err);
+      jsonError(res, 500, 'track_failed');
     }
-  });
-
-  /**
-   * A mídia em si: encaminha o `Range` do `<video>` para o Drive e repassa os
-   * bytes, sem nunca juntar o arquivo inteiro em memória.
-   *
-   * Duas coisas que não são óbvias:
-   *
-   * 1. **Sem `isTrustedOrigin`.** Uma requisição de elemento de mídia não manda
-   *    `Origin`, então a guarda de origem rejeitaria toda reprodução. A
-   *    autorização aqui é o token de 128 bits do `src` — posse do link, como a
-   *    rota de upload já é. Quem quiser fechar isso mais é verificar a sessão
-   *    do cookie, mas ela não prova estar na sala: todo visitante tem uma.
-   *
-   * 2. **O abort acompanha o cliente.** Um espectador que sai no meio, ou um
-   *    `seek` que descarta a requisição anterior, fecha a leitura do Drive.
-   *    Sem isso, o processo segura streams de um público que já foi embora.
-   */
-  app.get('/api/drive/stream/:token', async (req, res) => {
-    res.set('Cache-Control', 'private, no-store');
-    const grant = await lerStream(String(req.params.token ?? ''));
-    if (!grant) return jsonError(res, 404, 'not_found');
-
-    const token = await getValidAccessToken(grant.sessionId);
-    if (!token.ok) {
-      // A concessão da pessoa pode ter sido revogada depois que o item entrou
-      // na fila. Sem token não há stream, e o bucket não tem cópia deste Drive.
-      return jsonError(res, token.reason === 'not_connected' ? 404 : 502, token.reason);
-    }
-
-    const controller = new AbortController();
-    res.on('close', () => controller.abort());
-
-    // `Response` aqui é o do Express, então o tipo da resposta do Drive vem do
-    // retorno da função — nomeá-lo importaria o objeto errado.
-    let upstream: Awaited<ReturnType<typeof abrirArquivo>>;
-    try {
-      upstream = await abrirArquivo(grant, rangeDe(req.headers.range), token.accessToken, controller.signal);
-    } catch (err) {
-      if (controller.signal.aborted) return;
-      console.error('[drive-stream] falha ao abrir o arquivo no Drive', err);
-      return jsonError(res, 502, 'drive_unreachable');
-    }
-
-    // Um 4xx do Drive vira status nosso, sem o corpo: a página de erro do Google
-    // não interessa a um `<video>` e só gastaria banda.
-    if (!upstream.ok) {
-      await upstream.body?.cancel().catch(() => {});
-      return jsonError(res, upstream.status === 404 ? 404 : 502, upstream.status === 404 ? 'not_found' : 'drive_unreachable');
-    }
-
-    repassarCabecalhos(upstream, res);
-    res.status(upstream.status);
-    if (!upstream.body) return res.end();
-
-    // `pipe` sem fim: o Node aplica backpressure, então a memória do processo
-    // não cresce com o tamanho do vídeo, e o spectator lento segura o stream
-    // em vez de acelerar o download do Drive.
-    corpoComoStream(upstream).on('error', () => res.destroy()).pipe(res);
   });
 
   app.get('/api/drive/oauth/concluido', (req, res) => {
@@ -341,6 +276,10 @@ export function registerDriveRoutes(app: Express): void {
       return;
     }
     try {
+      // Desconectar derruba as permissões que a conta criou, em todas as salas
+      // onde ela concessionou acesso. Precisa vir antes de apagar o token, porque
+      // a revogação usa o token do dono para falar com o Google.
+      await revogarTudoDaSessao(sessionId);
       await revokeAndDelete(sessionId);
       res.set('Cache-Control', 'no-store');
       res.json({ connected: false });

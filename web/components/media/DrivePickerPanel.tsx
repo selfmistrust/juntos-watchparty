@@ -5,11 +5,10 @@ import { FilmStrip, WarningCircle, X } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/Button';
 import { Portal } from '@/components/ui/Portal';
 import { SourceAccountRow } from '@/components/media/SourceAccountRow';
-import { fetchDrivePickerToken, requestDriveStream } from '@/lib/driveAccount';
+import { fetchDrivePickerToken, registerDriveTrack } from '@/lib/driveAccount';
 import { escolherVideoNoGoogleDrive } from '@/lib/googlePicker';
 import { escolherVideoNoNavegador } from '@/lib/driveBrowserPicker';
 import { isDesktop } from '@/lib/desktop';
-import { SERVER_URL } from '@/lib/socket';
 import type { MediaSourceAccount, MediaSourceContext } from '@/lib/mediaSources';
 
 interface Props {
@@ -36,29 +35,30 @@ const MENSAGENS_ERRO: Record<string, string> = {
   not_a_video: 'Escolha um arquivo de vídeo.',
   no_download: 'O dono desse arquivo bloqueou o download. Escolha outro vídeo.',
   drive_unreachable: 'O Google Drive não respondeu. Tente de novo.',
-  stream_failed: 'Não foi possível liberar esse vídeo para a sala. Tente de novo.',
+  track_failed: 'Não foi possível adicionar esse vídeo do Drive à sala. Tente de novo.',
 };
 
 /**
  * Escolhe um vídeo do Drive e o coloca na fila.
  *
- * ## Não há mais download aqui
+ * ## Não há download, proxy nem bucket
  *
  * Este painel já baixava o arquivo inteiro do Drive e subia para o bucket antes
- * de a faixa existir. Para um episódio isso era duas transferências
- * sequenciais pela mesma conexão, e o pico de memória no navegador era de cerca
- * de duas vezes o tamanho do arquivo — 2,2 GB viravam alguns gigabytes de RAM.
+ * de qualquer reprodução: duas transferências sequenciais pela mesma conexão,
+ * e um pico de memória de cerca de duas vezes o tamanho do arquivo.
  *
- * Agora a única coisa que acontece depois da escolha é um POST pedindo a
- * concessão de reprodução. O item entra na fila na hora, com um `src` que é a
- * rota de stream, e o `<video>` pede os bytes por partes. Por isso não existe
- * mais barra de progresso aqui: não há o que esperar.
+ * Agora o item entra na fila com `kind: 'drive'` e `src` vazio. Não existe URL
+ * porque o vídeo não vem do nosso servidor: cada participante lê direto do
+ * Google, com o token da própria conta, por um service worker. O Juntos se
+ * limita a conceder a permissão `reader` para quem está na sala.
  *
- * ## A autorização é de quem escolheu
+ * ## O preço disto, dito com todas as letras
  *
- * O token do Drive pertence à pessoa que selecionou o arquivo, e é ele que
- * serve o stream para todo mundo. Se essa pessoa desconectar ou revogar, a
- * faixa para de funcionar — é o preço de não copiar o vídeo para o bucket.
+ * Quem assiste precisa ter conta do Google conectada e autorizar o app naquele
+ * arquivo uma vez. E o arquivo passa a estar compartilhado, no painel do Drive
+ * de quem escolheu, com as pessoas da sala — permission que sai quando a faixa
+ * sai, mas o vínculo do app com o arquivo permanece até a pessoa desautorizar o
+ * juntos. Está na política de privacidade.
  */
 export function DrivePickerPanel({ open, onClose, context, account, refreshAccount }: Props) {
   const [erro, setErro] = useState<string | null>(null);
@@ -98,13 +98,17 @@ export function DrivePickerPanel({ open, onClose, context, account, refreshAccou
       if (!fileId || signal.aborted) return;
 
       setFase('concedendo');
-      const target = await requestDriveStream(fileId, signal);
+      const track = await registerDriveTrack(fileId, signal);
       signal.throwIfAborted();
+      // `kind: 'drive'` com `src` vazio: o vídeo não tem URL porque não vem do
+      // nosso servidor. Cada participante monta a dele, com o token da própria
+      // conta, e o Juntos já concedeu o acesso no Drive dele.
       context.addToPlaylist({
-        kind: 'file',
-        src: `${SERVER_URL}${target.path}`,
-        title: target.name.replace(/\.[^./]+$/, '') || target.name,
-        duration: target.duration,
+        kind: 'drive',
+        src: '',
+        driveFileId: track.fileId,
+        title: track.name.replace(/\.[^./]+$/, '') || track.name,
+        duration: track.duration,
       });
       onClose();
     } catch (e) {
@@ -210,9 +214,10 @@ export function DrivePickerPanel({ open, onClose, context, account, refreshAccou
           </div>
 
           <p className="border-t border-hairline px-4 py-2.5 text-2xs leading-relaxed text-ink-faint">
-            O vídeo é reproduzido direto do seu Drive, por partes, sem esperar o arquivo inteiro
-            baixar. O app só acessa o arquivo escolhido no Picker — mas ele é lido pela conta que
-            conectou, então desconectar essa conta interrompe a faixa.
+            Quem assiste precisa ter uma conta do Google conectada e autorizar este vídeo uma vez.
+            O arquivo é lido direto do Drive por cada participante — não passa pelo servidor nem
+            fica guardado aqui — e aparece como compartilhado com as pessoas da sala até a faixa
+            sair da fila.
           </p>
         </div>
       </div>

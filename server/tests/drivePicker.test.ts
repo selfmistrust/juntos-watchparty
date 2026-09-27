@@ -51,10 +51,16 @@ mock.method(redis, 'del', async (...keys: string[]) => keys.reduce((count, key) 
 const realFetch = globalThis.fetch;
 let exchanges: URLSearchParams[] = [];
 let tokenFailure = false;
-type DriveCall = { url: string; range: string | null; auth: string | null };
+type DriveCall = { url: string; range: string | null; auth: string | null; method: string; body: unknown };
 let driveCalls: DriveCall[] = [];
 let driveMeta: Record<string, unknown> | null = null;
 let mediaStatus = 200;
+let userinfoEmail = 'dono@exemplo.com';
+/** Permissões que o Google já tem no arquivo, antes de qualquer coisa nossa. */
+let permissoesPreexistentes: { id: string; emailAddress: string }[] = [];
+/** Permissões que o nosso POST create devolveu, para o delete saber o que é. */
+let permissoesCriadas = new Map<string, string>();
+let criadoCount = 0;
 const MEDIA = Buffer.from('0123456789abcdef', 'utf-8');
 
 const metaPadrao = () => ({
@@ -67,17 +73,48 @@ const metaPadrao = () => ({
 });
 
 /**
- * O Drive é simulado no limite do que a rota realmente depende: os metadados
- * (com `canDownload`, que a documentação manda checar) e os bytes, que precisam
- * respeitar `Range` como o Google respeita. Sem isso o teste passaria mesmo com a
- * rota ignorando o cabeçalho.
+ * O Drive é simulado no limite do que o código realmente depende:
+ *
+ * - metadados, com `canDownload`, que a documentação manda checar;
+ * - `permissions.list` e `permissions.create`, que é o coração do
+ *   compartilhamento — sem simular o `id` devolvido, o revoke não teria o que
+ *   apagar e o teste passaria sem provar nada;
+ * - os bytes com `Range`, que já não são servidos por nós mas continuam sendo
+ *   o contrato que o service worker cumpre no cliente.
  */
 function responderDrive(url: URL, init: RequestInit | undefined): Response {
-  const range = (init?.headers as Record<string, string> | undefined)?.Range ?? null;
-  driveCalls.push({ url: url.toString(), range, auth: (init?.headers as Record<string, string> | undefined)?.Authorization ?? null });
+  const metodo = init?.method ?? 'GET';
+  const cabecalhos = (init?.headers ?? {}) as Record<string, string>;
+  const corpo = typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+  driveCalls.push({
+    url: url.toString(), method: metodo, body: corpo,
+    range: cabecalhos.Range ?? null, auth: cabecalhos.Authorization ?? null,
+  });
+
+  if (url.pathname.endsWith('/permissions') && metodo === 'GET') {
+    return Response.json({
+      permissions: [
+        { id: 'dono', emailAddress: userinfoEmail, type: 'user' },
+        ...permissoesPreexistentes,
+        ...[...permissoesCriadas].map(([email, id]) => ({ id, emailAddress: email, type: 'user' })),
+      ],
+    });
+  }
+  if (url.pathname.endsWith('/permissions') && metodo === 'POST') {
+    const email = String(corpo?.emailAddress ?? '');
+    if (criadoCount >= 3) return new Response('{"error":{"code":403}}', { status: 403 });
+    criadoCount += 1;
+    const id = `perm-${criadoCount}`;
+    permissoesCriadas.set(email, id);
+    return Response.json({ id, emailAddress: email, role: corpo?.role, type: 'user' });
+  }
+  if (/\/permissions\/[^/]+$/.test(url.pathname) && metodo === 'DELETE') {
+    return new Response(null, { status: 204 });
+  }
+
   if (url.searchParams.get('alt') === 'media') {
     if (mediaStatus !== 200) return new Response('{}', { status: mediaStatus });
-    const m = /^bytes=(\d*)-(\d*)$/.exec(range ?? '');
+    const m = /^bytes=(\d*)-(\d*)$/.test(cabecalhos.Range ?? '');
     if (m) {
       const inicio = m[1] ? Number(m[1]) : MEDIA.length - Number(m[2]);
       const fim = m[2] ? Number(m[2]) : MEDIA.length - 1;
@@ -108,8 +145,12 @@ mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: Re
       ? new Response('{}', { status: 503 })
       : Response.json({
         access_token: 'test-access-token', refresh_token: 'test-refresh-token',
-        expires_in: 3600, scope: 'https://www.googleapis.com/auth/drive.file',
+        expires_in: 3600,
+        scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
       });
+  }
+  if (url.href === 'https://www.googleapis.com/oauth2/v3/userinfo') {
+    return Response.json({ email: userinfoEmail, email_verified: true });
   }
   if (url.hostname === 'www.googleapis.com' && url.pathname.startsWith('/drive/v3/files/')) {
     return responderDrive(url, init);
@@ -138,6 +179,10 @@ beforeEach(() => {
   driveCalls = [];
   driveMeta = metaPadrao();
   mediaStatus = 200;
+  userinfoEmail = 'dono@exemplo.com';
+  permissoesPreexistentes = [];
+  permissoesCriadas = new Map();
+  criadoCount = 0;
 });
 after(async () => {
   server.close();
@@ -182,7 +227,7 @@ test('o navegador externo entrega o vídeo somente à sessão do desktop, com st
   const google = new URL(request.url);
   assert.equal(google.origin, 'https://accounts.google.com');
   assert.equal(google.searchParams.get('trigger_onepick'), 'true');
-  assert.equal(google.searchParams.get('scope'), 'https://www.googleapis.com/auth/drive.file');
+  assert.equal(google.searchParams.get('scope'), 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email');
   assert.equal(google.searchParams.get('include_granted_scopes'), 'false');
   assert.equal(google.searchParams.get('prompt'), 'consent');
   assert.equal(google.searchParams.get('allow_multiple'), 'false');
@@ -294,9 +339,20 @@ test('a página de conclusão usa textos do Drive e rejeita estados desconhecido
   assert.equal(invalid.status, 400);
 });
 
-// --- Reprodução: a rota de stream -------------------------------------------
+// --- Faixa de Drive e compartilhamento ---------------------------------------
 
-async function conectar(): Promise<string> {
+/**
+ * O id de sessão que o cookie carrega.
+ *
+ * O código do servidor sempre trabalha com o id, nunca com o cookie: o
+ * `playlist:add` vem por WebSocket e não tem cookie, e é por isso que o dono do
+ * arquivo fica indexado por `fileId` no Redis. Passar o cookie inteiro aqui
+ * faria o teste mentir sobre o contrato.
+ */
+const sessaoDe = (cookie: string): string => cookie.split(';')[0].split('=')[1].split('.')[0];
+
+async function conectar(email?: string): Promise<string> {
+  if (email) userinfoEmail = email;
   const cookie = await session();
   const start = await fetch(`${base}/api/drive/oauth/start`, {
     method: 'POST', headers: { cookie, origin, 'Content-Type': 'application/json' },
@@ -307,155 +363,185 @@ async function conectar(): Promise<string> {
   return cookie;
 }
 
-async function conceder(cookie: string, fileId = videoId) {
-  const res = await fetch(`${base}/api/drive/stream-token`, {
+async function registrar(cookie: string, fileId = videoId) {
+  return fetch(`${base}/api/drive/track`, {
     method: 'POST', headers: { cookie, origin, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId }),
   });
-  return res;
 }
 
-test('a concessão devolve um caminho opaco e o nome do arquivo, sem baixar nada', async () => {
+test('registrar a faixa devolve o fileId e o nome, e não baixa nem cria permissão', async () => {
   const cookie = await conectar();
-  const res = await conceder(cookie);
+  const res = await registrar(cookie);
   assert.equal(res.status, 200);
-  const target = await res.json() as { path: string; token: string; name: string; duration?: number; size?: number };
-  assert.match(target.path, /^\/api\/drive\/stream\/[a-z0-9]{32}$/);
-  assert.equal(target.name, 'Episódio.mkv');
-  assert.equal(target.duration, 15);
-  assert.equal(target.size, MEDIA.length);
-  // A resposta não carrega o id do Drive: o `src` da fila é o token, e nada
-  // mais do arquivo do usuário atravessa o servidor nessa resposta.
-  assert.doesNotMatch(JSON.stringify(target), new RegExp(videoId));
-  assert.ok(!driveCalls.some((c) => c.url.includes('alt=media')), 'conceder não baixa o arquivo');
+  const track = await res.json() as { fileId: string; name: string; duration?: number; size?: number };
+  assert.equal(track.fileId, videoId);
+  assert.equal(track.name, 'Episódio.mkv');
+  assert.equal(track.duration, 15);
+
+  // A faixa não carrega URL de mídia: o vídeo é lido do Google por cada
+  // participante, e o Render não vira proxy nem precisa de bucket.
+  assert.ok(!JSON.stringify(track).includes('/stream'));
+  assert.ok(!driveCalls.some((c) => c.url.includes('alt=media')), 'registrar não baixa o arquivo');
+  assert.ok(!driveCalls.some((c) => c.url.includes('/permissions')), 'registrar não compartilha nada');
 });
 
-test('a concessão recusa quem não tem conta, id inválido, não-vídeo e download bloqueado', async () => {
+test('registrar recusa quem não tem conta, id inválido, não-vídeo e download bloqueado', async () => {
   const semConta = await session();
-  assert.equal((await conceder(semConta)).status, 401);
+  assert.equal((await registrar(semConta)).status, 401);
 
   const cookie = await conectar();
-  assert.equal((await conceder(cookie, '../../etc/passwd')).status, 400);
+  assert.equal((await registrar(cookie, '../../etc/passwd')).status, 400);
 
   driveMeta = { ...metaPadrao(), mimeType: 'application/pdf' };
-  assert.equal((await conceder(cookie)).status, 422);
+  assert.equal((await registrar(cookie)).status, 422);
 
   driveMeta = { ...metaPadrao(), capabilities: { canDownload: false } };
-  assert.equal((await conceder(cookie)).status, 422);
+  assert.equal((await registrar(cookie)).status, 422);
 
+  // O 404 do Google aqui é o "você não escolheu este arquivo" do drive.file, e
+  // vira bad_file para o painel não sugerir algo que não vai funcionar.
   driveMeta = null;
-  assert.equal((await conceder(cookie)).status, 502);
+  const escolhidoPorOutro = await registrar(cookie);
+  assert.equal(escolhidoPorOutro.status, 400);
+  assert.equal(((await escolhidoPorOutro.json()) as { error: string }).error, 'bad_file');
 });
 
-test('a rota de stream serve 206 com o intervalo pedido, e o Range chega no Drive', async () => {
-  const cookie = await conectar();
-  const { path: streamPath } = await (await conceder(cookie)).json() as { path: string };
+test('o e-mail da conta é guardado para o compartilhamento, e nunca sai do servidor', async () => {
+  const cookie = await conectar('dono@exemplo.com');
+  await registrar(cookie);
+  const { emailDaSessao } = await import('../src/driveOAuth.js');
+  assert.equal(await emailDaSessao(sessaoDe(cookie)), 'dono@exemplo.com');
 
-  const res = await fetch(`${base}${streamPath}`, { headers: { Range: 'bytes=4-7' } });
-  assert.equal(res.status, 206);
-  assert.equal(res.headers.get('accept-ranges'), 'bytes');
-  assert.equal(res.headers.get('content-range'), `bytes 4-7/${MEDIA.length}`);
-  assert.equal(res.headers.get('content-type'), 'video/x-matroska');
-  assert.equal(await res.text(), '4567');
-
-  const media = driveCalls.filter((c) => c.url.includes('alt=media'));
-  assert.equal(media.length, 1);
-  assert.equal(media[0].range, 'bytes=4-7', 'o Range do <video> tem de ser repassado');
-  assert.equal(media[0].auth, 'Bearer test-access-token', 'o stream usa o token de quem concedeu');
-  assert.ok(media[0].url.includes(videoId), 'a URL do Drive é montada pelo servidor, a partir do id validado');
+  // O status público é o que a UI recebe: e-mail nenhum.
+  const status = await (await fetch(`${base}/api/drive/status`, { headers: { cookie } })).json();
+  assert.deepEqual(Object.keys(status).sort(), ['configured', 'connected']);
+  assert.ok(!JSON.stringify(status).includes('@'));
 });
 
-test('sem Range a rota responde o arquivo inteiro, e seeks sucessivos somam os intervalos', async () => {
-  const cookie = await conectar();
-  const { path: streamPath } = await (await conceder(cookie)).json() as { path: string };
-
-  const inteiro = await fetch(`${base}${streamPath}`);
-  assert.equal(inteiro.status, 200);
-  assert.equal((await inteiro.arrayBuffer()).byteLength, MEDIA.length);
-
-  for (const [range, esperado] of [['bytes=0-3', '0123'], ['bytes=8-15', '89abcdef'], ['bytes=12-', 'cdef']] as const) {
-    const res = await fetch(`${base}${streamPath}`, { headers: { Range: range } });
-    assert.equal(res.status, 206, range);
-    assert.equal(await res.text(), esperado);
-  }
-  assert.equal(driveCalls.filter((c) => c.url.includes('alt=media')).length, 4);
+test('o escopo pedido inclui o email, e uma autorização antiga é rejeitada', async () => {
+  const cookie = await session();
+  const start = await fetch(`${base}/api/drive/oauth/start`, {
+    method: 'POST', headers: { cookie, origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ returnTo: `${origin}/room/teste` }),
+  });
+  const { url } = await start.json() as { url: string };
+  const scope = new URL(url).searchParams.get('scope') ?? '';
+  assert.ok(scope.includes('https://www.googleapis.com/auth/drive.file'));
+  assert.ok(scope.includes('https://www.googleapis.com/auth/userinfo.email'));
+  // A troca devolve exatamente o que foi pedido; se o Google devolvesse algo
+  // além disso, a conexão teria de ser recusada.
+  await callback(url, { code: 'code' }, cookie);
+  const status = await (await fetch(`${base}/api/drive/status`, { headers: { cookie } })).json();
+  assert.equal(status.connected, true);
 });
 
-test('Range malformado ou múltiplo não é repassado, e token desconhecido dá 404', async () => {
-  const cookie = await conectar();
-  const { path: streamPath } = await (await conceder(cookie)).json() as { path: string };
+test('conceder leitor para quem está na sala, e revogar só o que foi criado', async () => {
+  const { reconciliarCompartilhamento, concessoesVivas, revogarTudo } =
+    await import('../src/driveShare.js');
+  const { registrarDonoDoTrack } = await import('../src/driveTrack.js');
+  const sessaoDono = await conectar('dono@exemplo.com');
+  await registrar(sessaoDono);
 
-  const multiplo = await fetch(`${base}${streamPath}`, { headers: { Range: 'bytes=0-3,6-9' } });
-  assert.equal(multiplo.status, 200, 'sem intervalo reconhecido o Drive responde o arquivo inteiro');
-  assert.equal(driveCalls.filter((c) => c.url.includes('alt=media')).at(-1)?.range, null);
+  const sala = 'sala-teste';
+  await registrarDonoDoTrack(videoId, sessaoDe(sessaoDono), 'Episódio.mkv');
+  driveCalls = [];
 
-  for (const token of ['inexistente', '../../api/drive/status', 'a'.repeat(31), 'A'.repeat(32)]) {
-    assert.equal((await fetch(`${base}/api/drive/stream/${token}`)).status, 404, token);
-  }
-  assert.equal((await fetch(`${base}/api/drive/stream/${streamPath.split('/').pop()}`)).status, 200);
+  // Uma pessoa que já tinha acesso antes do Juntos não pode ser tocada: a
+  // permissão é "preexistente" e não entra na lista de revogáveis.
+  permissoesPreexistentes = [{ id: 'perm-antiga', emailAddress: 'colega@exemplo.com' }];
+
+  await reconciliarCompartilhamento({
+    roomId: sala,
+    fileId: videoId,
+    participantes: [
+      { userId: 'u-dono', email: 'dono@exemplo.com' },
+      { userId: 'u-colega', email: 'colega@exemplo.com' },
+      { userId: 'u-nova', email: 'nova@exemplo.com' },
+      { userId: 'u-sem-email', email: null },
+      { userId: 'u-invalido', email: 'nao-e-email' },
+    ],
+  });
+
+  const criadas = driveCalls.filter((c) => c.method === 'POST' && c.url.includes('/permissions'));
+  assert.equal(criadas.length, 1, 'só quem não tinha acesso recebe permissão nova');
+  assert.equal((criadas[0].body as { emailAddress: string }).emailAddress, 'nova@exemplo.com');
+  assert.ok(driveCalls.some((c) => c.method === 'GET' && c.url.includes('/permissions')), 'a lista de permissões é consultada antes');
+  // Sem e-mail de notificação: quem entrou na sala não recebe um convite do Google.
+  assert.ok(criadas[0].url.includes('sendNotificationEmail=false'));
+
+  const vivas = await concessoesVivas(sala);
+  assert.deepEqual(vivas?.concessoes.map((c) => c.email), ['nova@exemplo.com']);
+  assert.equal(vivas?.concessoes[0].permissionId, 'perm-1', 'guardamos o id devolvido, para revogar exatamente ele');
+
+  // Reconciliar de novo não duplica: quem já tem não é concedido outra vez.
+  driveCalls = [];
+  await reconciliarCompartilhamento({
+    roomId: sala, fileId: videoId, participantes: [{ userId: 'u-nova', email: 'nova@exemplo.com' }],
+  });
+  assert.equal(driveCalls.filter((c) => c.method === 'POST').length, 0);
+
+  driveCalls = [];
+  await revogarTudo(sala);
+  const deletadas = driveCalls.filter((c) => c.method === 'DELETE');
+  assert.equal(deletadas.length, 1, 'revoga só a nossa');
+  assert.ok(deletadas[0].url.includes('perm-1'));
+  assert.ok(!deletadas[0].url.includes('perm-antiga'), 'a preexistente nunca é tocada');
+  assert.equal(await concessoesVivas(sala), null);
 });
 
-test('a rota de mídia não exige Origin — é o que o <video> realmente manda', async () => {
-  const cookie = await conectar();
-  const { path: streamPath } = await (await conceder(cookie)).json() as { path: string };
-  const semOrigin = await fetch(`${base}${streamPath}`, { headers: { Range: 'bytes=0-1' } });
-  assert.equal(semOrigin.status, 206);
-  await semOrigin.text();
+test('trocar de faixa revoga o arquivo anterior, e quem entra depois recebe acesso', async () => {
+  const { reconciliarCompartilhamento, concessoesVivas } = await import('../src/driveShare.js');
+  const { registrarDonoDoTrack } = await import('../src/driveTrack.js');
+  const sessaoDono = await conectar('dono@exemplo.com');
+  await registrar(sessaoDono);
+  await registrarDonoDoTrack(videoId, sessaoDe(sessaoDono), 'Episódio.mkv');
+
+  const sala = 'sala-troca';
+  const outroId = 'outro_arquivo_456';
+  driveMeta = { ...metaPadrao(), id: outroId };
+  await registrar(sessaoDono, outroId);
+  await registrarDonoDoTrack(outroId, sessaoDe(sessaoDono), 'Outro.mkv');
+
+  driveCalls = [];
+  await reconciliarCompartilhamento({ roomId: sala, fileId: videoId, participantes: [{ userId: 'a', email: 'a@exemplo.com' }] });
+  assert.equal((await concessoesVivas(sala))?.fileId, videoId);
+
+  driveCalls = [];
+  await reconciliarCompartilhamento({ roomId: sala, fileId: outroId, participantes: [{ userId: 'a', email: 'a@exemplo.com' }] });
+  const apagadas = driveCalls.filter((c) => c.method === 'DELETE');
+  assert.equal(apagadas.length, 1);
+  assert.ok(apagadas[0].url.includes(videoId), 'a do arquivo que saiu é revogada');
+  assert.ok(!apagadas[0].url.includes(outroId), 'a do arquivo novo não é tocada');
+  assert.equal((await concessoesVivas(sala))?.fileId, outroId);
 });
 
-test('a reprodução morre junto com a concessão, e o erro do Drive não vaza HTML', async () => {
-  const cookie = await conectar();
-  const { path: streamPath } = await (await conceder(cookie)).json() as { path: string };
-  const token = streamPath.split('/').pop() as string;
+test('desconectar a conta derruba as permissões que ela sustentava', async () => {
+  const { reconciliarCompartilhamento, concessoesVivas } = await import('../src/driveShare.js');
+  const { registrarDonoDoTrack } = await import('../src/driveTrack.js');
+  const sessaoDono = await conectar('dono@exemplo.com');
+  await registrar(sessaoDono);
+  await registrarDonoDoTrack(videoId, sessaoDe(sessaoDono), 'Episódio.mkv');
 
-  mediaStatus = 403;
-  const negado = await fetch(`${base}${streamPath}`);
-  assert.equal(negado.status, 502);
-  assert.match(negado.headers.get('content-type') ?? '', /application\/json/);
+  const sala = 'sala-desconecta';
+  await reconciliarCompartilhamento({ roomId: sala, fileId: videoId, participantes: [{ userId: 'b', email: 'b@exemplo.com' }] });
+  assert.equal((await concessoesVivas(sala))?.concessoes.length, 1);
 
-  // Desconectar apaga a concessão; a faixa na sala deixa de ter de onde tirar.
-  mediaStatus = 200;
-  await fetch(`${base}/api/drive/oauth/disconnect`, { method: 'POST', headers: { cookie, origin } });
-  assert.equal((await fetch(`${base}${streamPath}`, { headers: { Range: 'bytes=0-1' } })).status, 404);
-  assert.ok(!entries.has(`drive:stream:${token}`), 'desconectar apaga a concessão, não só a torna inerte');
+  driveCalls = [];
+  await fetch(`${base}/api/drive/oauth/disconnect`, { method: 'POST', headers: { cookie: sessaoDono, origin } });
+  const apagadas = driveCalls.filter((c) => c.method === 'DELETE');
+  assert.equal(apagadas.length, 1, 'desconectar leva as permissões da conta junto');
+  assert.equal(await concessoesVivas(sala), null);
+  assert.equal((await (await fetch(`${base}/api/drive/status`, { headers: { cookie: sessaoDono } })).json()).connected, false);
 });
 
-test('só um src de stream bem formado é tratado como concessão do servidor', async () => {
-  const { extrairTokenDeSrc } = await import('../src/driveStream.js');
-  const cookie = await conectar();
-  const { path: streamPath, token } = await (await conceder(cookie)).json() as { path: string; token: string };
-
-  // O `src` da fila é uma URL absoluta, e é assim que volta para o servidor.
-  assert.equal(extrairTokenDeSrc(`https://juntos-watchparty.onrender.com${streamPath}`), token);
-  assert.equal(extrairTokenDeSrc(`http://localhost:4001${streamPath}?x=1`), token);
-
-  // URLs de envio comum e de terceiros não passam pela validação: elas não são
-  // buscadas pelo servidor, são apenas o `src` de um `<video>`.
-  for (const src of [
-    'https://pub-30c89b6c11c047cdb31775970b9407b2.r2.dev/uploads/abcdefghijklmnopqrstuv.mp4',
-    'https://youtu.be/abc',
-    '',
-  ]) {
-    assert.equal(extrairTokenDeSrc(src), null, src);
-  }
-
-  // Um caminho de stream com token fora do formato não passa como concessão:
-  // a rota de mídia só procura no Redis, então o resultado é 404, nunca busca.
-  for (const src of [
-    `https://api.example/api/drive/stream/../../status`,
-    `https://api.example/api/drive/stream/${'A'.repeat(32)}`,
-    `https://api.example/api/drive/stream/${'a'.repeat(31)}`,
-  ]) {
-    assert.equal(extrairTokenDeSrc(src), null, src);
-  }
-  assert.equal(extrairTokenDeSrc(null), null);
-
-  /*
-   * Um caminho bem formado apontando para outro host continua sendo reconhecido,
-   * e isso é intencional: o servidor não tem como saber o próprio endereço
-   * público, e também não importa. A rota de mídia só existe em
-   * `/api/drive/stream/:token` e resolve o token no Redis — nunca busca a URL
-   * que o cliente mandou. No máximo, o `src` de um `<video>` aponta para fora.
-   */
-  assert.equal(extrairTokenDeSrc(`https://exemplo.com/api/drive/stream/${token}`), token);
+test('a faixa de Drive só entra na fila com um fileId que o servidor reconhece', async () => {
+  const { fileIdValido } = await import('../src/driveTrack.js');
+  const sessaoDono = await conectar();
+  await registrar(sessaoDono);
+  const { donoDoTrack } = await import('../src/driveTrack.js');
+  assert.equal(await donoDoTrack(videoId), sessaoDe(sessaoDono));
+  assert.equal(await donoDoTrack('arquivo_que_ninguem_escolheu'), null);
+  assert.equal(fileIdValido('../etc'), false);
+  assert.equal(fileIdValido(videoId), true);
 });

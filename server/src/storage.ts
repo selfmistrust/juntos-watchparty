@@ -21,11 +21,10 @@ import { customAlphabet } from 'nanoid';
  * de hospedagens como o free tier do Render — nosso processo só assina URLs,
  * não move bytes.
  *
- * A exceção é o **Drive**: um arquivo escolhido lá é reproduzido por
- * `/api/drive/stream`, que repassa o `Range` do player para a Drive API e,
- * portanto, sai do nosso processo. A escolha é deliberada — sem ela ninguém
- * esperaria um arquivo de 2 GB baixar antes de começar a assistir — e o custo
- * é banda do Render por espectador. O bucket não guarda cópia desse arquivo.
+ * O Google Drive segue pelo outro caminho, e isso é deliberado: o arquivo é
+ * lido do Google por cada participante, com a conta de cada uma, e o Render
+ * só administra quem tem permissão. Ele não transporta mídia nem guarda cópia
+ * do que veio do Drive.
  */
 const REGION = process.env.S3_REGION ?? 'auto';
 /** Endpoint da conta R2, ex.: https://<accountid>.r2.cloudflarestorage.com — vazio para AWS S3 "de verdade". */

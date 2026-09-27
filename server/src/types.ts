@@ -7,7 +7,7 @@
  * instante chega pelo relógio da mídia, não por `position`. Por isso o item
  * carrega `streamId` e o `src` fica vazio, e o player não tenta sincronizar.
  */
-export type MediaKind = 'youtube' | 'file' | 'stream';
+export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive';
 
 export interface PlaylistItem {
   id: string;
@@ -21,6 +21,16 @@ export interface PlaylistItem {
    * os bytes vêm, não de como se reproduz.
    */
   src: string;
+  /**
+   * Arquivo do Google Drive, quando `kind === 'drive'`.
+   *
+   * Só o identificador viaja no snapshot. Quem concedeu o acesso fica guardado
+   * no servidor, indexado por este id: o estado da sala é transmitido para
+   * todo mundo, e a sessão de quem escolheu não tem motivo nenhum de estar
+   * ali. O `src` fica vazio — a URL real é montada no cliente, porque cada
+   * pessoa busca no Google com o token da própria conta.
+   */
+  driveFileId?: string;
   title: string;
   thumbnail?: string;
   duration?: number;
