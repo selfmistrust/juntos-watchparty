@@ -49,7 +49,7 @@
  * Bump este número **sempre** que editar este arquivo. Um `waitUntil` faltando
  * num `activate` antigo nunca mais vai rodar.
  */
-const VERSAO = 2;
+const VERSAO = 3;
 
 /** Caminho interceptado. Precisa ser da própria origem para o worker existir. */
 const PREFIXO = '/drive-media/';

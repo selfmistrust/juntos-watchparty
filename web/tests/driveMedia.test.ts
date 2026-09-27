@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, test } from 'node:test';
 import {
   esperarWorkerPronto,
@@ -354,6 +356,26 @@ test('cada causa do Google vira uma frase que aponta o conserto', () => {
   // Sem registro do worker, o texto genérico é o fallback honesto.
   assert.equal(explicarFalha(null, FALHA), FALHA);
   assert.equal(explicarFalha({ motivo: 'desconhecido', status: 500 } as FalhaDrive, FALHA).includes(FALHA), false);
+});
+
+test('as duas versões do worker são a mesma, e o número sobe a cada mudança', async () => {
+  /*
+   * A versão vive em dois arquivos — o constante no worker e o da URL que o
+   * registra — e nada no compilador impede que fiquem diferentes. Quando isso
+   * acontece o navegador não reinstala nada, o worker antigo segue controlando a
+   * origem, e a correção parece não ter sido deploying.
+   *
+   * Foi exatamente o que aconteceu com a reconstrução do `Content-Range`: o
+   * worker foi reescrito e a versão ficou em 2, que era a mesma do deploy
+   * anterior. Nenhum aviso, nenhuma falha — a correção simplesmente não chegava.
+   */
+  const doWorker = /const VERSAO = (\d+);/.exec(
+    readFileSync(resolve(process.cwd(), '../web/public/drive-media-sw.js'), 'utf8'),
+  );
+  assert.ok(doWorker, 'o worker precisa ter a constante VERSAO');
+  const naPagina = Number(/VERSAO_WORKER = (\d+)/.exec(readFileSync(resolve(process.cwd(), '../web/lib/driveMedia.ts'), 'utf8'))?.[1]);
+  assert.equal(Number(doWorker[1]), naPagina, 'as duas versões precisam ser o mesmo número');
+  assert.ok(naPagina >= 3, 'a versão precisa ter subido desde a reconstrução do Content-Range');
 });
 
 test('a URL do worker carrega a versão, porque o claim só roda no activate', async () => {

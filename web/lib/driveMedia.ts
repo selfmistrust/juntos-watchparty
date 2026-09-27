@@ -35,7 +35,7 @@
  *
  * **Bump ao editar `public/drive-media-sw.js`.**
  */
-const VERSAO_WORKER = 2;
+const VERSAO_WORKER = 3;
 const SW_URL = `/drive-media-sw.js?v=${VERSAO_WORKER}`;
 /**
  * O caminho que o `<video>` pede.
