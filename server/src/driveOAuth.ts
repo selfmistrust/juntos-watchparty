@@ -43,6 +43,16 @@ import {
  * `permissions.create` exige um e-mail, e nem `drive.file` nem `about.get` o
  * devolvem. `userinfo.email` é o escopo mínimo para isso, e é não sensível: a
  * tela de consentimento mostra "seu endereço de e-mail", e nada mais.
+ *
+ * ## O `openid` que nós não pedimos
+ *
+ * O Google devolve `openid` junto de `userinfo.email` mesmo sem ele constar do
+ * pedido — é comportamento dele em fluxos com PKCE, não um acréscimo nosso. A
+ * diferença entre o escopo que pedimos e o escopo que volta é a causa de uma
+ * falha real que valeu um commit só: a pessoa autorizava tudo na tela, e o
+ * servidor recusava o token por causa de um escopo que ele mesmo tinha
+ * acrescentado. Por isso `PERMITIDOS` aceita `openid`, e a validação continua
+ * barrando o que é realmente amplo.
  */
 const SCOPE = [
   'https://www.googleapis.com/auth/drive.file',
@@ -50,11 +60,26 @@ const SCOPE = [
 ].join(' ');
 
 /**
- * O que aceitamos voltar do Google. O ponto é rejeitar os escopos amplos: uma
+ * O que aceitamos voltar do Google.
+ *
+ * A lista tem três entradas e a última não é nossa: `openid`. O Google o
+ * acrescenta sozinho em fluxos com PKCE, mesmo sem pedirmos, e devolver `openid`
+ * junto de `userinfo.email` é o comportamento normal dele. Rejeitar esse retorno
+ * faz o consentimento completo ser tratado como falha e derrubado, com o
+ * `revokeGoogleToken` logo em seguida — ou seja, a pessoa autoriza tudo na tela
+ * do Google e o servidor recusava a autorização. `openid` devolve só o
+ * identificador opaco da conta, sem e-mail, nome ou foto, e continua sendo não
+ * sensível.
+ *
+ * O ponto da validação segue sendo rejeitar os escopos **amplos**: uma
  * autorização antiga, vinda de quando o projeto usava `drive.readonly`, não
- * pode voltar a valer, e o `userinfo.email` é o único acréscimo aceito.
+ * pode voltar a valer.
  */
-const PERMITIDOS = new Set([SCOPE.split(' ')[0], SCOPE.split(' ')[1]]);
+const PERMITIDOS = new Set([
+  SCOPE.split(' ')[0],
+  SCOPE.split(' ')[1],
+  'openid',
+]);
 const LEGACY_WIDE_SCOPES = new Set([
   'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/drive.readonly',

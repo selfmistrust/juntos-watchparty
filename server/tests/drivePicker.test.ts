@@ -82,6 +82,9 @@ let exchanges: URLSearchParams[] = [];
  * 4xx, e a distinção é o que separa "conta morta" de "Google instável".
  */
 let tokenError: { http: number; body: Record<string, unknown> } | null = null;
+/** O que o Google devolve no campo `scope`, que não é necessariamente o que pedimos. */
+let escopoDevolvido =
+  'https://www.googleapis.com/auth/userinfo.email openid https://www.googleapis.com/auth/drive.file';
 type DriveCall = { url: string; range: string | null; auth: string | null; method: string; body: unknown };
 let driveCalls: DriveCall[] = [];
 let driveMeta: Record<string, unknown> | null = null;
@@ -178,10 +181,15 @@ mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: Re
         headers: { 'content-type': 'application/json' },
       });
     }
+    /*
+     * O escopo devolvido inclui `openid`, que não pedimos. É o comportamento
+     * real do Google em fluxo com PKCE — ele acrescenta sozinho — e foi o que
+     * fez a conexão ser recusada depois de a pessoa autorizar tudo na tela.
+     */
     return Response.json({
       access_token: 'test-access-token', refresh_token: 'test-refresh-token',
       expires_in: 3600,
-      scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
+      scope: escopoDevolvido,
     });
   }
   if (url.href === 'https://www.googleapis.com/oauth2/v3/userinfo') {
@@ -212,6 +220,8 @@ beforeEach(() => {
   relogio = 0;
   exchanges = [];
   tokenError = null;
+  escopoDevolvido =
+    'https://www.googleapis.com/auth/userinfo.email openid https://www.googleapis.com/auth/drive.file';
   driveCalls = [];
   driveMeta = metaPadrao();
   mediaStatus = 200;
@@ -575,6 +585,39 @@ test('o e-mail da conta é guardado para o compartilhamento, e nunca sai do serv
   const status = await (await fetch(`${base}/api/drive/status`, { headers: { cookie } })).json();
   assert.deepEqual(Object.keys(status).sort(), ['configured', 'connected']);
   assert.ok(!JSON.stringify(status).includes('@'));
+});
+
+test('o openid que o Google acrescenta não derruba a conexão, e um escopo amplo ainda derruba', async () => {
+  const cookie = await session();
+  const start = await fetch(`${base}/api/drive/oauth/start`, {
+    method: 'POST', headers: { cookie, origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ returnTo: `${origin}/room/teste` }),
+  });
+  const { url } = await start.json() as { url: string };
+
+  /*
+   * Este é o caso real: pedimos `drive.file` e `userinfo.email`, o Google
+   * devolve os dois mais `openid`, e a conexão era recusada. A pessoa autorizava
+   * tudo na tela do Google e o servidor jogava a fora — e ainda revogava o token
+   * logo depois, por segurança.
+   */
+  await callback(url, { code: 'code' });
+  const status = await (await fetch(`${base}/api/drive/status`, { headers: { cookie } })).json();
+  assert.equal(status.connected, true, 'openid devolvido pelo Google não pode derrubar a conexão');
+  const { emailDaSessao } = await import('../src/driveOAuth.js');
+  assert.equal(await emailDaSessao(sessaoDe(cookie)), 'dono@exemplo.com');
+
+  // Um escopo realmente amplo continua barrado: essa validação é a que impede
+  // que uma autorização antiga de `drive.readonly` volte a valer.
+  const outra = await session();
+  const startAmplo = await fetch(`${base}/api/drive/oauth/start`, {
+    method: 'POST', headers: { cookie: outra, origin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ returnTo: `${origin}/room/teste` }),
+  });
+  const { url: urlAmplo } = await startAmplo.json() as { url: string };
+  escopoDevolvido = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+  await callback(urlAmplo, { code: 'code' });
+  assert.equal((await (await fetch(`${base}/api/drive/status`, { headers: { cookie: outra } })).json()).connected, false);
 });
 
 test('o escopo pedido inclui o email, e uma autorização antiga é rejeitada', async () => {

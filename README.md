@@ -254,7 +254,8 @@ No [Google Cloud Console](https://console.cloud.google.com/):
 2. Configure a tela de consentimento OAuth com os escopos
    `https://www.googleapis.com/auth/drive.file` e
    `https://www.googleapis.com/auth/userinfo.email`. Não solicite `drive.readonly` — nem
-   `drive`, que também são restritos.
+   `drive`, que também são restritos. O Google devolve também o `openid` por conta própria, mesmo sem
+   ele ser pedido: o servidor aceita esse retorno, e continua recusando qualquer escopo amplo.
 3. Use o client OAuth Web já configurado para o YouTube, dentro desse mesmo projeto. O callback do
    Drive continua sendo uma URI separada; acrescente `https://<seu-back>/api/drive/oauth/callback` em **URIs de
    redirecionamento** e mantenha `GOOGLE_DRIVE_REDIRECT_URI` em `server/.env`. O `client_secret` e

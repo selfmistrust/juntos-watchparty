@@ -111,7 +111,10 @@ export default function PrivacyPolicy() {
                       escopo <code className="font-mono text-xs bg-hover px-1 rounded">userinfo.email</code>, que entrega o
                       seu endereço de e-mail — sem o qual o Google não permite compartilhar um arquivo com outra
                       conta. Não pedimos e não temos acesso ao restante do seu Drive, e não podemos listar seu
-                      conteúdo.
+                      conteúdo. O Google também devolve o escopo padrão
+                      <code className="font-mono text-xs bg-hover px-1 rounded">openid</code> por conta própria,
+                      que entrega apenas um identificador da sua conta — sem nome, e-mail ou foto — e não é
+                      utilizado pelo juntos.
                     </li>
                     <li>Armazenados <strong>criptografados (AES-256-GCM)</strong> no Redis, vinculados à sua sessão</li>
                     <li>
