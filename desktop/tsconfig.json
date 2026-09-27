@@ -1,11 +1,19 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "CommonJS",
-    // `node10` é o nome atual do que era `node`, e é o que o Node usa por
-    // padrão com CommonJS. O nome antigo está deprecado e exigia um
-    // `ignoreDeprecations` que o TypeScript não aceita mais em toda versão.
-    "moduleResolution": "node10",
+    // `node16` e o modo que substitui o antigo `node10`.
+    //
+    // O formato do emit continua CommonJS porque `desktop/package.json` nao
+    // declara `"type": "module"`: e o `package.json` mais proximo que decide se
+    // um `.ts` deste projeto e CommonJS ou ESM, nao o `module` do tsconfig. Trocar
+    // o identificador depreitado e nao trocar o formato da saida.
+    //
+    // A alternativa seria `"ignoreDeprecations": "6.0"`, que e o que o editor
+    // sugere. Isso silenciaria o aviso em vez de corrigir, e a opcao deixa de
+    // existir no TypeScript 7 — o aviso voltaria, agora como erro, e o
+    // `tsc` pararia de rodar.
+    "module": "node16",
+    "moduleResolution": "node16",
     "lib": ["ES2022", "DOM"],
     "outDir": "dist",
     "rootDir": "electron",
