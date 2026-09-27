@@ -458,7 +458,18 @@ export function VideoStage({
           aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
           onClick={togglePlay}
           disabled={!canControl}
-          className="absolute inset-x-0 top-0 z-10 cursor-default disabled:cursor-not-allowed"
+          /*
+           * `outline-none` com um anel desenhado à mão: o padrão do navegador
+           * contorna o elemento inteiro, e este elemento é o palco todo — o
+           * anel sairia da tela. Aqui o anel acompanha o disco do centro, que é
+           * onde o olho está.
+           *
+           * O anel é desenhado no próprio catcher (uma borda interna) e não no
+           * disco, porque o disco só existe quando está pausado: quem está
+           * tocando e navega por teclado precisa ver o foco em algum lugar, e o
+           * catcher é o único elemento focável do palco.
+           */
+          className="absolute inset-x-0 top-0 z-10 cursor-default outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70 disabled:cursor-not-allowed"
           /* Sempre com `bottom`: sem ele o elemento colapsa para altura zero,
              já que o `top-0` está fixo. Só o valor muda — 0 no normal, a altura
              da barra nativa quando ela está no ar. */
@@ -467,9 +478,43 @@ export function VideoStage({
       )}
 
       {currentItem && !isPlaying && (
+        /*
+         * O botão do centro é decorativo: quem recebe o clique é o catcher
+         * acima. Por isso o wrapper é `pointer-events-none` — se ele pegasse o
+         * clique, roubaria o play/pause de quem clica no vídeo.
+         *
+         * O hover vem do `group-hover` do palco, e é por isso que funciona
+         * apesar do `pointer-events-none`: o `:hover` sobe para os ancestrais, e o
+         * catcher — que é o elemento de verdade sob o cursor — é filho do mesmo
+         * `group`. O elemento com `pointer-events: none` não é alvo do ponteiro,
+         * mas o grupo ao redor continua recebendo o hover normalmente.
+         *
+         * São três estados, e o terceiro é o de quem não pode dar play:
+         *
+         * - parado: o disco de hoje, sem mudança;
+         * - hover ou foco: o disco clareia e cresce um pouco, e o ícone anda
+         *   1px. Deliberadamente pouco — o disco fica no centro do vídeo, e um
+         *   efeito grande ali é mais barulho do que confirmação;
+         * - sem permissão: nenhuma reação, para não sugerir que o clique
+         *   funciona. Quem não controla vê o ícone estático.
+         */
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-          <span className="animate-fade-up flex h-16 w-16 items-center justify-center rounded-full bg-black/55 backdrop-blur-sm">
-            <PlayIcon size={28} weight="fill" className="ml-0.5 text-white" />
+          <span
+            className={clsx(
+              'animate-fade-up flex h-16 w-16 items-center justify-center rounded-full bg-black/55 backdrop-blur-sm',
+              'transition-[background-color,transform] duration-150 ease-out',
+              canControl && 'group-hover:scale-105 group-hover:bg-black/70',
+              canControl && 'group-focus-within:scale-105 group-focus-within:bg-black/70',
+            )}
+          >
+            <PlayIcon
+              size={28}
+              weight="fill"
+              className={clsx(
+                'ml-0.5 text-white transition-transform duration-150 ease-out',
+                canControl && 'group-hover:translate-x-px group-focus-within:translate-x-px',
+              )}
+            />
           </span>
         </div>
       )}

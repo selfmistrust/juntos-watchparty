@@ -160,17 +160,37 @@ export function PlayerControls({
             value={muted ? 0 : volume}
             onChange={(e) => onVolume(Number(e.target.value))}
             style={{ ['--progress' as string]: `${(muted ? 0 : volume) * 100}%` }}
-                    /* O slider nascia recolhido (`w-0 opacity-0`) e só abria no
-               `group-hover`. Toque não tem hover, então o volume era impossível
-               de ajustar no celular — só dava para mutar.
-
-               O `group-hover` foi retirado de propósito: com ele, o slider ficava
-               aberto com o dedo sobre ele no celular e empurrava a barra, tirando
-               o botão de tela cheia da tela. Agora ele abre só por foco (teclado)
-               e no toque fica visível, mas compacto (`w-8`), cabendo junto dos
-               demais controles em 320px. `shrink-0` impede que o play, o painel
-               ou a tela cheia paguem por ele. */
-            className="seek-track h-1 w-0 shrink-0 cursor-pointer appearance-none rounded-full opacity-0 transition-all duration-200 ease-out focus:w-20 focus:opacity-100 focus-within:w-20 focus-within:opacity-100 [@media(pointer:coarse)]:w-8 [@media(pointer:coarse)]:opacity-100
+            /*
+             * O slider nasce recolhido (`w-0 opacity-0`) e abre no hover, no
+             * foco e no toque.
+             *
+             * ## O que aconteceu
+             *
+             * O `group-hover` foi removido em `fa20a0c`, numa auditoria de
+             * responsividade. A intenção era boa e o problema era real: no celular
+             * não existe hover, então o `group-hover` mantinha o slider
+             * recolhido e o volume só podia ser mutado. Mas a remoção **levou
+             * junto o desktop**, onde o hover funciona — e o slider ficou
+             * invisível para todo mundo, sem que nada quebrasse ou aparecesse no
+             * console. O botão continuava alternando mudo e desmutido, que é
+             * exatamente o comportamento que fica parecendo "só falta a barra".
+             *
+             * ## A correção
+             *
+             * O hover volta, e a causa do problema do celular é tratada no lugar
+             * certo: `pointer: coarse` não tem hover, e o `group-hover` sozinho
+             * não chega lá. Então as duas condições são independentes:
+             *
+             * - ponteiro fino (desktop): abre no `group-hover` e no foco;
+             * - ponteiro grosso (toque): já vem aberto, compacto (`w-8`), sem
+             *   depender de hover;
+             * - teclado: o `focus-visible` abre, e é o que mantém o controle
+             *   alcançável sem mouse.
+             *
+             * `shrink-0` impede que o play, o painel ou a tela cheia paguem por
+             * ele, que é o que a barra de 320px não comporta.
+             */
+            className="seek-track h-1 w-0 shrink-0 cursor-pointer appearance-none rounded-full opacity-0 transition-all duration-200 ease-out group-hover:w-20 group-hover:opacity-100 focus-visible:w-20 focus-visible:opacity-100 focus-within:w-20 focus-within:opacity-100 [@media(pointer:coarse)]:w-8 [@media(pointer:coarse)]:opacity-100
               [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white
               [&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white"
           />
