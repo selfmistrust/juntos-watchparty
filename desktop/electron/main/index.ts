@@ -31,6 +31,24 @@ const USER_AGENT =
 let janela: BrowserWindow | null = null;
 let servidor: LocalServer | null = null;
 
+/**
+ * Caminho do `.ico` multirresolução, idêntico em desenvolvimento e empacotado.
+ *
+ * Dois layouts, um caminho só:
+ *
+ *   desenvolvimento  `desktop/electron/main/index.ts`  -> `desktop/build`
+ *   empacotado       `app.asar/dist/main/index.js`      -> `app.asar/build`
+ *
+ * O `__dirname` sobe dois níveis nos dois casos, que é a coincidência que
+ * permite não perguntar `app.isPackaged` aqui. O `.ico` entra no asar pelo
+ * `files` do electron-builder, e o Electron patche o `fs` para ler de dentro
+ * dele — sem isso a janela abriria sem ícone no executável instalado, que é
+ * justamente onde ele mais importa.
+ */
+function caminhoDoIcone(): string {
+  return path.join(__dirname, '..', '..', 'build', 'icon.ico');
+}
+
 /** A app web não deve saber de onde veio a URL; este é o único lugar que sabe. */
 function configuracoesDaJanela(): Electron.BrowserWindowConstructorOptions {
   return {
@@ -41,6 +59,18 @@ function configuracoesDaJanela(): Electron.BrowserWindowConstructorOptions {
     backgroundColor: '#08080A',
     show: false,
     autoHideMenuBar: true,
+    // O ícone que a barra de tarefas, o Alt+Tab e a barra de título mostram.
+    //
+    // Em Windows quem manda no ícone da barra de tarefas é o recurso embutido
+    // no executável, e quem define esse recurso é o `win.icon` do
+    // electron-builder. Esta linha importa por causa do botão da barra de
+    // título, que é do Windows e não do executável, e porque é ela que dá o
+    // ícone no `npm start`, onde o electron-builder não roda e o executável é o
+    // Electron cru, com o ícone padrão dele.
+    //
+    // O `.ico` de sete tamanhos é usado diretamente: o Windows escolhe a entrada
+    // certa para cada escala de tela em vez de reamostrar o PNG de 512.
+    icon: caminhoDoIcone(),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
@@ -175,6 +205,22 @@ iniciarLog();
 // duplicariam o áudio e o estado de reprodução na mesma conta.
 const unica = app.requestSingleInstanceLock();
 log(unica ? 'instance única garantida' : 'outra instância já está rodando');
+
+/*
+ * Identidade do app na barra de tarefas, antes de qualquer janela existir.
+ *
+ * O Windows agrupa janelas pelo AppUserModelID, e sem um ID explícito o Electron
+ * usa um gerado a partir do caminho do executável. O efeito prático de não
+ * definir: em `npm start` o executável é o Electron cru, então a janela agrupa
+ * e mostra o ícone padrão do Electron em vez do ícone do Juntos; e o item
+ * fixado na barra de tarefas, quando a pessoa fixa, fica com o ícone do
+ * executável que rodou naquele momento.
+ *
+ * O mesmo `appId` do electron-builder. Divergir entre os dois não quebra nada
+ * visivelmente hoje, mas faz o app instalado e o app em desenvolvimento se
+ * tratarem como dois aplicativos diferentes na barra de tarefas.
+ */
+app.setAppUserModelId('com.juntos.watchparty');
 
 if (!unica) {
   app.quit();

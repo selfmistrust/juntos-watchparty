@@ -16,6 +16,13 @@ directories:
 files:
   - dist/**/*
   - package.json
+  # O ícone entra no asar porque a janela do Electron precisa dele em disco no
+  # momento em que é criada, e `createFromPath` do Electron lê de dentro do asar.
+  # O caminho relativo em `electron/main/index.ts` resolve igual nos dois modos:
+  # em desenvolvimento `__dirname` é `desktop/electron/main`, e empacotado é
+  # `app.asar/dist/main` — `../../build/icon.ico` dá `desktop/build` e
+  # `app.asar/build` nos dois casos.
+  - build/icon.ico
 
 # O servidor web vai para `resources/web-standalone`, **fora** do asar, e por
 # dois motivos ao mesmo tempo:
@@ -43,10 +50,31 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  # Sem certificado, o instalador aparece como "de fonte desconhecida" e o
-  # Windows SmartScreen avisa. Isso é esperado até haver assinatura; o
-  # instalador continua funcionando.
-  signAndEditExecutable: false
+  # Ícone oficial do app, em sete tamanhos (16 a 256). Este é o recurso que o
+  # Windows lê em todos os lugares de executável de uma vez: o `Juntos.exe`, o
+  # instalador, os atalhos do menu Iniciar e da área de trabalho, e o ícone que
+  # a barra de tarefas e o Alt+Tab pegam.
+  #
+  # O arquivo é gerado por `npm run icon` e versionado, para o build não depender
+  # do `sharp` do `web` e para o mesmo arquivo servir à janela do Electron (ver
+  # `icon` em `electron/main/index.ts`). Não é o `favicon.ico` do `web/public`:
+  # aquele tem 48x48 e sairia borrado na barra de tarefas e no Alt+Tab.
+  icon: build/icon.ico
+  # `signAndEditExecutable` fica ligado (é o padrão) mesmo sem certificado.
+  #
+  # Desligar esse flag não é "não assinar": é "não editar o executável". E
+  # editar o executável é o passo que grava o ícone, a informação de versão e o
+  # manifest da aplicação. Com ele desligado, o `win.icon` acima era ignorado no
+  # `Juntos.exe` — o app saía com o átomo do Electron — enquanto o instalador
+  # recebia o ícone normalmente, porque o NSIS pega o ícone por outro caminho.
+  # Metade do ícone, em parte dos lugares, e nada indicava o porquê.
+  #
+  # A assinatura é um passo separado, e o electron-builder pula sozinho quando
+  # não acha certificado: o log diz "no signing info identified, signing is
+  # skipped". O instalador continua aparecendo como "de fonte desconhecida" e o
+  # SmartScreen avisa — isso é o preço de não ter certificado, e é o mesmo de
+  # antes.
+  signAndEditExecutable: true
 
 nsis:
   oneClick: false

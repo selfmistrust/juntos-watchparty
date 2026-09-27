@@ -8,6 +8,7 @@
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
     "build:electron": "tsc -p tsconfig.json",
+    "icon": "node scripts/make-icon.mjs",
     "build": "npm run build:web && npm run build:electron",
     "build:prod": "node scripts/build-web.mjs --prod && npm run build:electron",
     "start": "npm run build && electron .",

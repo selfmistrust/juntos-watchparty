@@ -36,16 +36,47 @@ E o mesmo para o `server/.env` no desenvolvimento local.
 ```powershell
 cd desktop
 npm install
-$env:NEXT_PUBLIC_SERVER_URL="https://juntos-watchparty.onrender.com"
 npm run dist
 ```
 
 O instalador sai em `desktop/release/Juntos Setup <versão>.exe`.
 
-`NEXT_PUBLIC_SERVER_URL` é embutida no bundle em build — não dá para ajustar
-depois. Sem ela, o app assume `http://localhost:4000` e não acha o servidor.
+O `npm run dist` já fixa o servidor de salas em
+`https://juntos-watchparty.onrender.com` e ignora qualquer `localhost` que
+esteja no ambiente. Isso é necessário porque o Next lê `web/.env.local`
+durante o build, e lá mora `http://localhost:4001` para uso local: sem essa
+separação, o instalador saía com o endereço da sua máquina e abria sem nunca
+achar servidor de sala. Depois do build o script confere o host dentro do
+bundle e aborta se não bater — a falha aparece na hora de empacotar, e não
+na hora de alguém instalar.
 
-Para desenvolver sem empacotar: `npm start`.
+Para apontar o build para outro servidor:
+
+```powershell
+$env:NEXT_PUBLIC_SERVER_URL="https://outro.example.com"; npm run dist
+```
+
+Para desenvolver sem empacotar: `npm start` — este **não** fixa o servidor de
+produção, e usa o da sua máquina de propósito, que é o que se querao testar.
+
+## Ícone
+
+O ícone vem do `web/public/android-chrome-512x512.png` e é convertido em um
+`.ico` de sete tamanhos (16 a 256) por:
+
+```powershell
+npm run icon
+```
+
+O resultado fica em `desktop/build/icon.ico`, versionado, e é o mesmo arquivo
+que o `win.icon` do electron-builder embute no executável e no instalador, e
+que o `BrowserWindow` usa na janela e na barra de tarefas. Se o PNG oficial
+mudar, rode `npm run icon` de novo e commite o `.ico`.
+
+Não serve o `favicon.ico` do `web/public`: ele tem um único tamanho, 48x48, e
+ícone de executável no Windows é um conjunto — 256 para tela de alta
+densidade, e os menores para a barra de tarefas, o Alt+Tab e a listagem de
+arquivos.
 
 ## Como é montado
 
