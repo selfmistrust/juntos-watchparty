@@ -134,6 +134,68 @@ export function urlDeMidia(fileId: string): string {
   return `${MEDIA_PREFIX}${encodeURIComponent(fileId)}`;
 }
 
+/**
+ * O que o worker descobriu sobre a última leitura.
+ *
+ * O `MediaError` do `<video>` não serve: no Chromium um 401 do Google e um
+ * `.mkv` que o navegador não decodifica dão o mesmo
+ * `MEDIA_ERR_SRC_NOT_SUPPORTED`. Os dois precisam de respostas diferentes —
+ * um é reconectar, o outro é escolher outro arquivo — e a pessoa não tem como
+ * adivinhar qual dos dois aconteceu.
+ */
+export type FalhaDrive = {
+  motivo: 'sem_token' | 'sem_acesso' | 'recusado' | 'tipo_invalido' | 'rede' | string;
+  status: number;
+  detalhe?: string;
+};
+
+export async function lerFalhaDoWorker(): Promise<FalhaDrive | null> {
+  if (!temSuporte()) return null;
+  await registrarMediaWorker();
+  if (!(await esperarControle())) return null;
+  const worker = navigator.serviceWorker.controller;
+  if (!worker) return null;
+  return new Promise<FalhaDrive | null>((resolve) => {
+    const porta = new MessageChannel();
+    const fechar = (falha: FalhaDrive | null) => {
+      clearTimeout(timer);
+      porta.port1.close();
+      porta.port2.close();
+      resolve(falha);
+    };
+    const timer = setTimeout(() => fechar(null), TIMEOUT_TOKEN_MS);
+    porta.port1.onmessage = (evento) => {
+      const dados = evento.data as { falha?: FalhaDrive } | null;
+      fechar(dados?.falha ?? null);
+    };
+    worker.postMessage({ type: 'juntos:drive-falha' }, [porta.port2]);
+  });
+}
+
+/**
+ * A frase que a pessoa lê, a partir do que o worker viu.
+ *
+ * O `error_description` do Google entra quando existe porque ele diz a causa
+ * real — "File not found", "Rate limit exceeded", "This file has been blocked by
+ * the owner" — e a pessoa consegue agir sobre isso sem falar com ninguém.
+ */
+export function explicarFalha(falha: FalhaDrive | null, fallback: string): string {
+  if (!falha) return fallback;
+  const doGoogle = falha.detalhe ? ` O Google respondeu: "${falha.detalhe}".` : '';
+  switch (falha.motivo) {
+    case 'sem_token':
+      return 'A credencial do Google não chegou ao leitor deste vídeo. Recarregue a página e tente de novo.';
+    case 'sem_acesso':
+      return `A sua conta não tem permissão de leitura neste arquivo (${falha.status}).${doGoogle} Reconecte o Drive e autorize este vídeo de novo.`;
+    case 'tipo_invalido':
+      return `O Google devolveu o arquivo como "${falha.detalhe || 'tipo desconhecido'}", e não como vídeo. O arquivo provavelmente não é um vídeo, ou foi convertido para um formato que o navegador não decodifica.`;
+    case 'rede':
+      return `A leitura falhou antes de chegar ao Google.${doGoogle}`;
+    default:
+      return `O Google recusou a leitura deste arquivo (${falha.status}).${doGoogle}`;
+  }
+}
+
 const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
 
 /**

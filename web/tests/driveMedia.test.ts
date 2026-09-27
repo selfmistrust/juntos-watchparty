@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
-import { publicarToken, urlDeMidia } from '@/lib/driveMedia';
+import { explicarFalha, publicarToken, urlDeMidia, type FalhaDrive } from '@/lib/driveMedia';
 
 /*
  * O worker do Drive é JavaScript puro em `public/`, e este módulo é a única
@@ -182,6 +182,44 @@ test('a página só publica depois de estar controlada pelo worker', async () =>
 
   assert.equal(await pending, true);
   assert.equal(fired, 1, 'publica uma vez só, depois do claim');
+});
+
+/*
+ * A tradução da falha é a parte que apareceu no usuário: o Chromium dá
+ * `MEDIA_ERR_SRC_NOT_SUPPORTED` tanto para um 401 do Google quanto para um
+ * `.mkv` que ele não decodifica, e a conserto de um é reconectar enquanto a do
+ * outro é escolher outro arquivo. Um texto genérico obriga a pessoa a adivinhar.
+ */
+const FALHA = 'O navegador não conseguiu reproduzir este arquivo.';
+
+test('cada causa do Google vira uma frase que aponta o conserto', () => {
+  const semAcesso = explicarFalha({ motivo: 'sem_acesso', status: 403 }, FALHA);
+  assert.match(semAcesso, /403/);
+  assert.match(semAcesso, /Reconecte o Drive/);
+  assert.ok(!semAcesso.includes(FALHA), 'não pode repassar a mensagem genérica');
+
+  const semToken = explicarFalha({ motivo: 'sem_token', status: 401 }, FALHA);
+  assert.match(semToken, /Recarregue a página/);
+  assert.ok(!semToken.includes('401'), 'sem token não é 401 do Google: é o worker sem credencial');
+
+  // O `error_description` do Google entra na frase: é ele que diz a causa real,
+  // e sem ele a pessoa só tem um número.
+  const comDetalhe = explicarFalha(
+    { motivo: 'recusado', status: 403, detalhe: 'The file has been blocked by the owner.' },
+    FALHA,
+  );
+  assert.match(comDetalhe, /blocked by the owner/);
+
+  // Formato incompatível é a causa mais provável de um vídeo que "carrega" e
+  // não toca, e ela não se resolve reconectando.
+  const tipo = explicarFalha({ motivo: 'tipo_invalido', status: 200, detalhe: 'text/html' }, FALHA);
+  assert.match(tipo, /text\/html/);
+  assert.match(tipo, /não é um vídeo|não decodifica/);
+  assert.ok(!tipo.includes('Reconecte'), 'formato não se resolve reconectando');
+
+  // Sem registro do worker, o texto genérico é o fallback honesto.
+  assert.equal(explicarFalha(null, FALHA), FALHA);
+  assert.equal(explicarFalha({ motivo: 'desconhecido', status: 500 } as FalhaDrive, FALHA).includes(FALHA), false);
 });
 
 test('a url de mídia é um caminho da própria origem, para o worker interceptar', () => {

@@ -54,19 +54,46 @@ async function comLoja(acao) {
     return await new Promise((resolve, reject) => {
       const transacao = banco.transaction(LOJA, acao.tipo === 'ler' ? 'readonly' : 'readwrite');
       const loja = transacao.objectStore(LOJA);
-      const pedido = acao.tipo === 'ler' ? loja.get('token') : null;
+      const pedido = acao.tipo === 'ler' ? loja.get(acao.chave ?? 'token') : null;
       if (pedido) {
         pedido.onsuccess = () => resolve(pedido.result ?? null);
         pedido.onerror = () => reject(pedido.error);
       } else {
-        if (acao.tipo === 'guardar') loja.put(acao.valor, 'token');
-        else loja.delete('token');
+        if (acao.tipo === 'guardar') loja.put(acao.valor, acao.chave ?? 'token');
+        else loja.delete(acao.chave ?? 'token');
         transacao.oncomplete = () => resolve(null);
         transacao.onerror = () => reject(transacao.error);
       }
     });
   } finally {
     banco.close();
+  }
+}
+
+/**
+ * Guarda por que a última leitura falhou.
+ *
+ * ## Por que isso é necessário
+ *
+ * O `<video>` não conta nada. Ele emite um `error` e, no Chromium, tanto um 401
+ * do Google quanto um `.mkv` que o navegador não decodifica chegam como
+ * `MEDIA_ERR_SRC_NOT_SUPPORTED` — o mesmo código, causas opostas, consertos
+ * opostos. A mensagem na tela vira adivinhação, e a pessoa não tem como ajudar a
+ * adivinhar.
+ *
+ * O worker é o único que sabe. Ele grava o status e o `content-type` que o Google
+ * devolveu, e a página lê isso quando o player falha. Nenhum dado do arquivo vai
+ * para cá: só status, tipo e um recorte da mensagem de erro.
+ */
+async function registrarFalha(info) {
+  await comLoja({ tipo: 'guardar', chave: 'ultima-falha', valor: info }).catch(() => {});
+}
+
+async function lerFalha() {
+  try {
+    return await comLoja({ tipo: 'ler', chave: 'ultima-falha' });
+  } catch {
+    return null;
   }
 }
 
@@ -101,8 +128,8 @@ self.addEventListener('message', (evento) => {
   const dados = evento.data;
   if (!dados || typeof dados !== 'object') return;
   const porta = evento.ports && evento.ports[0];
-  const responder = (ok) => {
-    if (porta) porta.postMessage({ ok });
+  const responder = (ok, extra) => {
+    if (porta) porta.postMessage({ ok, ...extra });
   };
 
   if (dados.type === 'juntos:drive-token' && typeof dados.token === 'string') {
@@ -116,6 +143,11 @@ self.addEventListener('message', (evento) => {
     );
   } else if (dados.type === 'juntos:drive-clear') {
     evento.waitUntil(limparToken().then(() => responder(true)));
+  } else if (dados.type === 'juntos:drive-falha') {
+    // A página pergunta por que a leitura falhou. Sem este caminho o player
+    // mostraria um código do `MediaError`, que não distingue 401 de formato
+    // incompatível.
+    evento.waitUntil(lerFalha().then((falha) => responder(!!falha, { falha })));
   }
 });
 
@@ -137,6 +169,7 @@ async function repassar(pedido, fileId) {
   if (!token) {
     // 401 é a resposta certa: a página escuta o erro do `<video>` e mostra o
     // botão de conectar o Drive, em vez de um player quebrado sem explicação.
+    await registrarFalha({ motivo: 'sem_token', status: 401 });
     return new Response('sem credencial do drive', { status: 401 });
   }
 
@@ -154,14 +187,34 @@ async function repassar(pedido, fileId) {
   let resposta;
   try {
     resposta = await fetch(alvo.toString(), { headers: cabecalhos });
-  } catch {
+  } catch (erro) {
+    await registrarFalha({ motivo: 'rede', status: 0, detalhe: String(erro).slice(0, 200) });
     return new Response('drive indisponivel', { status: 502 });
   }
 
   if (!resposta.ok || !resposta.body) {
     // 404 aqui é o "você ainda não autorizou este arquivo para o juntos" do
     // `drive.file`. A página traduz isso no botão de autorizar.
-    return new Response(await resposta.text(), { status: resposta.status });
+    const texto = await resposta.text().catch(() => '');
+    /*
+     * O corpo do erro do Google é JSON com um `error.message` que diz o que
+     * aconteceu de verdade — "File not found", "Rate limit exceeded", "The file
+     * has been blocked". Registrar o status sozinho deixaria a pessoa com um
+     * número e nenhuma pista, que é o que aconteceu até agora.
+     */
+    let detalhe = texto.slice(0, 200);
+    try {
+      const corpo = JSON.parse(texto) as { error?: { message?: string } };
+      if (corpo.error?.message) detalhe = corpo.error.message.slice(0, 200);
+    } catch {
+      // Corpo não-JSON: o recorte do texto serve.
+    }
+    await registrarFalha({
+      motivo: resposta.status === 401 || resposta.status === 403 ? 'sem_acesso' : 'recusado',
+      status: resposta.status,
+      detalhe,
+    });
+    return new Response(texto, { status: resposta.status });
   }
 
   const repassados = new Headers();
@@ -171,6 +224,17 @@ async function repassar(pedido, fileId) {
   }
   repassados.set('Accept-Ranges', 'bytes');
   repassados.set('Cache-Control', 'no-store');
+
+  /*
+   * O `content-type` é a prova de que o arquivo chegou inteiro. Sem ele — ou com
+   * um `text/html` no lugar — o navegador recebe algo que não decodifica e
+   * levanta `MEDIA_ERR_SRC_NOT_SUPPORTED`, que é indistinguível de um 401 na
+   * cara da pessoa. Registrar aqui permite dizer qual dos dois foi.
+   */
+  const tipo = resposta.headers.get('content-type') ?? '';
+  if (!tipo.startsWith('video/') && !tipo.startsWith('audio/')) {
+    await registrarFalha({ motivo: 'tipo_invalido', status: resposta.status, detalhe: tipo });
+  }
 
   return new Response(resposta.body, {
     status: resposta.status,

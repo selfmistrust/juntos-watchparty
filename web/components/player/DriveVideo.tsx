@@ -5,7 +5,14 @@ import { FilmStrip, WarningCircle } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/Button';
 import { useDriveAccount } from '@/hooks/useDriveAccount';
 import { fetchDrivePickerToken } from '@/lib/driveAccount';
-import { publicarToken, registrarMediaWorker, temAcessoAoArquivo, urlDeMidia } from '@/lib/driveMedia';
+import {
+  explicarFalha,
+  lerFalhaDoWorker,
+  publicarToken,
+  registrarMediaWorker,
+  temAcessoAoArquivo,
+  urlDeMidia,
+} from '@/lib/driveMedia';
 import { autorizarArquivoDoGoogleDrive } from '@/lib/googlePicker';
 import { isDesktop } from '@/lib/desktop';
 import { useRouter } from 'next/router';
@@ -149,14 +156,17 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
         onReady={onReady}
         onEnded={onEnded}
         /*
-         * O erro do `<video>` é o único sinal de que algo deu errado depois da
-         * checagem de acesso — que só prova que a *conta* pode ler o arquivo,
-         * não que o worker conseguiu entregá-lo. Converter o erro em estado é o
-         * que troca "player preto em 0:00" por algo que a pessoa entende.
+         * O `MediaError` sozinho não diz nada de útil: no Chromium um 401 do
+         * Google e um arquivo num formato que o navegador não decodifica dão o
+         * mesmo código, e a conserto é oposto — um é reconectar, o outro é
+         * escolher outro vídeo. O worker registrou o que o Google respondeu, e é
+         * ele que vira a frase que a pessoa lê.
          */
-        onError={(motivo) => {
-          setErro(motivo);
-          setEstado('falhou');
+        onError={(fallback) => {
+          void lerFalhaDoWorker().then((falha) => {
+            setErro(explicarFalha(falha, fallback));
+            setEstado('falhou');
+          });
         }}
       />
     );
