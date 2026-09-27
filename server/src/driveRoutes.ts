@@ -210,23 +210,33 @@ export function registerDriveRoutes(app: Express): void {
         return await concluir(result.reason === 'denied' ? 'denied' : 'error', { status: 'error' });
       }
       /*
-       * O cookie é restaurado nos **dois** caminhos, e antes isso só acontecia
-       * no desktop.
+       * O cookie é restaurado **sempre**, e a condição que o prendia ao caminho
+       * `'app'` estava errada.
        *
-       * O `sessionId` vem do `state` (que o cliente gravou), e não do cookie
-       * atual: o callback chega do Google, e no fluxo web a requisição chega sem
-       * o cookie que o `/start` gravou — a sessão existe, o navegador é que não
-       * a apresentou de novo. Sem esta linha, `/api/drive/status` respondia
-       * "desconectada" logo depois de um OAuth bem-sucedido, e o F5 levava a
-       * pessoa de volta ao botão de conectar.
+       * A distinção real não é web contra desktop — é quem guardou a sessão
+       * contra quem recebe o callback. `setSessionCookie` só rodava com
+       * `voltarComo === 'app'`, e por isso não rodava em nenhum dos dois
+       * caminhos que realmente precisam dele:
        *
-       * O sintoma era a tela da captura: o modal dizia "Conta do Drive
-       * conectada" — o `state`, já atualizado — enquanto o player dizia
-       * "conecte sua conta", lendo o mesmo campo um instante antes do
-       * `refresh`.
+       * - o Picker (`createPickerRequest`) e o desktop (`driveStartUrl(...,
+       *   'pagina')`) saem do app e voltam pelo navegador do sistema. Esse
+       *   navegador não tem a sessão, então o callback chega sem o cookie. O
+       *   `sessionId` vinha do `state` — que o próprio pedido carregava — e
+       *   agora é gravado. Sem isso, `/api/drive/status` respondia
+       *   "desconectada" logo após um OAuth bem-sucedido, e o F5 levava a
+       *   pessoa de volta ao botão de conectar.
        *
-       * No desktop o `state` também identifica o app, e gravar o cookie é
-       * inofensivo: o valor é o mesmo que o navegador já tem.
+       * A conexão web simples não era afetada: ela usa o `GET` sem `voltar`, o
+       * que dá `voltarComo === 'app'`, e o callback chega no mesmo navegador
+       * que já tem o cookie. Anotei aqui porque a versão anterior deste
+       * comentário dizia o contrário, e estava errado: a ideia de que o defeito
+       * atingia a conexão web não se sustentava. Um comentário que aponta para
+       * o fluxo errado é pior do que nenhum, porque desvia a próxima pessoa que
+       * for depurar a sessão.
+       *
+       * O valor gravado é o `sessionId` que o pedido carregava, então isso não
+       * troca a sessão de ninguém: só garante que ela exista no navegador que
+       * está respondendo agora.
        */
       setSessionCookie(res, sessionId);
       if (pickerId) return await concluir('picked', { status: 'picked', fileId });

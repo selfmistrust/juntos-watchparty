@@ -287,11 +287,14 @@ test('o navegador externo entrega o vídeo somente à sessão do desktop, com st
    * O `set-cookie` **é** emitido aqui, e a afirmação contrária que existia antes
    * foi o que deixou o bug passar.
    *
-   * A intenção original era não sobrescrever a sessão do navegador do desktop —
-   * que já tem a dele. Mas o caso do `trigger_onepick` é justamente o
-   * contrário: o pedido saiu de uma aba da web e volta pelo navegador do
-   * sistema, então o `state` do app é que está certo, e gravar o cookie é o que
-   * amarra o token ao lugar de onde ele veio.
+   * O `trigger_onepick` é justamente o caso em que o cookie faz falta. O
+   * pedido saiu de uma aba da web, que tem a sessão, e volta pelo navegador do
+   * sistema, que não a tem — o callback chega sem o cookie. O `sessionId` veio
+   * do `state`, e é ele que amarra o token ao lugar de onde ele foi pedido.
+   *
+   * A intenção original era não sobrescrever a sessão do navegador do desktop,
+   * que já tem a dele. Isso continua verdade e não é o que este teste mede: o
+   * que ele mede é o caminho em que o cookie estava ausente por inteiro.
    *
    * O valor gravado é o `sessionId` que o próprio pedido carregava, então isso
    * não troca a sessão de ninguém: só garante que ela exista no navegador que
