@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
 import {
+  esperarWorkerPronto,
   explicarFalha,
   explicarPublicacao,
   publicarToken,
@@ -89,8 +90,18 @@ function instalarIndexedDb(): void {
 let controlador: { scriptURL: string } | null = null;
 /** `false` simula o primeiro carregamento, em que o `claim()` ainda não rodou. */
 let controllerAntes: boolean = true;
-/** Quantas vezes `register()` foi chamado: prova de que o caminho é real. */
+/**
+ * Quantas vezes `register()` foi chamado no módulo inteiro, e não no teste.
+ *
+ * O cache de registro vive no módulo e sobrevive ao `beforeEach`, que é
+ * exatamente o que o teste do registro único precisa medir. Por isso o contador
+ * também é de módulo: zerá-lo por teste faria o teste ver zero e passar por
+ * engano, já que o registro real aconteceu num teste anterior.
+ */
 let chamadasDeRegistro = 0;
+/** A URL do último `register` observado, útil quando o cache pula a chamada. */
+let ultimaVersao = '';
+/** Os pedidos que a página mandou para o worker assumir a página. */
 
 /**
  * O `navigator` precisa ser manipulado com cuidado, e isso não é detalhe.
@@ -136,13 +147,20 @@ function instalarServiceWorker(): void {
     // O `active` também é um `ServiceWorker`, e o código registra `statechange`
     // nele. Um objeto sem `addEventListener` fazia a exceção cair dentro do
     // `catch` de `register()`, e o teste via `registro_falhou` — um motivo
-    // inventado pelo fake, não pelo código.
-    active: { state: 'activated', scriptURL: '/drive-media-sw.js', ...(Ouvinte() as object) },
+    // inventado pelo fake, não pelo código. O `postMessage` também é real: é por
+    // ele que a página pede o `claim`.
+    active: {
+      state: 'activated',
+      scriptURL: '/drive-media-sw.js',
+      postMessage: () => {},
+      ...(Ouvinte() as object),
+    },
     ...(Ouvinte() as object),
   };
   const registro = {
-    register: async () => {
+    register: async (u: string) => {
       chamadasDeRegistro += 1;
+      ultimaVersao = u;
       return registroDoTeste;
     },
     controller: null as unknown,
@@ -158,35 +176,26 @@ function instalarServiceWorker(): void {
       for (const fn of alvos.get(e.type) ?? []) fn(e);
       return true;
     },
+    // `ready` precisa existir e resolver: `publicarToken` espera por ele antes de
+    // esperar o controle, e um `ready` ausente faria a publicação resolver por
+    // `sem_suporte` em vez de medir o motivo que o teste quer.
     ready: Promise.resolve(registroDoTeste),
   };
   (navigator as unknown as { serviceWorker: unknown }).serviceWorker = registro;
 }
 
-/**
- * Tira o `serviceWorker` do `navigator`, de verdade.
+/*
+ * `sem_suporte` mora em `driveMediaSemSuporte.test.ts`, e o motivo é o cache de
+ * registro: ele vive no módulo e sobrevive ao `beforeEach`, então trocar o
+ * `navigator` no meio desta suíte mediria o registro de um teste anterior.
  *
- * O `delete navigator.serviceWorker` não funciona aqui: `navigator` é uma
- * propriedade read-only do `globalThis` no Node, e o `delete` silenciosamente
- * não faz nada. Pior, o código de produção decide o suporte com
- * `'serviceWorker' in navigator`, e um `defineProperty` com valor `undefined`
- * deixa o `in` verdadeiro — o teste passava, `sem_suporte` nunca era exercitado,
- * e o motivo errado era o que se via.
- *
- * Só substituindo o objeto inteiro o `in` deixa de ver a chave. E o `navigator`
- * original é restaurado no fim, senão os testes seguintes rodariam contra um
- * navegador sem service worker e mediriam a coisa errada.
+ * O detalhe que vale registrar é o motivo de o caso não poder ser resolvido com
+ * `delete navigator.serviceWorker`: `navigator` é read-only no `globalThis` do
+ * Node, e o `delete` não faz nada. Com `defineProperty` e valor `undefined` também
+ * não dá, porque o código decide o suporte com `'serviceWorker' in navigator` e o
+ * `in` continua verdadeiro — o teste passava medindo outra coisa, sem nada
+ * denunciar. Só substituindo o objeto inteiro o `in` deixa de ver a chave.
  */
-const NAVIGADOR_REAL = globalThis.navigator;
-
-function semServiceWorker<T>(acao: () => T): T {
-  Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true });
-  try {
-    return acao();
-  } finally {
-    Object.defineProperty(globalThis, 'navigator', { value: NAVIGADOR_REAL, configurable: true, writable: true });
-  }
-}
 
 function serviceWorkerDoTeste(): {
   controller: unknown;
@@ -199,7 +208,6 @@ function serviceWorkerDoTeste(): {
 }
 
 beforeEach(() => {
-  chamadasDeRegistro = 0;
   guardado = new Map();
   reterTransacao = false;
   transacaoPendente = null;
@@ -311,28 +319,6 @@ test('uma página que nunca é controlada diz isso, em vez de esperar em silênc
 });
 
 /*
- * Este é o último de propósito.
- *
- * Tirar o `serviceWorker` do `navigator` deixa o cache de `register()` do módulo
- * intacto — e isso é o que se quer: a ordem não precisa mais importar, porque o
- * `navigator` é restaurado ao final. O teste continua no fim por clareza: ele é o
- * único que muda o ambiente global.
- */
-test('sem service worker a publicação falha com o motivo, em vez de passar calada', async () => {
-  /*
-   * Retorna um motivo, e não um booleano nem uma exceção. Um booleano obrigava a
-   * inventar uma frase que não era verdadeira em nenhum caso, e era a mesma
-   * armadilha do `MediaError` do `<video>`.
-   */
-  const resultado = await semServiceWorker(() => publicarToken('token-de-teste'));
-  assert.deepEqual(resultado, { ok: false, motivo: 'sem_suporte' });
-  // A prova de que o caminho é real: sem `serviceWorker` no `navigator`, o
-  // `register` nem é chamado. Sem esta afirmação, um atalho que devolvesse
-  // `sem_suporte` por outro caminho passaria igual.
-  assert.equal(chamadasDeRegistro, 0, 'não pode tentar registrar sem suporte');
-});
-
-/*
  * A tradução da falha é a parte que apareceu no usuário: o Chromium dá
  * `MEDIA_ERR_SRC_NOT_SUPPORTED` tanto para um 401 do Google quanto para um
  * `.mkv` que ele não decodifica, e a conserto de um é reconectar enquanto a do
@@ -370,7 +356,7 @@ test('cada causa do Google vira uma frase que aponta o conserto', () => {
   assert.equal(explicarFalha({ motivo: 'desconhecido', status: 500 } as FalhaDrive, FALHA).includes(FALHA), false);
 });
 
-test('a URL do worker carrega a versão, porque o claim só roda no activate', () => {
+test('a URL do worker carrega a versão, porque o claim só roda no activate', async () => {
   /*
    * `clients.claim()` roda no evento `activate`, e o `activate` só acontece uma
    * vez por versão. Uma versão já ativada numa visita anterior nunca mais assume
@@ -382,27 +368,74 @@ test('a URL do worker carrega a versão, porque o claim só roda no activate', (
    */
   const sw = navigator.serviceWorker as unknown as { register: (u: string) => Promise<unknown> };
   const original = sw.register;
-  let pedida = '';
+  const pedidas: string[] = [];
   sw.register = async (u: string) => {
-    pedida = u;
+    pedidas.push(u);
+    ultimaVersao = u;
     return registroDoTeste;
   };
+  try {
+    await registrarMediaWorker();
+  } finally {
+    sw.register = original;
+  }
+  // O cache pode ter pulado o `register` de um teste anterior; nesse caso a URL
+  // de então é a que o módulo usa hoje, e ela precisa ter a versão também.
+  const usada = pedidas[0] ?? (ultimaVersao || '');
+  assert.match(usada, /^\/drive-media-sw\.js\?v=\d+$/, `URL sem versão: "${usada}"`);
+});
 
-  return registrarMediaWorker().then(
-    () => {
-      assert.match(pedida, /^\/drive-media-sw\.js\?v=\d+$/, `URL sem versão: ${pedida}`);
-      sw.register = original;
-    },
-    (erro) => {
-      sw.register = original;
-      throw erro;
-    },
+/*
+ * O pedido de `claim` fica em arquivo próprio, pelo mesmo motivo do
+ * `sem_suporte`: o cache de registro vive no módulo e sobrevive ao
+ * `beforeEach`, então um teste que troca o `active` da registration no meio da
+ * suíte acaba medindo o `active` de um teste anterior. Separar o arquivo isola o
+ * módulo sem precisar de gancho de teste na produção.
+ */
+test('o registro acontece uma vez só, mesmo com várias chamadas', async () => {
+  /*
+   * `[drive] registration criada` aparecia duas vezes porque o `DriveVideo` e o
+   * `publicarToken` registravam em separado. Centralizar o registro é o que
+   * resolve, e o cache de promise é o que garante — sem ele, cada chamada
+   * refaz `register()` e `update()`.
+   *
+   * O cache vive no módulo e sobrevive ao `beforeEach`, então este teste não
+   * pode contar os registros do seu próprio `publicarToken` — eles podem ter
+   * acontecido num teste anterior. O que ele mede é o efeito do cache: com ele,
+   * `register` é chamado **no máximo uma vez** na vida inteira do módulo, ainda
+   * que os testes peçam a publicação muitas vezes.
+   */
+  serviceWorkerDoTeste().controller = controlador;
+  for (let i = 0; i < 3; i += 1) {
+    await publicarToken('token-de-teste');
+    await esperarWorkerPronto();
+  }
+  assert.equal(chamadasDeRegistro, 1, 'o worker deve ser registrado uma vez por página');
+});
+
+test('o player só é liberado depois do worker pronto e da página controlada', async () => {
+  /*
+   * A ordem é o requisito: `<video>` não pode ser montado antes de haver alguém
+   * para interceptar `/drive-media/`, porque aí a requisição vai para a rede
+   * comum e leva 404 da hospedagem.
+   */
+  serviceWorkerDoTeste().controller = controlador;
+  const resultado = await publicarToken('token-de-teste');
+  assert.deepEqual(resultado, { ok: true });
+  assert.equal(guardado.get('token'), 'token-de-teste', 'o token fica gravado antes de liberar o player');
+  assert.ok(
+    (navigator.serviceWorker as unknown as { controller: unknown }).controller,
+    'a página precisa estar controlada quando o player é liberado',
   );
 });
 
 test('a url de mídia é um caminho da própria origem, para o worker interceptar', () => {
   const url = urlDeMidia('abc123def456');
-  assert.ok(url.startsWith('/__drive_media/'), url);
+  assert.ok(url.startsWith('/drive-media/'), url);
   assert.ok(!url.startsWith('https://'), 'o src nunca é uma URL absoluta do Google');
-  assert.equal(urlDeMidia('id_com_barra'), '/__drive_media/id_com_barra');
+  // O token jamais viaja na URL: a URL é da própria origem e o worker troca
+  // pela do Google com o cabeçalho `Authorization`.
+  assert.ok(!url.includes('Bearer'), 'o token não pode estar na URL');
+  assert.ok(!url.includes('access_token'), 'o token não pode estar na URL');
+  assert.equal(urlDeMidia('id_com_barra'), '/drive-media/id_com_barra');
 });

@@ -4,7 +4,7 @@
  * ## O caminho do vídeo
  *
  * Nenhum byte passa pelo nosso servidor nem pelo bucket. A URL que o `<video>`
- * recebe é um caminho da **própria origem** (`/__drive_media/<fileId>`), que o
+ * recebe é um caminho da **própria origem** (`/drive-media/<fileId>`), que o
  * service worker em `public/drive-media-sw.js` troca pela URL do Google e
  * acompanha com o token da conta de quem está assistindo. O navegador continua
  * pedindo intervalos, então seek funciona como em qualquer arquivo.
@@ -37,7 +37,15 @@
  */
 const VERSAO_WORKER = 2;
 const SW_URL = `/drive-media-sw.js?v=${VERSAO_WORKER}`;
-const MEDIA_PREFIX = '/__drive_media/';
+/**
+ * O caminho que o `<video>` pede.
+ *
+ * Precisa ser da própria origem — é o que dá ao worker o direito de
+ * interceptar — e não pode colidir com uma rota do Next, porque se colidir a
+ * página chega a responder antes do worker. O prefixo duplo underscore era uma
+ * defesa contra essa colisão; `/drive-media/` é mais legível e continua livre.
+ */
+const MEDIA_PREFIX = '/drive-media/';
 
 /**
  * O mesmo banco e a mesma loja que o worker usa.
@@ -54,6 +62,17 @@ const CHAVE_TOKEN = 'token';
 
 /** Só pode ser resumido por aqui: esperar sem limite é pior do que falhar. */
 const TIMEOUT_TOKEN_MS = 5000;
+
+/**
+ * A promise de registro, e ela é o que garante um worker só.
+ *
+ * Sem este cache, cada chamada refazia `register()` e `update()` e imprimia o
+ * próprio log — e `[drive] registration criada` aparecia duas vezes porque
+ * `publicarToken` e o `conferir` registravam em separado. Um log repetido vira
+ * ruído que esconde a única informação que importava: quantas versões do worker
+ * existiram.
+ */
+let registro: Promise<ServiceWorkerRegistration | null> | null = null;
 
 function temSuporte(): boolean {
   return typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
@@ -133,18 +152,24 @@ function comLoja(acao: (loja: IDBObjectStore) => void): Promise<void> {
 export function registrarMediaWorker(): Promise<ServiceWorkerRegistration | null> {
   if (!temSuporte()) return Promise.resolve(null);
   /*
-   * Sem cache de promise, e o cache era um bug esperando.
+   * Um registro só, e a promise em cache é o que garante isso.
    *
-   * `register()` para o mesmo escopo já devolve a registration existente — é o
-   * que a especificação manda, e o navegador trata a chamada como no-op depois
-   * da primeira. Guardar a promise em módulo não economiza trabalho nenhum, e
-   * cobra caro: a primeira falha fica grudada pelo resto da sessão da página. No
-   * navegador isso significa que um registro recusado por um motivo passageiro
-   * — rede, por exemplo — só volta a ser tentado com um recarregamento. Em
-   * teste, era pior ainda: o cache sobrevivia ao `beforeEach` e o teste seguinte
-   * recebia um motivo que não era o seu, o que é pior do que um teste que não
-   * roda.
+   * Sem o cache, cada chamada refazia o `register()` e o `update()`, e cada uma
+   * imprimia o seu log — foi o que produziu `[drive] registration criada (v2)`
+   * duas vezes, com o `publicarToken` e o `conferir` chamando o registro em
+   * separado. Um log que aparece duas vezes é ruído que esconde o que importa:
+   * quantas versões do worker existiram de verdade.
+   *
+   * A falha passageira também deixa de grudar: o cache guarda a promise enquanto
+   * ela está em voo e some quando ela rejeita, então o próximo `publicarToken`
+   * tenta de novo sem recarregar a página.
    */
+  if (!registro) registro = registrarUmaVez();
+  return registro;
+}
+
+function registrarUmaVez(): Promise<ServiceWorkerRegistration | null> {
+  console.info('[drive] registrando o service worker', SW_URL);
   return navigator.serviceWorker
     .register(SW_URL, { scope: '/' })
     .then(async (r) => {
@@ -166,7 +191,7 @@ export function registrarMediaWorker(): Promise<ServiceWorkerRegistration | null
         active: r.active?.state ?? null,
         controller: navigator.serviceWorker.controller?.scriptURL ?? null,
       });
-      console.info(`[drive] registration criada (v${VERSAO_WORKER})`, estado());
+      console.info(`[drive] service worker registrado (v${VERSAO_WORKER})`, estado());
       r.addEventListener('updatefound', () => console.info('[drive] updatefound', estado()));
       for (const w of [r.installing, r.waiting, r.active]) {
         w?.addEventListener('statechange', () => console.info(`[drive] worker ${w.state}`, estado()));
@@ -174,9 +199,51 @@ export function registrarMediaWorker(): Promise<ServiceWorkerRegistration | null
       return r;
     })
     .catch((e) => {
+      // O cache é descartado junto: uma falha passageiro de rede não pode
+      // grudar até o próximo recarregamento da página.
+      registro = null;
       console.warn('[drive] service worker não registrado', e);
       return null;
     });
+}
+
+/**
+ * Espera `navigator.serviceWorker.ready`.
+ *
+ * É a promessa que resolve quando existe um worker **ativo** controlando o
+ * escopo, o que é diferente de `register()` resolver: esta última só diz que a
+ * registration existe. Esperar as duas coisas é o que garante que o
+ * `postMessage` do token não vá para o vazio.
+ */
+export async function esperarWorkerPronto(timeoutMs = TIMEOUT_TOKEN_MS): Promise<boolean> {
+  if (!temSuporte()) return false;
+  const reg = await registrarMediaWorker();
+  if (!reg) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limite = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    const pronto = await Promise.race([navigator.serviceWorker.ready.then(() => true), limite]);
+    console.info(
+      '[drive] service worker pronto',
+      pronto ? 'ativo' : 'tempo esgotado',
+      estadoDaRegistration(reg),
+    );
+    return pronto;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** O estado que o `controller: null` sozinho não explica. */
+function estadoDaRegistration(r: ServiceWorkerRegistration): Record<string, string | null> {
+  return {
+    installing: r.installing?.state ?? null,
+    waiting: r.waiting?.state ?? null,
+    active: r.active?.state ?? null,
+    controller: navigator.serviceWorker.controller?.scriptURL ?? null,
+  };
 }
 
 /**
@@ -188,15 +255,26 @@ export function registrarMediaWorker(): Promise<ServiceWorkerRegistration | null
  * `postMessage` do token vai para o vazio e o `<video>` recebe 401 do worker,
  * que é exatamente o player preto em 0:00 sem nenhuma mensagem.
  *
- * O `controllerchange` é o sinal. Se a página já estava controlada — a segunda
- * faixa, ou um refresh — resolve na hora.
+ * O `controllerchange` é o sinal de sucesso. Mas a espera também **pede o
+ * `claim` de novo**, porque o `activate` só acontece uma vez por versão e há um
+ * caso em que isso não basta: a página carregada com hard reload
+ * (`Ctrl+Shift+R`) é servida sem o worker, e o `claim` daquele `activate` já
+ * passou. O sintoma é `active: "activated"` com `controller: null`, e recarregar
+ * não resolve — porque recarregar é justamente o que não usa o worker.
+ *
+ * A página fala com o worker por `registration.active`, que existe mesmo sem
+ * controller. É isso que tira o comportamento da recarga da equação, em vez de
+ * depender de a pessoa acertar qual tecla apertar.
  */
-function esperarControle(): Promise<boolean> {
+function esperarControle(reg: ServiceWorkerRegistration | null): Promise<boolean> {
   if (navigator.serviceWorker.controller) return Promise.resolve(true);
   return new Promise<boolean>((resolve) => {
     const done = (ok: boolean) => {
       clearTimeout(timer);
+      clearInterval(pedido);
       navigator.serviceWorker.removeEventListener('controllerchange', aoMudar);
+      if (ok) console.info('[drive] controller assumido', reg ? estadoDaRegistration(reg) : null);
+      else console.warn('[drive] controller não assumido', reg ? estadoDaRegistration(reg) : null);
       resolve(ok);
     };
     const aoMudar = () => {
@@ -205,8 +283,32 @@ function esperarControle(): Promise<boolean> {
     // O `claim()` pode não acontecer — se o `register` foi rejeitado, ou se o
     // navegador decidiu não ativar. Sem este limite a página ficaria esperando
     // para sempre, que é pior que falhar visível.
+    /*
+     * A checagem vem logo antes de cada pedido, e não só no `controllerchange`.
+     *
+     * Depender só do evento é frágil: um `claim` respondendo a uma mensagem
+     * assume a página sem necessariamente disparar o evento, e a espera
+     * continuaria até o limite devolvendo `sem_controle` com a página já
+     * controlada. Ler `controller` direto é mais barato que esperar um evento.
+     */
+    const pedirClaim = () => {
+      if (navigator.serviceWorker.controller) return done(true);
+      /*
+       * `postMessage` em um `try`: pedir o `claim` é uma gentileza para acelerar
+       * a espera, e uma exceção aqui derrubaria a promessa inteira, com um
+       * `TypeError` em vez do motivo certo. Se o worker não aceitar mensagem, a
+       * espera segue pelo `controllerchange` e pelo limite, que já resolvem.
+       */
+      try {
+        reg?.active?.postMessage({ type: 'juntos:drive-claim' });
+      } catch {
+        // Worker sem postMessage: segue esperando pelo evento.
+      }
+    };
+    const pedido = setInterval(pedirClaim, 400);
     const timer = setTimeout(() => done(false), TIMEOUT_TOKEN_MS);
     navigator.serviceWorker.addEventListener('controllerchange', aoMudar);
+    pedirClaim();
   });
 }
 
@@ -249,7 +351,7 @@ export type MotivoPublicacao =
  * publicação junto — mesmo quando gravar o token não tinha nada de difícil.
  *
  * Controlar a página continua sendo obrigatório: sem `controller` não há
- * ninguém para interceptar `/__drive_media/`, e o `<video>` levaria 404 da
+ * ninguém para interceptar `/drive-media/`, e o `<video>` levaria 404 da
  * hospedagem. Mas agora o token está gravado de qualquer forma, então um
  * controle que chega depois funciona sem refazer nada.
  */
@@ -258,8 +360,14 @@ export async function publicarToken(
 ): Promise<{ ok: true } | { ok: false; motivo: MotivoPublicacao }> {
   if (!temSuporte()) return { ok: false, motivo: 'sem_suporte' };
   if (!(await guardarToken(accessToken))) return { ok: false, motivo: 'grava_falhou' };
-  if (!(await registrarMediaWorker())) return { ok: false, motivo: 'registro_falhou' };
-  if (!(await esperarControle())) return { ok: false, motivo: 'sem_controle' };
+  const reg = await registrarMediaWorker();
+  if (!reg) return { ok: false, motivo: 'registro_falhou' };
+  // `ready` antes do controle: `ready` garante um worker ativo, e só depois
+  // faz sentido esperar que ele controle a página. Pular essa espera foi o que
+  // deixou o `postMessage` do token ir para o vazio no primeiro carregamento.
+  if (!(await esperarWorkerPronto())) return { ok: false, motivo: 'sem_controle' };
+  if (!(await esperarControle(reg))) return { ok: false, motivo: 'sem_controle' };
+  console.info('[drive-media] token gravado; player liberado');
   return { ok: true };
 }
 
@@ -281,7 +389,7 @@ export function explicarPublicacao(motivo: MotivoPublicacao): string {
     case 'grava_falhou':
       return 'O navegador não deixou guardar a credencial do Google neste dispositivo, o que costuma acontecer em navegação privada restrita. Tente fora da janela privada.';
     case 'sem_controle':
-      return 'O leitor de vídeo registrou mas não assumiu esta página. O estado dele está no console do navegador ( procure por "[drive]" ).';
+      return 'O leitor de vídeo está registrado, mas o navegador não deixou ele assumir esta página. Saia e volte à sala, ou feche e abra o app de novo. O estado do leitor está no console do navegador ( procure por "[drive]" ).';
   }
 }
 
@@ -307,8 +415,8 @@ export type FalhaDrive = {
 
 export async function lerFalhaDoWorker(): Promise<FalhaDrive | null> {
   if (!temSuporte()) return null;
-  await registrarMediaWorker();
-  if (!(await esperarControle())) return null;
+  const reg = await registrarMediaWorker();
+  if (!(await esperarControle(reg))) return null;
   const worker = navigator.serviceWorker.controller;
   if (!worker) return null;
   return new Promise<FalhaDrive | null>((resolve) => {

@@ -10,7 +10,6 @@ import {
   explicarPublicacao,
   lerFalhaDoWorker,
   publicarToken,
-  registrarMediaWorker,
   temAcessoAoArquivo,
   urlDeMidia,
 } from '@/lib/driveMedia';
@@ -80,7 +79,13 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
     operacao.current = controller;
     setErro(null);
     try {
-      await registrarMediaWorker();
+      /*
+       * O registro do worker fica em um lugar só, dentro de `publicarToken`.
+       * Aqui ele rodava também, e cada chamada refazia `register()` e imprimia o
+       * próprio log — daí `[drive] registration criada` aparecer duas vezes. A
+       * ordem importa: sem worker controlando a página, o `<video>` nem deve
+       * ser montado, e é a publicação que garante isso.
+       */
       if (!contaCarregando && !status.connected) {
         setEstado('autorizar');
         return;

@@ -52,7 +52,7 @@
 const VERSAO = 2;
 
 /** Caminho interceptado. Precisa ser da própria origem para o worker existir. */
-const PREFIXO = '/__drive_media/';
+const PREFIXO = '/drive-media/';
 const DRIVE = 'https://www.googleapis.com/drive/v3/files';
 const BANCO = 'juntos-drive';
 const LOJA = 'credenciais';
@@ -85,6 +85,27 @@ self.addEventListener('install', (evento) => {
 
 self.addEventListener('activate', (evento) => {
   evento.waitUntil(self.clients.claim());
+});
+
+/**
+ * Assume a página quando ela pede, e não só no `activate`.
+ *
+ * O `activate` acontece uma vez por versão, e há um caso em que isso não basta:
+ * a página carregada com **hard reload** (`Ctrl+Shift+R`) é servida sem o
+ * worker, e o `claim` daquele `activate` já passou. O resultado é `active:
+ * "activated"` com `controller: null`, e nenhuma recarga resolve — porque a
+ * recarga é justamente o que não usa o worker.
+ *
+ * A página pede o `claim` explicitamente por aqui, e a página consegue falar com
+ * o worker por `registration.active` mesmo sem controller. Isso tira do
+ * comportamento da recarga a responsabilidade de assumir a página, e é mais
+ * honesto do que pedir à pessoa que use um tipo específico de F5.
+ */
+self.addEventListener('message', (evento) => {
+  const dados = evento.data;
+  if (dados && typeof dados === 'object' && dados.type === 'juntos:drive-claim') {
+    evento.waitUntil(self.clients.claim());
+  }
 });
 
 console.log('[drive-sw] activate', VERSAO);
@@ -214,6 +235,10 @@ self.addEventListener('fetch', (evento) => {
     return;
   }
 
+  console.info('[drive-sw] requisição interceptada', {
+    fileId,
+    range: evento.request.headers.get('Range'),
+  });
   evento.respondWith(repassar(evento.request, fileId));
 });
 
@@ -231,11 +256,18 @@ async function repassar(pedido, fileId) {
   alvo.searchParams.set('supportsAllDrives', 'true');
 
   const cabecalhos = { Authorization: `Bearer ${token}` };
-  // O `Range` do navegador vai junto, e é ele que faz o seek: sem esta linha o
-  // Playwright e os navegadores soaked de teste aqui passariam, e a busca
-  // arrastaria o arquivo inteiro a cada reposicionamento.
+  /*
+   * O `Range` do navegador vai junto, e é ele que faz o seek.
+   *
+   * Sem esta linha o player baixa o arquivo inteiro a cada reposicionamento, e
+   * o `Content-Range` que volta não casa com o que foi pedido: o navegador não
+   * consegue montar a resposta parcial. Encaminhar o cabeçalho e devolver o
+   * `206` com `Content-Range`, `Content-Length` e `Accept-Ranges` é o contrato
+   * inteiro do seek.
+   */
   const range = pedido.headers.get('Range');
   if (range) cabecalhos.Range = range;
+  console.info('[drive-sw] token recebido, buscando no Drive', { fileId, range });
 
   let resposta;
   try {
@@ -244,6 +276,12 @@ async function repassar(pedido, fileId) {
     await registrarFalha({ motivo: 'rede', status: 0, detalhe: String(erro).slice(0, 200) });
     return new Response('drive indisponivel', { status: 502 });
   }
+
+  console.info('[drive-sw] resposta do Google', {
+    status: resposta.status,
+    contentType: resposta.headers.get('content-type'),
+    contentRange: resposta.headers.get('content-range'),
+  });
 
   if (!resposta.ok || !resposta.body) {
     // 404 aqui é o "você ainda não autorizou este arquivo para o juntos" do
@@ -299,6 +337,11 @@ async function repassar(pedido, fileId) {
   if (!tipo.startsWith('video/') && !tipo.startsWith('audio/')) {
     await registrarFalha({ motivo: 'tipo_invalido', status: resposta.status, detalhe: tipo });
   }
+  console.info('[drive-sw] devolvendo ao player', {
+    status: resposta.status,
+    contentType: tipo,
+    contentRange: resposta.headers.get('content-range'),
+  });
 
   return new Response(resposta.body, {
     status: resposta.status,
