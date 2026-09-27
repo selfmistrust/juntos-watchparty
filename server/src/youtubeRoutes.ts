@@ -62,6 +62,47 @@ export function registerYoutubeRoutes(app: Express): void {
     res.type('html').send(html);
   });
 
+  /**
+   * Cria o fluxo e devolve a URL do Google em JSON, em vez de redirecionar.
+   *
+   * ## Por que existe
+   *
+   * O app desktop precisa do Google no navegador do sistema, e o Google recusa
+   * autenticar dentro da janela do Electron. Só que, se o `/start` for seguido
+   * como redirecionamento a partir da janela, ele **também** vai para o
+   * navegador do sistema — e o navegador do sistema não tem o cookie
+   * `juntos_sid` do Electron. O `ensureSessionId` então forjava uma sessão nova,
+   * o registro `pending` nasce com ela, e a conta é conectada **à sessão do
+   * navegador**. A tela de conclusão dizia "conta conectada" e o app desktop
+   * continuava sem conta nenhuma, porque estava perguntando à sessão dele.
+   *
+   * Pedindo a URL em JSON, o `/start` é feito **pelo renderer**, que tem o
+   * cookie, e só a URL do Google é entregue ao navegador. O `pending` nasce com
+   * a sessão do app, que é quem vai perguntar pelo estado depois.
+   *
+   * Efeito colateral bom: o navegador do sistema nunca recebe a sessão, então a
+   * conta do YouTube não fica pendurada num cookie dele.
+   */
+  app.post('/api/youtube/oauth/start', async (req, res) => {
+    if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
+    if (!youtubeOAuthConfigured() || !sessionConfigured()) {
+      return res.status(503).json({ error: 'not_configured' });
+    }
+    try {
+      const body = (req.body ?? {}) as { returnTo?: unknown; voltar?: unknown };
+      const returnTo = safeReturnUrl(typeof body.returnTo === 'string' ? body.returnTo : undefined);
+      const voltarComo = body.voltar === 'pagina' ? 'pagina' : 'app';
+      const sessionId = ensureSessionId(req, res);
+      const url = await createAuthUrl(sessionId, returnTo, voltarComo);
+      if (!url) return res.status(503).json({ error: 'not_configured' });
+      res.set('Cache-Control', 'no-store');
+      res.json({ url });
+    } catch (err) {
+      console.error('[youtube-oauth] falha ao iniciar autorização', err);
+      res.status(500).json({ error: 'start_failed' });
+    }
+  });
+
   app.get('/api/youtube/oauth/start', async (req, res) => {
     const returnTo = safeReturnUrl(typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined);
     const voltarComo = req.query.voltar === 'pagina' ? 'pagina' : 'app';

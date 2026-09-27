@@ -35,6 +35,7 @@ export interface DesktopApi {
   stopCapture(): Promise<void>;
   isCapturing(): Promise<boolean>;
   copyText(text: string): Promise<boolean>;
+  openInSystemBrowser(url: string): Promise<boolean>;
   openPermissionSettings(): Promise<void>;
 }
 

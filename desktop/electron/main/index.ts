@@ -111,6 +111,28 @@ function criarJanela(): BrowserWindow {
 function registrarIpc(): void {
   ipcMain.handle('desktop:listar-fontes', (_e, forcar: boolean) => listarFontes(forcar === true));
 
+  /*
+   * Abre a URL no navegador do sistema.
+   *
+   * Só `http` e `https`, e só até 2048 caracteres. `shell.openExternal` entrega
+   * o controle para um programa fora do app, e o renderer é a parte não
+   * confiável da conversa: um `file:` ou um `data:` aqui viraria a abertura de
+   * um conteúdo que não é uma página.
+   */
+  ipcMain.handle('desktop:abrir-no-navegador', (_e, url: unknown) => {
+    if (typeof url !== 'string' || url.length === 0 || url.length > 2048) return false;
+    let destino: string;
+    try {
+      const u = new URL(url);
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+      destino = u.toString();
+    } catch {
+      return false;
+    }
+    void shell.openExternal(destino);
+    return true;
+  });
+
   ipcMain.handle('desktop:escolher-fonte', (_e, id: string) => {
     escolherFonte(typeof id === 'string' && id ? id : null);
     return true;

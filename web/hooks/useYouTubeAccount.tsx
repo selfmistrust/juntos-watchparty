@@ -5,6 +5,7 @@ import {
   disconnectYoutube,
   fetchYoutubeStatus,
   youtubeConnectUrl,
+  youtubeStartUrl,
   youtubeOauthMessage,
   type YoutubeAccountStatus,
 } from '@/lib/youtubeAccount';
@@ -90,18 +91,58 @@ export function YoutubeAccountProvider({ children }: { children: ReactNode }) {
 
   const connect = useCallback(() => {
     const returnTo = typeof window !== 'undefined' ? window.location.href : '/';
+    const desktop = isDesktop();
+
     /*
-     * `voltar: 'pagina'` só no app desktop, e o motivo é o Google recusar
-     * autenticar dentro da janela do Electron. A autorização sai para o
-     * navegador do sistema, e é ele que recebe o callback: sem pedir a tela de
-     * conclusão, o navegador abriria uma segunda cópia do Juntos — que não é a
-     * janela em que a pessoa está — e ela continuaria sem conta nenhuma até
-     * clicar lá de volta.
+     * Navegador: um `location.assign` e pronto. O `/start` é seguido na mesma
+     * aba, o cookie viaja junto, e o callback volta para o app. Está certo
+     * desde sempre.
      *
-     * No navegador as duas coisas são a mesma navegação: o cookie viaja junto e
-     * a aba é a mesma aba. Então ele volta para o app como sempre.
+     * App desktop: o Google recusa autenticar dentro da janela do Electron, então
+     * a tela de consentimento tem de ir para o navegador do sistema. E é
+     * exatamente por isso que o `/start` não pode sair daqui como navegação: o
+     * navegador do sistema não tem o cookie `juntos_sid`, e o servidor criaria
+     * uma sessão nova — a conta ficaria ligada a ela, a tela de conclusão diria
+     * "conta conectada", e o app continuaria sem conta nenhuma.
+     *
+     * Por isso o desktop pede a URL por `POST` (que leva o cookie) e entrega
+     * só a URL do Google ao navegador. O registro `pending` nasce com a sessão
+     * do app, que é quem pergunta pelo estado depois.
      */
-    window.location.assign(youtubeConnectUrl(returnTo, isDesktop() ? 'pagina' : undefined));
+    if (!desktop) {
+      window.location.assign(youtubeConnectUrl(returnTo));
+      return;
+    }
+
+    void (async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        const resposta = await youtubeStartUrl(returnTo, 'pagina');
+        if ('error' in resposta) {
+          setError(
+            resposta.error === 'not_configured'
+              ? 'A conexão com o YouTube ainda não está configurada no servidor.'
+              : 'Não foi possível iniciar a conexão com o YouTube. Tente de novo.',
+          );
+          return;
+        }
+        const abriu = await window.juntosDesktop?.openInSystemBrowser(resposta.url);
+        if (abriu === false) {
+          setError('Não consegui abrir o navegador para o login do YouTube.');
+        }
+        /*
+         * Sem `setMessage` aqui de propósito: o resultado chega na tela de
+         * conclusão do navegador, e a janela do desktop se atualiza quando
+         * recebe o foco. Um "conectando…" falso na linha errada só causaria
+         * confusão.
+         */
+      } catch {
+        setError('Não foi possível iniciar a conexão com o YouTube. Tente de novo.');
+      } finally {
+        setBusy(false);
+      }
+    })();
   }, []);
 
   const disconnect = useCallback(async () => {

@@ -49,6 +49,12 @@ const api: DesktopApi = {
     return (await ipcRenderer.invoke('desktop:copiar-texto', valor)) === true;
   },
 
+  openInSystemBrowser: async (url: string): Promise<boolean> => {
+    const valor = soTexto(url);
+    if (!valor) return false;
+    return (await ipcRenderer.invoke('desktop:abrir-no-navegador', valor)) === true;
+  },
+
   openPermissionSettings: async () => {
     // Não existe equivalente no Electron: no Windows a permissão de captura é
     // pedida pelo sistema na hora, e não há um painel para abrir. A função

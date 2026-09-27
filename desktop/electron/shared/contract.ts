@@ -87,6 +87,25 @@ export interface DesktopApi {
    */
   copyText(text: string): Promise<boolean>;
 
+  /**
+   * Abre uma URL no navegador do sistema, sem tirar a pessoa da janela do app.
+   *
+   * Existe para o login do YouTube. O Google recusa autenticar dentro da janela
+   * do Electron, então a tela de consentimento precisa ir para o navegador real.
+   *
+   * E o motivo de a URL chegar por esta ponte, e não por um
+   * `location.assign`: o `/start` tem de ser pedido **pelo renderer**, que tem
+   * o cookie de sessão, e só a URL do Google é entregue ao navegador. Se o
+   * navegador fizesse o `/start` também, ele forjaria uma sessão nova e a conta
+   * ficaria ligada a ela — a tela de conclusão diria "conta conectada" e o app
+   * continuaria sem conta nenhuma, porque pergunta à sessão dele.
+   *
+   * Só `http` e `https`, e com o tamanho de uma URL de verdade. O renderer é a
+   * parte não confiável da conversa, e `shell.openExternal` entrega o controle
+   * para um programa de fora do app.
+   */
+  openInSystemBrowser(url: string): Promise<boolean>;
+
   /** Abre as configurações de permissões do app no sistema operacional. */
   openPermissionSettings(): Promise<void>;
 }

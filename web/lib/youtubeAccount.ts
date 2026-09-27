@@ -25,6 +25,38 @@ export function youtubeConnectUrl(returnTo: string, voltar?: 'pagina'): string {
   return voltar ? `${destino}&voltar=${voltar}` : destino;
 }
 
+/**
+ * Pede ao servidor a URL do Google e devolve, sem seguir o redirecionamento.
+ *
+ * É o caminho do app desktop, e ele existe por um motivo específico: o Google
+ * recusa autenticar dentro da janela do Electron, então a tela de consentimento
+ * precisa ir para o navegador do sistema. Mas o navegador do sistema não tem o
+ * cookie `juntos_sid` do app — e é o `/start` que cria o registro `pending`.
+ *
+ * Se o `/start` saísse como redirecionamento a partir da janela, ele iria para o
+ * navegador junto, o servidor forjaria uma sessão nova, e a conta ficaria
+ * ligada a ela. A tela de conclusão dizia "conta conectada" e o app desktop
+ * continuava sem conta nenhuma, porque pergunta à sessão dele.
+ *
+ * Pedindo a URL por `POST` daqui, o registro nasce com a sessão do app, e só a
+ * URL do Google é entregue ao navegador. De brinde, o navegador nunca recebe a
+ * sessão: a conta do YouTube não fica pendurada num cookie dele.
+ */
+export async function youtubeStartUrl(
+  returnTo: string,
+  voltar?: 'pagina',
+): Promise<{ url: string } | { error: string }> {
+  const res = await fetch(`${SERVER_URL}/api/youtube/oauth/start`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ returnTo, ...(voltar ? { voltar } : {}) }),
+  });
+  const data = (await res.json().catch(() => null)) as { url?: string; error?: string } | null;
+  if (!res.ok || !data?.url) return { error: data?.error ?? 'start_failed' };
+  return { url: data.url };
+}
+
 export async function fetchYoutubeStatus(): Promise<YoutubeAccountStatus> {
   const res = await fetch(`${SERVER_URL}/api/youtube/status`, { credentials: 'include' });
   if (!res.ok) throw new Error('status_unavailable');
