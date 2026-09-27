@@ -10,6 +10,7 @@ import { registerSocketHandlers, startPresenceCleanup } from './socket.js';
 import { scheduleUploadCleanup } from './uploadCleanup.js';
 import { registerYoutubeRoutes } from './youtubeRoutes.js';
 import { registerDriveRoutes } from './driveRoutes.js';
+import { logGoogleConfigShape } from './googleOAuth.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
 
@@ -158,6 +159,11 @@ startPresenceCleanup(io);
 server.listen(PORT, () => {
   console.log(`Watchparty server em http://localhost:${PORT}`);
   console.log(`Origens liberadas: ${CLIENT_ORIGINS.join(', ')}`);
+  // A configuração do Google é o que mais dá trabalho de diagnosticar quando
+  // está errada, porque a falha só aparece depois do consentimento. Conferir a
+  // forma no boot transforma isso em uma linha de log, em vez de uma sessão de
+  // tentativa e erro. Nunca registra valor de segredo, só a forma.
+  logGoogleConfigShape();
 });
 
 // Limpeza periódica de vídeos enviados que não estão mais na fila de

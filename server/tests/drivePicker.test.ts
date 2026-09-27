@@ -406,6 +406,91 @@ async function registrar(cookie: string, fileId = videoId) {
   });
 }
 
+test('a verificação de boot acha configuração errada sem registrar o segredo', async () => {
+  const { logGoogleConfigShape } = await import('../src/googleOAuth.js');
+  const original = {
+    id: process.env.GOOGLE_CLIENT_ID,
+    secret: process.env.GOOGLE_CLIENT_SECRET,
+    yt: process.env.GOOGLE_REDIRECT_URI,
+    drive: process.env.GOOGLE_DRIVE_REDIRECT_URI,
+  };
+  const linhas: string[] = [];
+  const erros = console.error;
+  const infos = console.log;
+  console.error = (msg: unknown) => void linhas.push(String(msg));
+  console.log = (msg: unknown) => void linhas.push(String(msg));
+
+  /*
+   * A base do teste tem `test-secret` e um client id de fantasia, que a
+   * verificação acusa corretamente. Para exercitar o caminho feliz é preciso
+   * uma configuração com a **forma** de uma real — número de projeto, sufixo
+   * do host e prefixo `GOCSPX-` — mas o conteúdo é inventado.
+   *
+   * Estes valores são fictícios de propósito. Uma versão anterior deste teste
+   * usava as credenciais de verdade, copiadas da tela do Render, e o
+   * secret scanning do GitHub bloqueou o push: um segredo real em um fixture de
+   * teste é um segredo no repositório, mesmo que "só para o teste". Não
+   * cole credencial real em arquivo versionado, nem para um teste que só quer
+   * o formato.
+   */
+  const valido = {
+    id: '123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com',
+    secret: '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00',
+  };
+
+  try {
+    Object.assign(process.env, {
+      GOOGLE_CLIENT_ID: valido.id,
+      GOOGLE_CLIENT_SECRET: valido.secret,
+      GOOGLE_REDIRECT_URI: 'https://exemplo.onrender.com/api/youtube/oauth/callback',
+      GOOGLE_DRIVE_REDIRECT_URI: 'https://exemplo.onrender.com/api/drive/oauth/callback',
+    });
+
+    // Tudo certo: uma linha, e nenhuma menção ao valor do segredo.
+    linhas.length = 0;
+    logGoogleConfigShape();
+    assert.equal(linhas.length, 1, linhas.join(' | '));
+    assert.match(linhas[0], /forma esperada/);
+    assert.ok(!linhas.join('\n').includes(valido.secret), 'o segredo não aparece no log');
+
+    // Credencial colada com quebra de linha: a causa mais provável, e a que não
+    // aparece na tela do Render.
+    linhas.length = 0;
+    process.env.GOOGLE_CLIENT_ID = `${valido.id}\n`;
+    logGoogleConfigShape();
+    assert.ok(linhas.some((l) => l.includes('GOOGLE_CLIENT_ID tem espaço ou quebra de linha na borda')), linhas.join(' | '));
+
+    // Segredo de outro formato, e redirect que não bate com o caminho do
+    // callback que o Google tem registrado.
+    linhas.length = 0;
+    process.env.GOOGLE_CLIENT_ID = valido.id;
+    process.env.GOOGLE_CLIENT_SECRET = 'segredo-velho-sem-prefixo';
+    process.env.GOOGLE_DRIVE_REDIRECT_URI = 'https://exemplo.com/drive';
+    logGoogleConfigShape();
+    assert.ok(linhas.some((l) => l.includes('não começa com GOCSPX-')), linhas.join(' | '));
+    assert.ok(
+      linhas.some((l) => l.includes('GOOGLE_DRIVE_REDIRECT_URI não termina em /api/drive/oauth/callback')),
+      linhas.join(' | '),
+    );
+
+    // Variável ausente precisa aparecer: ela é o que faz o Render cair no
+    // default de localhost sem ninguém notar.
+    linhas.length = 0;
+    process.env.GOOGLE_CLIENT_SECRET = original.secret as string;
+    process.env.GOOGLE_DRIVE_REDIRECT_URI = undefined as unknown as string;
+    delete process.env.GOOGLE_DRIVE_REDIRECT_URI;
+    logGoogleConfigShape();
+    assert.ok(linhas.some((l) => l.includes('GOOGLE_DRIVE_REDIRECT_URI ausente')), linhas.join(' | '));
+  } finally {
+    console.error = erros;
+    console.log = infos;
+    for (const [k, v] of Object.entries(original)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
 test('renovação recusada distingue conta morta de Google instável', async () => {
   const cookie = await conectar();
   // O token nasce válido; adiantamos o relógio para forçar a renovação, que é o

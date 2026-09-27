@@ -83,6 +83,96 @@ export function oauthConfigured(): boolean {
   return Boolean(clientId() && clientSecret() && process.env.SESSION_SECRET);
 }
 
+/**
+ * Confere a **forma** da configuração do Google no boot e registra o resultado.
+ *
+ * ## Por que isso existe
+ *
+ * Client ID errado, segredo de outro projeto e `redirect_uri` divergente
+ * produzem o mesmo sintoma no painel — "não foi possível conectar" — e só
+ * falham depois que a pessoa já autorizou tudo na tela do Google. O
+ * consentimento abre, o botão parece funcionar, e a falha só aparece na troca
+ * do código, com um `invalid_client` que ninguém consegue ligar à variável de
+ * ambiente errada.
+ *
+ * ## O que NÃO é registrado
+ *
+ * Nenhum valor de segredo, nem fragmento dele. Só a forma: se está setado, o
+ * tamanho, o prefixo, se o sufixo bate, e se há caractere invisível. Isso basta
+ * para achar quase toda configuração errada, e não serve para vazar nada —
+ * quem lê o log já tem acesso ao deploy.
+ *
+ * ## O caractere invisível
+ *
+ * É a causa mais provável e a mais invisível: colar uma credencial traz um `\n`
+ * do clipboard, o Render guarda o `\n` junto, e o valor *parece* certo na tela.
+ * Detectar isso é o motivo de a comparação existir.
+ */
+export function logGoogleConfigShape(): void {
+  const id = clientId();
+  const secret = clientSecret();
+  const problemas: string[] = [];
+
+  if (!id) problemas.push('GOOGLE_CLIENT_ID ausente');
+  if (!secret) problemas.push('GOOGLE_CLIENT_SECRET ausente');
+  if (!process.env.SESSION_SECRET) problemas.push('SESSION_SECRET ausente');
+
+  for (const [nome, valor] of [
+    ['GOOGLE_CLIENT_ID', id],
+    ['GOOGLE_CLIENT_SECRET', secret],
+    ['GOOGLE_REDIRECT_URI', process.env.GOOGLE_REDIRECT_URI ?? ''],
+    ['GOOGLE_DRIVE_REDIRECT_URI', process.env.GOOGLE_DRIVE_REDIRECT_URI ?? ''],
+  ] as const) {
+    if (!valor) continue;
+    // A comparação de `trim` pega espaço e quebra de linha nas pontas, que é
+    // onde o paste de credencial costuma sujar o valor.
+    if (valor !== valor.trim()) problemas.push(`${nome} tem espaço ou quebra de linha na borda`);
+  }
+
+  if (id && !id.endsWith('.apps.googleusercontent.com')) {
+    problemas.push('GOOGLE_CLIENT_ID não termina em .apps.googleusercontent.com');
+  }
+  if (id && !/^\d{6,}-/.test(id)) {
+    problemas.push('GOOGLE_CLIENT_ID não começa com o número do projeto');
+  }
+  // O prefixo `GOCSPX-` marca credencial de cliente web criada em 2022 em
+  // diante. Não é obrigatório pelo Google, mas diverge dele é forte sinal de
+  // que o valor colado veio de outro lugar.
+  if (secret && !secret.startsWith('GOCSPX-')) {
+    problemas.push('GOOGLE_CLIENT_SECRET não começa com GOCSPX-');
+  }
+
+  /*
+   * `variavel` e `chave` são coisas diferentes: a chave diz qual integração é,
+   * para `redirectUriDe` escolher o callback, e a variável é o nome no ambiente.
+   * Confundir as duas faz a verificação acusar "ausente" em toda configuração
+   * boa, que é o pior defeito possível num alarme: o alarme que mente.
+   */
+  const integracoes: { nome: string; chave: 'youtube' | 'drive'; variavel: string; esperado: string }[] = [
+    { nome: 'youtube', chave: 'youtube', variavel: 'GOOGLE_REDIRECT_URI', esperado: '/api/youtube/oauth/callback' },
+    { nome: 'drive', chave: 'drive', variavel: 'GOOGLE_DRIVE_REDIRECT_URI', esperado: '/api/drive/oauth/callback' },
+  ];
+  for (const { nome, chave, variavel, esperado } of integracoes) {
+    const uri = redirectUriDe(chave);
+    if (!process.env[variavel]) {
+      problemas.push(`${nome}: ${variavel} ausente, caindo no default local`);
+    } else if (!uri.endsWith(esperado)) {
+      problemas.push(`${nome}: ${variavel} não termina em ${esperado}`);
+    }
+    // `localhost` em produção é a causa clássica de callback quebrado, e não
+    // aparece em lugar nenhum da tela do Render.
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)/.test(uri) && process.env.NODE_ENV === 'production') {
+      problemas.push(`${nome}: ${variavel} aponta para localhost em produção`);
+    }
+  }
+
+  if (problemas.length === 0) {
+    console.log('[google-oauth] configuração com a forma esperada (client id e redirect uri conferidos)');
+    return;
+  }
+  for (const problema of problemas) console.error(`[google-oauth] ${problema}`);
+}
+
 export type GoogleTokenResponse = {
   access_token?: string;
   refresh_token?: string;
