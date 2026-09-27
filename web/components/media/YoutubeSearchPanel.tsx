@@ -7,13 +7,23 @@ import { addYoutubeFromUrl, searchYoutube } from '@/lib/mediaSources';
 import { Portal } from '@/components/ui/Portal';
 import { Button } from '@/components/ui/Button';
 import { TruncatedText } from '@/components/ui/TruncatedText';
-import type { MediaSourceContext } from '@/lib/mediaSources';
+import { SourceAccountRow } from '@/components/media/SourceAccountRow';
+import type { MediaSourceAccount, MediaSourceContext } from '@/lib/mediaSources';
 import type { YoutubeResult } from '@/types';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   context: MediaSourceContext;
+  /**
+   * Estado da conta, para o botão de conectar.
+   *
+   * Chega por prop e não por `useYouTubeAccount()` dentro do painel porque o
+   * `description` do card usa o mesmo objeto: calcular nos dois lugares seria o
+   * caminho para o card e o painel discordarem, que foi o problema que o
+   * projeto já teve quando a conta aparecia no perfil e na busca ao mesmo tempo.
+   */
+  account: MediaSourceAccount;
 }
 
 /**
@@ -22,11 +32,23 @@ interface Props {
  * misturá-la com a grade de cards deixaria o modal pesado e imposible de
  * fechar sem perder o que foi digitado.
  *
+ * ## A conta é gerenciada aqui
+ *
+ * Ficava no card do modal de Aplicações, numa linha abaixo do botão. Só o
+ * YouTube tinha uma, e isso basta para a grade ficar irregular: o card do
+ * YouTube crescia ~47px e o Dispositivo, ao lado, era esticado até a altura dele
+ * com um buraco no rodapé. Um botão desalinhava o modal inteiro.
+ *
+ * Aqui ela está no lugar certo: o clique no card do YouTube abre este painel, e
+ * o login é a primeira coisa que ele mostra. Ninguém precisa voltar ao card para
+ * descobrir que precisa conectar, e o modal de Aplicações voltou a ser só uma
+ * grade de cards iguais.
+ *
  * A lógica de rede vem de `lib/mediaSources/youtube`, compartilhada com o
  * painel da fila — o que existia antes continua existindo, agora com a mesma
  * implementação nos dois lugares.
  */
-export function YoutubeSearchPanel({ open, onClose, context }: Props) {
+export function YoutubeSearchPanel({ open, onClose, context, account }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<YoutubeResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -99,7 +121,31 @@ export function YoutubeSearchPanel({ open, onClose, context }: Props) {
           className="animate-fade-up flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl border border-hairline bg-surface shadow-lift sm:rounded-2xl"
         >
           <div className="flex items-center gap-2 border-b border-hairline p-3">
-            <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-hairline bg-raised px-3 transition-colors duration-150 focus-within:border-accent/60">
+            {/*
+              * Largura fixa, e não `w-fit` nem `w-full`.
+              *
+              * `w-full` esticava pela largura toda e deixava o botão "Buscar"
+              * órfão na ponta direita de uma caixa quase vazia. `w-fit` resolveu
+              * isso, mas foi longe demais: com o campo vazio a barra ficava
+              * estreita a ponto de o placeholder parecer espremido, e mudava de
+              * tamanho a cada tecla digitada.
+              *
+              * 28rem é o que cabe: o painel é `max-w-lg` (512px), e descontando o
+              * `p-3` dos dois lados, o `gap-2` e o botão de fechar (32px), sobra
+              * 448px — 28rem exatos.
+              *
+              * O teto vai em `max-w-[28rem]` com `flex-1`, e não em largura fixa com
+              * `max-w-full`. `max-w-full` resolve para 100% do pai e não sabe que o
+              * X é irmão: num painel estreito ele tomava a largura inteira e
+              * empurrava o botão de fechar para fora. Crescendo até um teto, o campo
+              * cede espaço ao X, que é `shrink-0`.
+              *
+              * O `padding` é assimétrico de propósito: `pl-3` para o ícone da lupa
+              * respirar, `pr-1.5` para o botão Buscar encostar na borda. Com `px-3`
+              * dos dois lados sobrava 12px vazios à direita do botão, e era ali que
+              * o olho ia.
+              */}
+            <div className="flex min-w-0 max-w-[28rem] flex-1 items-center gap-2 rounded-xl border border-hairline bg-raised pl-3 pr-1.5 transition-colors duration-150 focus-within:border-accent/60">
               <MagnifyingGlass size={16} className="shrink-0 text-ink-faint" />
               <input
                 autoFocus
@@ -122,29 +168,35 @@ export function YoutubeSearchPanel({ open, onClose, context }: Props) {
               type="button"
               onClick={onClose}
               aria-label="Fechar busca"
-              className="shrink-0 rounded-md p-2 text-ink-faint transition-colors duration-150 hover:bg-hover hover:text-ink [@media(pointer:coarse)]:p-2.5"
+              // `ml-auto` porque o campo encolheu: sem ele o X grudaria nele e o
+              // vão vazio ficaria na direita, que é o mesmo lugar do vão que
+              // estava dentro do campo, só que fora dele. Assim o campo fica
+              // compacto à esquerda e o fechar ancorado na direita, que é onde
+              // a mão espera o botão.
+              className="ml-auto shrink-0 rounded-md p-2 text-ink-faint transition-colors duration-150 hover:bg-hover hover:text-ink [@media(pointer:coarse)]:p-2.5"
             >
               <X size={16} />
             </button>
+          </div>
+
+          {/*
+            A conta fica logo abaixo do campo de busca, e não no card do modal de
+            Aplicações: só o YouTube tem login, e a linha extra deixava a grade
+            irregular — o card vizinho era esticado e sobrava um buraco nele.
+            Aqui é o lugar natural, porque é para cá que o clique no card leva.
+          */}
+          <div className="border-b border-hairline p-3">
+            <SourceAccountRow account={account} className="border-0 bg-transparent p-0" />
           </div>
 
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
             {error && <p className="animate-fade-up p-3 text-2xs leading-relaxed text-live/90">{error}</p>}
 
             {!podeBuscar && !error && (
-              /*
-               * Aqui não há botão de conectar, de propósito: o gerenciador de
-               * conta é o card da fonte no modal de Aplicações, um nível acima.
-               * Um segundo lugar para a mesma ação é exatamente o que o
-               * projeto parou de fazer — a mesma conta aparecia no perfil e na
-               * busca, e divergiam. Quem não tem conta ainda cola link direto
-               * no campo acima, que não depende de login.
-               */
               <div className="p-3">
                 <p className="text-2xs leading-relaxed text-ink-faint">
-                  Sem uma conta conectada, a busca não roda. Você ainda pode colar um link do YouTube
-                  direto no campo acima — para a busca por termo, conecte a conta no card do YouTube,
-                  na lista de aplicações.
+                  Sem uma conta conectada, a busca por termo não roda. Você ainda pode colar um link
+                  do YouTube direto no campo acima — para buscar por termo, conecte a conta aqui.
                 </p>
               </div>
             )}

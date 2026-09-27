@@ -60,7 +60,30 @@ export function TruncatedText({ text, className, lineClamp = 1 }: Props) {
     <span
       ref={ref}
       title={title}
-      className={clsx('min-w-0', lineClamp === 1 ? 'truncate' : `line-clamp-${lineClamp}`, className)}
+      className={clsx('min-w-0', lineClamp === 1 && 'truncate', className)}
+      /*
+       * O clamp vai por estilo inline, e não pela classe `line-clamp-N`.
+       *
+       * `line-clamp` depende de `display: -webkit-box`. O chamador passou
+       * `block` no `className` nos três usos de duas linhas, e no Tailwind quem
+       * vence um conflito de `display` é a ordem no CSS gerado, não a ordem no
+       * atributo — então o `block` vencia, o clamp ficava silenciosamente
+       * desligado, e o texto crescia sem limite. No card do "Transmitir tela"
+       * foram quatro linhas e 36px a mais de altura, com a grade desalinhada.
+       *
+       * Estilo inline ganha de classe, e `truncate` (uma linha) dispensa
+       * `display`, então o caminho de uma linha segue como estava.
+       */
+      style={
+        lineClamp === 1
+          ? undefined
+          : {
+              display: '-webkit-box',
+              WebkitBoxOrient: 'vertical',
+              WebkitLineClamp: lineClamp,
+              overflow: 'hidden',
+            }
+      }
     >
       {text}
     </span>

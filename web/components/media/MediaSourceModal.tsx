@@ -1,7 +1,6 @@
 'use client';
 
 import clsx from 'clsx';
-import { CheckCircle } from '@phosphor-icons/react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Portal } from '@/components/ui/Portal';
 import { TruncatedText } from '@/components/ui/TruncatedText';
@@ -62,7 +61,7 @@ export function MediaSourceModal({
   const sources = useMemo<MediaSourceProvider[]>(
     () =>
       MEDIA_SOURCES.flatMap((f) => {
-        // O YouTube não está no registro: ele entra logo depois do Computador,
+        // O YouTube não está no registro: ele entra logo depois do Dispositivo,
         // que é a ordem que o modal já tinha. Trocar a fonte do registro pela
         // versão do hook, mantendo o lugar, evita que um card suma da grade
         // quando uma fonte ganha painel próprio.
@@ -326,18 +325,17 @@ function SourceCard({
         aria-busy={ocupado || undefined}
         aria-describedby={state.error ? `${source.id}-erro` : undefined}
         className={clsx(
-          'flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors duration-150',
-          // `h-full` só sem a linha de conta: com ela, o `100%` passing a
-          // incluir a linha de baixo e o botão esticaria por cima dela. A
-          // uniformidade entre cards vem do `stretch` do grid no wrapper.
-          !source.account && 'h-full',
+          // `items-center`, e não `items-start`: com a linha de conta fora do
+          // card, a única diferença de altura que restava entre as fontes da
+          // mesma linha era o selo "Indisponível" — que também subiu para a
+          // linha do título. Agora todo card tem a mesma altura e o mesmo
+          // conteúdo; centralizar é o que mantém isso quando a grade ainda
+          // precisa esticar alguma coisa.
+          'flex h-full w-full items-center gap-3 rounded-xl border p-3 text-left transition-colors duration-150',
           bloqueado
             ? 'cursor-not-allowed border-hairline bg-raised/40 opacity-60'
             : 'border-hairline bg-raised hover:border-accent/50 hover:bg-hover',
           state.error && 'border-live/50',
-          // Com conta embaixo, o card precisa da borda: os dois blocos ficam
-          // parted pelo `overflow-hidden` do wrapper abaixo.
-          source.account && 'rounded-b-none border-b-0',
         )}
       >
         <span
@@ -357,6 +355,18 @@ function SourceCard({
           <span className="flex items-center gap-1.5">
             <TruncatedText text={source.name} className="text-sm font-medium text-ink" />
             {state.loading && <span className="h-1.5 w-1.5 shrink-0 animate-blink rounded-full bg-accent" />}
+            {/*
+              * O selo fica na linha do título, e não numa linha própria embaixo.
+              * Era ele que fazia os cards terem alturas diferentes: quem tem selo
+              * ficava ~26px mais alto que quem não tem, e a grade nunca fechava
+              * reto. Assim todo card é exatamente o mesmo: ícone, título e duas
+              * linhas de descrição.
+              */}
+            {bloqueado && (
+              <span className="shrink-0 rounded-full bg-hover px-1.5 py-0.5 text-[0.625rem] font-medium leading-none text-ink-faint">
+                Indisponível
+              </span>
+            )}
           </span>
           {/*
             * A linha de baixo vai a duas linhas e para. A descrição de uma
@@ -377,11 +387,6 @@ function SourceCard({
             className="mt-0.5 block text-2xs leading-relaxed text-ink-faint"
             lineClamp={2}
           />
-          {bloqueado && (
-            <span className="mt-1.5 inline-flex items-center rounded-full bg-hover px-1.5 py-0.5 text-[0.625rem] font-medium text-ink-faint">
-              Indisponível
-            </span>
-          )}
           {state.starting && state.progress !== undefined && (
             <span
               role="progressbar"
@@ -400,14 +405,6 @@ function SourceCard({
         </span>
       </button>
 
-      {/*
-        * A conta é gerenciada aqui e em mais lugar nenhum do app. Ela fica
-        * *fora* do `<button>` de cima porque botão dentro de botão é HTML
-        * inválido, e o botão de conectar precisa ser clicável por conta
-        * própria.
-        */}
-      {source.account && <AccountRow account={source.account} />}
-
       {state.error && (
         <p
           id={`${source.id}-erro`}
@@ -415,87 +412,6 @@ function SourceCard({
         >
           {state.error}
         </p>
-      )}
-    </div>
-  );
-}
-
-/**
- * Status da conta e os botões de conectar/desconectar de uma fonte.
- *
- * Não sabe nada da integração: lê o que o provider declarou em `account`. Uma
- * fonte nova que exija login aparece aqui sem nenhuma linha nova neste arquivo.
- */
-function AccountRow({ account }: { account: NonNullable<MediaSourceProvider['account']> }) {
-  const [trocando, setTrocando] = useState(false);
-
-  const ocupado = Boolean(account.busy) || trocando;
-
-  return (
-    <div
-      className={clsx(
-        'rounded-b-xl border border-t-0 px-3 py-2',
-        account.connected ? 'border-hairline bg-raised' : 'border-hairline bg-raised/60',
-      )}
-    >
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          {account.connected ? (
-            <>
-              <CheckCircle weight="fill" size={13} className="shrink-0 text-live" />
-              {/* Nome de canal é o texto mais imprevisível do app: pode ter
-                  qualquer tamanho e nenhuma regra. Vai numa linha com
-                  reticência, e o `title` devolve o nome inteiro. */}
-              <TruncatedText
-                text={account.detail || 'Conta conectada'}
-                className="text-2xs text-ink-muted"
-              />
-            </>
-          ) : (
-            /*
-             * Este texto quebra em duas linhas em vez de ser cortado: o card é
-             * meia largura no desktop, e "Nenhuma conta conectada" não cabe ao
-             * lado do botão. Cortar mostrava "Nenhuma conta conect…", que é
-             * pior que quebrar — o nome do canal, quando existe, é curto e
-             * continua em uma linha só.
-             */
-            <span className="min-w-0 text-2xs leading-snug text-ink-faint">
-              {account.configured
-                ? 'Nenhuma conta conectada'
-                : 'Integração não configurada no servidor'}
-            </span>
-          )}
-        </span>
-
-        {account.connected ? (
-          <button
-            type="button"
-            onClick={() => {
-              setTrocando(true);
-              void account.disconnect().finally(() => setTrocando(false));
-            }}
-            disabled={ocupado}
-            className="min-w-0 shrink-0 whitespace-nowrap rounded-md border border-hairline px-2 py-1 text-2xs text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-9 [@media(pointer:coarse)]:px-3"
-          >
-            {ocupado ? 'Saindo…' : 'Trocar de conta'}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={account.connect}
-            disabled={!account.configured || account.busy}
-            className="min-w-0 shrink-0 whitespace-nowrap rounded-md bg-accent px-2 py-1 text-2xs font-medium text-white transition-colors duration-150 hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-9 [@media(pointer:coarse)]:px-3"
-          >
-            {account.busy ? 'Conectando…' : 'Conectar'}
-          </button>
-        )}
-      </div>
-
-      {account.error && (
-        <p className="animate-fade-up mt-1 text-2xs leading-relaxed text-live/90">{account.error}</p>
-      )}
-      {account.message && !account.error && (
-        <p className="animate-fade-up mt-1 text-2xs leading-relaxed text-ink-faint">{account.message}</p>
       )}
     </div>
   );

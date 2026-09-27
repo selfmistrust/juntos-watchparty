@@ -71,7 +71,7 @@ function chooseFile(): Promise<File | null> {
 
 export const uploadProvider: MediaSourceProvider = {
   id: 'upload',
-  name: 'Computador',
+  name: 'Dispositivo',
   description: 'Envie um vídeo do seu dispositivo (.mp4, .webm, .mkv).',
   icon: <CloudArrowUp size={22} weight="bold" />,
   requiresControl: true,

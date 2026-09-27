@@ -46,12 +46,6 @@ export interface MediaSourceProvider {
   /** Cor de acento do card (fundo do ícone), quando a marca tiver uma. */
   accent?: string;
   /**
-   * A fonte exige login? Preenchendo isto, o card mostra o status da conta e
-   * os botões de conectar/desconectar. Ausente, a fonte não tem conta nenhuma e
-   * o card não mostra nada além do que já tinha.
-   */
-  account?: MediaSourceAccount;
-  /**
    * O que o provider precisa da sala.
    *
    * Só marque isto quando a fonte realmente não puder funcionar para quem não
@@ -90,11 +84,16 @@ export interface MediaSourceProvider {
 /**
  * Conta externa de uma fonte que exige login.
  *
- * Isto é declarado pelo provider, e não desenhado pelo modal: uma integração
- * nova que peça OAuth preenche `account` no provider e aparece no card com
- * status e botões sem que nada seja escrito no modal. É o que mantém o modal
- * como o único lugar do app onde se gerencia conta externa — a aba Pessoas não
- * mostra nem o status nem os botões.
+ * A forma mora aqui, mas a linha de conta **não** é declarada pelo provider
+ * nem desenhada pelo card: ela ficava abaixo do botão do card, e só o YouTube
+ * tinha uma. A grade ficava irregular por causa de um botão, com o Dispositivo
+ * esticado até a altura do vizinho e um buraco no rodapé.
+ *
+ * A conta é gerenciada no painel da integração, que é para onde o clique no card
+ * leva. O `description` do provider carrega o estado em uma frase, para o card
+ * não perder a informação que a linha exibia. O modal de Aplicações deixou de
+ * conhecer contas — ele é só a grade de cards iguais, e a aba pessoas nunca
+ * mostrou status nem botão.
  */
 export interface MediaSourceAccount {
   /** A integração tem como conectar? Sem isso, nem faz sentido oferecer o botão. */
