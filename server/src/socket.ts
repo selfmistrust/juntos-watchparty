@@ -110,6 +110,25 @@ export function registerSocketHandlers(io: Server) {
     /** Carrega a sala atual da conexão; handlers saem cedo se não houver uma. */
     const currentRoom = () => (roomId ? getRoom(roomId) : Promise.resolve(undefined));
 
+    /**
+     * Ler, mutar e gravar a sala desta conexão, em exclusivo.
+     *
+     * **Toda escrita passa por aqui.** O padrão do arquivo é carregar, mutar e
+     * gravar; sem o lock, duas requisições no mesmo instante leem o mesmo
+     * estado do Redis e a segunda gravação apaga a primeira. Isso já chegou a
+     * Throw 11 de 12 pessoas sumirem da sala ao entrarem juntas.
+     *
+     * Os handlers somente de leitura continuam usando `currentRoom`:
+     * `time:ping`, `chat:typing`, `reaction:send` e o `stream:signal` não
+     * gravam nada, e segurar o lock por eles só adicionaria espera.
+     *
+     * O `broadcastState` e o `system` ficam **dentro** do callback, e não fora:
+     * emitir com a sala liberada deixaria a ordem das mensagens embaralhada,
+     * já que outra escrita poderia entrar no meio.
+     */
+    const editar = <T,>(fn: (room: Room) => Promise<T> | T): Promise<T | undefined> =>
+      roomId ? editarSala(roomId, fn) : Promise.resolve(undefined);
+
     socket.on(
       'room:join',
       async ({ roomId: rid, name, roomName, password, userId, avatarSeed, avatarUrl, color }: JoinPayload) => {
@@ -167,19 +186,16 @@ export function registerSocketHandlers(io: Server) {
 
     /** Cor de nome escolhida no painel de pessoas — só o próprio usuário muda a sua. */
     socket.on('user:setColor', async (color: string) => {
-      const room = await currentRoom();
-      if (!room) return;
-      if (setUserColor(room, socket.id, color)) {
-        await persistRoom(room);
-        broadcastState(room);
-      }
+      await editar(async (room) => {
+        if (setUserColor(room, socket.id, color)) {
+          await persistRoom(room);
+          broadcastState(room);
+        }
+      });
     });
 
     /** Nova semente de DiceBear e/ou foto customizada; `url: ''` volta pro avatar gerado. */
     socket.on('user:setAvatar', async (payload: { seed?: string; url?: string } = {}) => {
-      const room = await currentRoom();
-      if (!room) return;
-
       let url: string | undefined;
       if (payload.url) {
         const clean = sanitizeImageDataUrl(payload.url);
@@ -192,21 +208,25 @@ export function registerSocketHandlers(io: Server) {
         url = '';
       }
 
-      if (setUserAvatar(room, socket.id, { seed: payload.seed, url })) {
-        await persistRoom(room);
-        broadcastState(room);
-      }
+      // A sanitização fica **fora** do lock: ela é pura e não toca na sala, e
+      // `sanitizeImageDataUrl` percorre uma data URL inteira.
+      await editar(async (room) => {
+        if (setUserAvatar(room, socket.id, { seed: payload.seed, url })) {
+          await persistRoom(room);
+          broadcastState(room);
+        }
+      });
     });
 
     /** Nome trocado no painel de pessoas, depois de já estar na sala. */
     socket.on('user:setName', async (newName: string) => {
-      const room = await currentRoom();
-      if (!room) return;
       if (typeof newName !== 'string') return;
-      if (setUserName(room, socket.id, newName)) {
-        await persistRoom(room);
-        broadcastState(room);
-      }
+      await editar(async (room) => {
+        if (setUserName(room, socket.id, newName)) {
+          await persistRoom(room);
+          broadcastState(room);
+        }
+      });
     });
 
     /** Handshake de relógio: o cliente mede a latência e corrige o drift. */
@@ -218,72 +238,73 @@ export function registerSocketHandlers(io: Server) {
 
     /** Heartbeat de presença: atualiza lastSeen do usuário. */
     socket.on('presence:heartbeat', async () => {
-      const room = await currentRoom();
-      if (!room) return;
-      if (updateUserHeartbeat(room, socket.id)) {
-        await persistRoom(room);
-      }
+      await editar(async (room) => {
+        if (updateUserHeartbeat(room, socket.id)) {
+          await persistRoom(room);
+        }
+      });
     });
 
     socket.on('player:play', async (at?: number) => {
-      const room = await currentRoom();
-      if (!room) return;
-      if (!canControl(room, socket.id)) return denied(room);
-      commitPosition(room, at);
-      room.isPlaying = true;
-      await persistRoom(room);
-      broadcastState(room);
-      system(room.id, 'play', `${room.users[socket.id]?.name ?? 'Alguém'} deu play`);
+      await editar(async (room) => {
+        if (!canControl(room, socket.id)) return denied(room);
+        commitPosition(room, at);
+        room.isPlaying = true;
+        await persistRoom(room);
+        broadcastState(room);
+        system(room.id, 'play', `${room.users[socket.id]?.name ?? 'Alguém'} deu play`);
+      });
     });
 
     socket.on('player:pause', async (at?: number) => {
-      const room = await currentRoom();
-      if (!room) return;
-      if (!canControl(room, socket.id)) return denied(room);
-      commitPosition(room, at);
-      room.isPlaying = false;
-      await persistRoom(room);
-      broadcastState(room);
-      system(room.id, 'pause', `${room.users[socket.id]?.name ?? 'Alguém'} pausou`);
+      await editar(async (room) => {
+        if (!canControl(room, socket.id)) return denied(room);
+        commitPosition(room, at);
+        room.isPlaying = false;
+        await persistRoom(room);
+        broadcastState(room);
+        system(room.id, 'pause', `${room.users[socket.id]?.name ?? 'Alguém'} pausou`);
+      });
     });
 
     socket.on('player:seek', async (to: number) => {
-      const room = await currentRoom();
-      if (!room) return;
-      if (!canControl(room, socket.id)) return denied(room);
-      commitPosition(room, Math.max(0, to));
-      await persistRoom(room);
-      broadcastState(room);
-      system(room.id, 'seek', `${room.users[socket.id]?.name ?? 'Alguém'} mudou o ponto do vídeo`);
+      await editar(async (room) => {
+        if (!canControl(room, socket.id)) return denied(room);
+        commitPosition(room, Math.max(0, to));
+        await persistRoom(room);
+        broadcastState(room);
+        system(room.id, 'seek', `${room.users[socket.id]?.name ?? 'Alguém'} mudou o ponto do vídeo`);
+      });
     });
 
     /** Só o cliente do host reporta o fim para evitar N avanços simultâneos. */
     socket.on('player:ended', async () => {
-      const room = await currentRoom();
-      if (!room || room.hostId !== socket.id) return;
-      advance(room);
-      await persistRoom(room);
-      broadcastState(room);
+      await editar(async (room) => {
+        if (room.hostId !== socket.id) return;
+        advance(room);
+        await persistRoom(room);
+        broadcastState(room);
+      });
     });
 
     socket.on('playlist:add', async (item: Omit<PlaylistItem, 'id' | 'addedBy'>) => {
-      const room = await currentRoom();
-      if (!room) return;
-      const user = room.users[socket.id];
-      const entry: PlaylistItem = {
-        ...item,
-        id: newId(),
-        addedBy: user?.name ?? 'Convidado',
-        addedById: user?.userId ?? '',
-      };
-      room.playlist.push(entry);
-      if (room.currentIndex === -1) {
-        room.currentIndex = 0;
-        commitPosition(room, 0);
-      }
-      await persistRoom(room);
-      broadcastState(room);
-      system(room.id, 'track', `${entry.addedBy} adicionou "${entry.title}"`);
+      await editar(async (room) => {
+        const user = room.users[socket.id];
+        const entry: PlaylistItem = {
+          ...item,
+          id: newId(),
+          addedBy: user?.name ?? 'Convidado',
+          addedById: user?.userId ?? '',
+        };
+        room.playlist.push(entry);
+        if (room.currentIndex === -1) {
+          room.currentIndex = 0;
+          commitPosition(room, 0);
+        }
+        await persistRoom(room);
+        broadcastState(room);
+        system(room.id, 'track', `${entry.addedBy} adicionou "${entry.title}"`);
+      });
     });
 
     /**
@@ -326,63 +347,66 @@ export function registerSocketHandlers(io: Server) {
     );
 
     socket.on('playlist:remove', async (itemId: string) => {
-      const room = await currentRoom();
-      if (!room) return;
-      if (!canControl(room, socket.id)) return denied(room);
-      const index = room.playlist.findIndex((i) => i.id === itemId);
-      if (index === -1) return;
-      const [removed] = room.playlist.splice(index, 1);
-      if (removed?.kind === 'file') void deleteUploadIfOwned(removed.src);
-      if (index < room.currentIndex) room.currentIndex -= 1;
-      else if (index === room.currentIndex) {
-        room.currentIndex = Math.min(room.currentIndex, room.playlist.length - 1);
-        commitPosition(room, 0);
-        room.isPlaying = false;
-      }
-      await persistRoom(room);
-      broadcastState(room);
+      await editar(async (room) => {
+        if (!canControl(room, socket.id)) return denied(room);
+        const index = room.playlist.findIndex((i) => i.id === itemId);
+        if (index === -1) return;
+        const [removed] = room.playlist.splice(index, 1);
+        // A remoção no bucket é uma ida à API externa e não toca na sala: fazer
+        // isso dentro do lock seguraria a fila da sala pela latência do S3.
+        if (removed?.kind === 'file') void deleteUploadIfOwned(removed.src);
+        if (index < room.currentIndex) room.currentIndex -= 1;
+        else if (index === room.currentIndex) {
+          room.currentIndex = Math.min(room.currentIndex, room.playlist.length - 1);
+          commitPosition(room, 0);
+          room.isPlaying = false;
+        }
+        await persistRoom(room);
+        broadcastState(room);
+      });
     });
 
     socket.on('playlist:reorder', async ({ from, to }: { from: number; to: number }) => {
-      const room = await currentRoom();
-      if (!room) return;
-      if (!canControl(room, socket.id)) return denied(room);
-      const { playlist } = room;
-      if (from < 0 || from >= playlist.length || to < 0 || to >= playlist.length) return;
-      const playingId = room.playlist[room.currentIndex]?.id;
-      const [moved] = playlist.splice(from, 1);
-      playlist.splice(to, 0, moved);
-      if (playingId) room.currentIndex = playlist.findIndex((i) => i.id === playingId);
-      await persistRoom(room);
-      broadcastState(room);
+      await editar(async (room) => {
+        if (!canControl(room, socket.id)) return denied(room);
+        const { playlist } = room;
+        if (from < 0 || from >= playlist.length || to < 0 || to >= playlist.length) return;
+        const playingId = room.playlist[room.currentIndex]?.id;
+        const [moved] = playlist.splice(from, 1);
+        playlist.splice(to, 0, moved);
+        if (playingId) room.currentIndex = playlist.findIndex((i) => i.id === playingId);
+        await persistRoom(room);
+        broadcastState(room);
+      });
     });
 
     socket.on('playlist:select', async (index: number) => {
-      const room = await currentRoom();
-      if (!room) return;
-      if (!canControl(room, socket.id)) return denied(room);
-      if (index < 0 || index >= room.playlist.length) return;
-      room.currentIndex = index;
-      commitPosition(room, 0);
-      room.isPlaying = true;
-      await persistRoom(room);
-      broadcastState(room);
-      system(room.id, 'track', `Tocando agora: ${room.playlist[index].title}`);
+      await editar(async (room) => {
+        if (!canControl(room, socket.id)) return denied(room);
+        if (index < 0 || index >= room.playlist.length) return;
+        room.currentIndex = index;
+        commitPosition(room, 0);
+        room.isPlaying = true;
+        await persistRoom(room);
+        broadcastState(room);
+        system(room.id, 'track', `Tocando agora: ${room.playlist[index].title}`);
+      });
     });
 
     socket.on('room:setOpenControl', async (open: boolean) => {
-      const room = await currentRoom();
-      if (!room || room.hostId !== socket.id) return;
-      room.openControl = Boolean(open);
-      await persistRoom(room);
-      broadcastState(room);
-      system(
-        room.id,
-        'host',
-        room.openControl
-          ? 'O host liberou os controles para todo mundo'
-          : 'O host voltou a controlar a reprodução',
-      );
+      await editar(async (room) => {
+        if (room.hostId !== socket.id) return;
+        room.openControl = Boolean(open);
+        await persistRoom(room);
+        broadcastState(room);
+        system(
+          room.id,
+          'host',
+          room.openControl
+            ? 'O host liberou os controles para todo mundo'
+            : 'O host voltou a controlar a reprodução',
+        );
+      });
     });
 
     /** Reação flutuante sobre o vídeo. Efêmera: não entra no estado persistido da sala. */
@@ -402,10 +426,8 @@ export function registerSocketHandlers(io: Server) {
     });
 
     socket.on('chat:message', async (payload: ChatSendPayload) => {
-      const room = await currentRoom();
-      const user = room?.users[socket.id];
-      if (!room || !user) return;
-
+      // O rate limit é estado do processo, não da sala: fora do lock, porque
+      // nada aqui depende do estado da sala.
       if (isRateLimited(socket.id)) {
         socket.emit('room:denied', 'Calma aí — espera um instante antes de mandar outra mensagem.');
         return;
@@ -418,7 +440,6 @@ export function registerSocketHandlers(io: Server) {
       let text = '';
       let mediaUrl: string | undefined;
       let parentMessageId: string | undefined;
-      let parentMessagePreview: { id: string; name: string; text: string } | undefined;
 
       if (kind === 'text') {
         const clean = sanitizeMessage(raw.text ?? '');
@@ -446,38 +467,47 @@ export function registerSocketHandlers(io: Server) {
         return;
       }
 
-      const messageId = newId();
-      const now = Date.now();
+      /*
+       * A busca da mensagem-mãe lê `room.messages`, então fica dentro do lock.
+       * Sem ele, duas respostas ao mesmo tempo liam a mesma lista e uma
+       * apagava a mensagem anterior da outra — ou as duas mensagens sumiam do
+       * histórico.
+       */
+      await editar(async (room) => {
+        const user = room.users[socket.id];
+        if (!user) return;
 
-      // Se há parentMessageId, busca a mensagem original no feed do Redis (simplificado: procuramos na sala)
-      // Para simplificar, armazenamos mensagens recentes na sala
-      if (!room.messages) room.messages = [];
-      const parentMsg = parentMessageId ? room.messages.find((m: any) => m.id === parentMessageId) : undefined;
+        const messageId = newId();
+        const now = Date.now();
 
-      const message = {
-        id: messageId,
-        userId: user.sessionId,
-        name: user.name,
-        color: user.color,
-        kind,
-        text,
-        mediaUrl,
-        at: now,
-        parentMessageId,
-        parentMessagePreview: parentMsg ? {
-          id: parentMsg.id,
-          name: parentMsg.name,
-          text: parentMsg.kind === 'text' ? parentMsg.text : parentMsg.kind === 'gif' ? '[GIF] ' + (parentMsg.text || parentMsg.mediaUrl || '') : '[Imagem]'
-        } : undefined,
-        reactions: {},
-      };
+        if (!room.messages) room.messages = [];
+        const parentMsg = parentMessageId ? room.messages.find((m: any) => m.id === parentMessageId) : undefined;
 
-      room.messages.push(message);
-      // Mantém apenas últimas 500 mensagens
-      if (room.messages.length > 500) room.messages = room.messages.slice(-500);
+        const message = {
+          id: messageId,
+          userId: user.sessionId,
+          name: user.name,
+          color: user.color,
+          kind,
+          text,
+          mediaUrl,
+          at: now,
+          parentMessageId,
+          parentMessagePreview: parentMsg ? {
+            id: parentMsg.id,
+            name: parentMsg.name,
+            text: parentMsg.kind === 'text' ? parentMsg.text : parentMsg.kind === 'gif' ? '[GIF] ' + (parentMsg.text || parentMsg.mediaUrl || '') : '[Imagem]'
+          } : undefined,
+          reactions: {},
+        };
 
-      await persistRoom(room);
-      io.to(room.id).emit('chat:message', message);
+        room.messages.push(message);
+        // Mantém apenas últimas 500 mensagens
+        if (room.messages.length > 500) room.messages = room.messages.slice(-500);
+
+        await persistRoom(room);
+        io.to(room.id).emit('chat:message', message);
+      });
     });
 
     // Reação a mensagem
@@ -486,28 +516,31 @@ export function registerSocketHandlers(io: Server) {
       if (typeof messageId !== 'string' || !messageId) return;
       if (typeof emoji !== 'string' || !CHAT_REACTION_EMOJIS.includes(emoji as any)) return;
 
-      const room = await currentRoom();
-      const user = room?.users[socket.id];
-      if (!room || !user) return;
-
       if (isReactionRateLimited(socket.id)) return;
 
-      if (!room.messages) return;
-      const msg = room.messages.find((m: any) => m.id === messageId);
-      if (!msg) return;
+      // Contador e lista de quem reagiu crescem dentro do lock: duas reações
+      // simultâneas à mesma mensagem incrementavam a mesma contagem a partir do
+      // mesmo valor, e uma delas se perdia.
+      await editar(async (room) => {
+        const user = room.users[socket.id];
+        if (!user) return;
+        if (!room.messages) return;
+        const msg = room.messages.find((m: any) => m.id === messageId);
+        if (!msg) return;
 
-      if (!msg.reactions) msg.reactions = {};
-      if (!msg.reactions[emoji]) msg.reactions[emoji] = { count: 0, users: [] };
-      // Guarda o `userId` persistente, não o `sessionId`: se fosse o id do
-      // socket, um F5 trocaria a identidade e a pessoa perderia o destaque da
-      // própria reação (e poderia reagir de novo sem querer).
-      if (msg.reactions[emoji].users.includes(user.userId)) return; // Já reagiu
+        if (!msg.reactions) msg.reactions = {};
+        if (!msg.reactions[emoji]) msg.reactions[emoji] = { count: 0, users: [] };
+        // Guarda o `userId` persistente, não o `sessionId`: se fosse o id do
+        // socket, um F5 trocaria a identidade e a pessoa perderia o destaque da
+        // própria reação (e poderia reagir de novo sem querer).
+        if (msg.reactions[emoji].users.includes(user.userId)) return; // Já reagiu
 
-      msg.reactions[emoji].count += 1;
-      msg.reactions[emoji].users.push(user.userId);
+        msg.reactions[emoji].count += 1;
+        msg.reactions[emoji].users.push(user.userId);
 
-      await persistRoom(room);
-      io.to(room.id).emit('chat:reaction:add', { messageId, emoji, userId: user.userId });
+        await persistRoom(room);
+        io.to(room.id).emit('chat:reaction:add', { messageId, emoji, userId: user.userId });
+      });
     });
 
     // Remover reação
@@ -516,23 +549,23 @@ export function registerSocketHandlers(io: Server) {
       if (typeof messageId !== 'string' || !messageId) return;
       if (typeof emoji !== 'string' || !CHAT_REACTION_EMOJIS.includes(emoji as any)) return;
 
-      const room = await currentRoom();
-      const user = room?.users[socket.id];
-      if (!room || !user) return;
-
       if (isReactionRateLimited(socket.id)) return;
 
-      if (!room.messages) return;
-      const msg = room.messages.find((m: any) => m.id === messageId);
-      if (!msg || !msg.reactions?.[emoji]) return;
-      if (!msg.reactions[emoji].users.includes(user.userId)) return; // Não reagiu
+      await editar(async (room) => {
+        const user = room.users[socket.id];
+        if (!user) return;
+        if (!room.messages) return;
+        const msg = room.messages.find((m: any) => m.id === messageId);
+        if (!msg || !msg.reactions?.[emoji]) return;
+        if (!msg.reactions[emoji].users.includes(user.userId)) return; // Não reagiu
 
-      msg.reactions[emoji].count -= 1;
-      msg.reactions[emoji].users = msg.reactions[emoji].users.filter((u: string) => u !== user.userId);
-      if (msg.reactions[emoji].count === 0) delete msg.reactions[emoji];
+        msg.reactions[emoji].count -= 1;
+        msg.reactions[emoji].users = msg.reactions[emoji].users.filter((u: string) => u !== user.userId);
+        if (msg.reactions[emoji].count === 0) delete msg.reactions[emoji];
 
-      await persistRoom(room);
-      io.to(room.id).emit('chat:reaction:remove', { messageId, emoji, userId: user.userId });
+        await persistRoom(room);
+        io.to(room.id).emit('chat:reaction:remove', { messageId, emoji, userId: user.userId });
+      });
     });
 
     socket.on('chat:typing', async (isTyping: boolean) => {
@@ -564,53 +597,61 @@ export function registerSocketHandlers(io: Server) {
     const publicStream = ({ ownerSessionId: _omit, ...pub }: LiveStream) => pub;
 
     socket.on('stream:publish', async ({ title }: { title?: string } = {}) => {
-      const room = await currentRoom();
-      const user = room?.users[socket.id];
-      if (!room || !user) return;
+      await editar(async (room) => {
+        const user = room.users[socket.id];
+        if (!user) return;
 
-      if (!canControl(room, socket.id)) return denied(room);
+        if (!canControl(room, socket.id)) return denied(room);
 
-      // Uma pessoa transmite por vez. Duas telas simultâneas exigiriam um
-      // modelo de composição que o app não tem, e o resultado seria uma sala
-      // com dois "tocando agora" disputando a mesma caixa.
-      if (Object.keys(streamsDe(room)).length > 0) {
-        socket.emit('room:denied', 'Já tem alguém transmitindo a tela nesta sala.');
-        socket.emit('room:state', snapshot(room));
-        return;
-      }
+        /*
+         * Uma pessoa transmite por vez. Duas telas simultâneas exigiriam um
+         * modelo de composição que o app não tem, e o resultado seria uma sala
+         * com dois "tocando agora" disputando a mesma caixa.
+         *
+         * A checagem precisa estar **dentro** do lock: fora, dois publishes no
+         * mesmo instante veriam a sala vazia de transmissões e os dois
+         * passariam, criando duas faixas "tocando agora".
+         */
+        if (Object.keys(streamsDe(room)).length > 0) {
+          socket.emit('room:denied', 'Já tem alguém transmitindo a tela nesta sala.');
+          socket.emit('room:state', snapshot(room));
+          return;
+        }
 
-      const stream = startStream(room, user, typeof title === 'string' ? title : '');
+        const stream = startStream(room, user, typeof title === 'string' ? title : '');
 
-      room.playlist.push({
-        id: newId(),
-        kind: 'stream',
-        src: '',
-        title: stream.title,
-        addedBy: user.name,
-        addedById: user.userId,
-        streamId: stream.id,
+        room.playlist.push({
+          id: newId(),
+          kind: 'stream',
+          src: '',
+          title: stream.title,
+          addedBy: user.name,
+          addedById: user.userId,
+          streamId: stream.id,
+        });
+        room.currentIndex = room.playlist.length - 1;
+        room.isPlaying = true;
+        commitPosition(room, 0);
+        await persistRoom(room);
+
+        socket.emit('stream:started', { stream: publicStream(stream) });
+        io.to(room.id).emit('room:state', snapshot(room));
+        system(room.id, 'info', `${user.name} começou a compartilhar a tela`);
       });
-      room.currentIndex = room.playlist.length - 1;
-      room.isPlaying = true;
-      commitPosition(room, 0);
-      await persistRoom(room);
-
-      socket.emit('stream:started', { stream: publicStream(stream) });
-      io.to(room.id).emit('room:state', snapshot(room));
-      system(room.id, 'info', `${user.name} começou a compartilhar a tela`);
     });
 
     socket.on('stream:unpublish', async ({ streamId }: { streamId?: string } = {}) => {
-      const room = await currentRoom();
-      if (!room || typeof streamId !== 'string') return;
-      const stream = getStream(room, streamId);
-      if (!stream || stream.ownerSessionId !== socket.id) return;
+      if (typeof streamId !== 'string') return;
+      await editar(async (room) => {
+        const stream = getStream(room, streamId);
+        if (!stream || stream.ownerSessionId !== socket.id) return;
 
-      stopStream(room, streamId);
-      await persistRoom(room);
-      io.to(room.id).emit('stream:stopped', { streamId });
-      io.to(room.id).emit('room:state', snapshot(room));
-      system(room.id, 'info', `${stream.ownerName} parou de compartilhar a tela`);
+        stopStream(room, streamId);
+        await persistRoom(room);
+        io.to(room.id).emit('stream:stopped', { streamId });
+        io.to(room.id).emit('room:state', snapshot(room));
+        system(room.id, 'info', `${stream.ownerName} parou de compartilhar a tela`);
+      });
     });
 
     socket.on('stream:subscribe', async ({ streamId }: { streamId?: string } = {}) => {
@@ -679,38 +720,44 @@ export function registerSocketHandlers(io: Server) {
 
     socket.on('disconnect', async () => {
       clearRateLimit(socket.id);
-      const room = await currentRoom();
-      if (!room) return;
-
-      // Transmissão que morre junto com a janela de quem transmitia. Sem isto
-      // o estado da sala guardaria um stream para sempre, e todo mundo ficaria
-      // esperando mídia que nunca chega.
-      const encerradas = dropStreamsOwnedBy(room, socket.id);
-      if (encerradas.length > 0) {
-        await persistRoom(room);
-        for (const streamId of encerradas) {
-          io.to(room.id).emit('stream:stopped', { streamId });
+      /*
+       * O `disconnect` é a escrita mais perigosa do arquivo: ela apaga a
+       * presença de alguém. Sem o lock, um join que estivesse em voo era
+       * sobrescrito por ela — a pessoa entrava e saía no mesmo instante, sem
+       * ter visto nada.
+       *
+       * A limpeza da transmissão é a parte que **precisa** estar dentro do lock,
+       * porque ela mexe na fila: sem isso, o `disconnect` de quem transmitia
+       * podia correr entre a checagem e a gravação de um `stream:publish`, e
+       * sobrar uma faixa live morta tocando para todo mundo.
+       */
+      await editar(async (room) => {
+        const encerradas = dropStreamsOwnedBy(room, socket.id);
+        if (encerradas.length > 0) {
+          for (const streamId of encerradas) {
+            io.to(room.id).emit('stream:stopped', { streamId });
+          }
+          system(room.id, 'info', 'A transmissão de tela foi encerrada');
         }
-        system(room.id, 'info', 'A transmissão de tela foi encerrada');
-      }
 
-      const user = markUserDisconnected(room, socket.id);
-      if (user) {
-        system(room.id, 'leave', `${user.name} saiu da sala`);
-        // Sem isso, quem estava digitando na hora de cair a conexão (aba
-        // fechada, wi-fi caiu) deixaria o indicador travado pros outros pra
-        // sempre — o timeout de "parou de digitar" do cliente nunca dispara
-        // porque o cliente já não está mais lá pra disparar nada.
-        socket.to(room.id).emit('chat:typing', { id: user.sessionId, name: user.name, isTyping: false });
-      }
-      // Se não há usuários conectados, congela o tempo
-      const connectedUsers = Object.values(room.users).filter(u => u.connected);
-      if (connectedUsers.length === 0) {
-        commitPosition(room, projectedPosition(room));
-        room.isPlaying = false;
-      }
-      await persistRoom(room);
-      broadcastState(room);
+        const user = markUserDisconnected(room, socket.id);
+        if (user) {
+          system(room.id, 'leave', `${user.name} saiu da sala`);
+          // Sem isso, quem estava digitando na hora de cair a conexão (aba
+          // fechada, wi-fi caiu) deixaria o indicador travado pros outros pra
+          // sempre — o timeout de "parou de digitar" do cliente nunca dispara
+          // porque o cliente já não está mais lá pra disparar nada.
+          socket.to(room.id).emit('chat:typing', { id: user.sessionId, name: user.name, isTyping: false });
+        }
+        // Se não há usuários conectados, congela o tempo
+        const connectedUsers = Object.values(room.users).filter(u => u.connected);
+        if (connectedUsers.length === 0) {
+          commitPosition(room, projectedPosition(room));
+          room.isPlaying = false;
+        }
+        await persistRoom(room);
+        broadcastState(room);
+      });
       roomId = null;
     });
   });
