@@ -17,4 +17,10 @@ desktop/release/
 
 # Configurações sensíveis e uploads locais
 .env
+# O mesmo para o `.env.local` do front. Estas variáveis são `NEXT_PUBLIC_` e
+# não carregam segredo, mas o Next as lê no *build* e as embute no bundle:
+# com o arquivo no Git, um build sem a variável configurada no painel da
+# Vercel publicava um site apontando para `localhost`, que não funciona para
+# ninguém. O modelo está em `web/.env.example`.
+.env.local
 uploads/
