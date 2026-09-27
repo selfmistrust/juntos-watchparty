@@ -51,6 +51,19 @@ type PendingOAuth = {
   sessionId: string;
   codeVerifier: string;
   returnTo: string;
+  /**
+   * Para onde o navegador deve ir quando o fluxo terminar.
+   *
+   * `app` devolve a pessoa para o `returnTo`, que é o comportamento de sempre.
+   *
+   * `pagina` devolve para a tela de conclusão do servidor, e é o que o app
+   * desktop pede. O login do Google **não** roda dentro da janela do Electron —
+   * o Google recusa com "esse navegador ou app pode não ser seguro" — então a
+   * autorização acontece no navegador do sistema, e sem esta flag o callback
+   * abriria ali uma segunda cópia do app, sem a janela do desktop saber de
+   * nada. A janela se atualiza sozinha quando a pessoa clica nela de volta.
+   */
+  voltarComo: 'app' | 'pagina';
 };
 
 export type AuthFailure =
@@ -125,11 +138,15 @@ export async function getPublicStatus(sessionId: string | null): Promise<Youtube
   };
 }
 
-export async function createAuthUrl(sessionId: string, returnTo: string): Promise<string | null> {
+export async function createAuthUrl(
+  sessionId: string,
+  returnTo: string,
+  voltarComo: PendingOAuth['voltarComo'] = 'app',
+): Promise<string | null> {
   if (!youtubeOAuthConfigured()) return null;
   const { verifier, challenge } = pkce();
   const state = newState();
-  const pending: PendingOAuth = { sessionId, codeVerifier: verifier, returnTo };
+  const pending: PendingOAuth = { sessionId, codeVerifier: verifier, returnTo, voltarComo };
   await redis.set(PENDING_KEY(state), JSON.stringify(pending), 'EX', PENDING_TTL_SEC);
 
   const url = new URL(GOOGLE_AUTH);

@@ -83,62 +83,6 @@ function configuracoesDaJanela(): Electron.BrowserWindowConstructorOptions {
   };
 }
 
-/**
- * Login em curso, declarado pelo renderer antes de ele navegar.
- *
- * Só a origem, e só por um tempo. O renderer é a parte não confiável da
- * conversa, então isto não é uma lista de destinos: é uma janela de dez minutos
- * em que a navegação para aquela origem — e para o Google, que é quem serve a
- * tela de consentimento — deixa de ser bloqueada. Passado o prazo, ou assim que
- * a janela volta para o app, o bloqueio normal volta.
- */
-let loginPreparado: { origem: string; expiraEm: number } | null = null;
-
-const JANELA_DE_LOGIN_MS = 10 * 60 * 1000;
-
-function ehHostDoGoogle(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host === 'google.com' || host.endsWith('.google.com');
-  } catch {
-    return false;
-  }
-}
-
-/** A navegação faz parte do login que o renderer declarou? */
-function ehDestinoDeLogin(url: string): boolean {
-  if (!loginPreparado || Date.now() > loginPreparado.expiraEm) return false;
-  try {
-    if (new URL(url).origin === loginPreparado.origem) return true;
-  } catch {
-    return false;
-  }
-  return ehHostDoGoogle(url);
-}
-
-/**
- * Deixa a navegação passar, ou a barra para fora e manda para o navegador.
- *
- * O login do YouTube é a exceção que não é exceção: ele precisa acontecer
- * **dentro** da janela, porque o cookie de sessão vive no cookie jar do Electron.
- * Indo para o navegador do sistema, o callback volta sem esse cookie, a
- * conexão é gravada e rejeitada, e a pessoa volta para um app sem conta
- * nenhuma — depois de ter autorizado tudo.
- */
-function guardarNavegacao(
-  evento: { preventDefault: () => void },
-  url: string,
-): void {
-  if (url.startsWith(APP_ORIGIN)) {
-    // Voltou para o app: o login acabou, e o bloqueio normal reassume.
-    loginPreparado = null;
-    return;
-  }
-  if (ehDestinoDeLogin(url)) return;
-  evento.preventDefault();
-  if (/^https?:/.test(url)) void shell.openExternal(url);
-}
-
 function criarJanela(): BrowserWindow {
   const w = new BrowserWindow(configuracoesDaJanela());
 
@@ -149,44 +93,16 @@ function criarJanela(): BrowserWindow {
 
   // Navegação para fora do app vai no navegador do sistema, nunca dentro da
   // janela: senão um link de convite ou os Termos substitutions a app e o
-  // usuário fica preso sem barra de endereço. A exceção é o login declarado.
+  // usuário fica preso sem barra de endereço.
   w.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
-
-  /*
-   * `will-navigate` sozinho não basta, e foi o que quase me fez errar: ele só
-   * dispara em navegação iniciada pelo renderer — `location`, clique em link.
-   * O OAuth é quase todo redirect de servidor, do consentimento para o callback
-   * e do callback de volta para o app, e quem trata isso é `will-redirect`. Sem
-   * os dois, a janela permitia o primeiro salto e barrava o resto, e o login
-   * morria no meio.
-   */
-  w.webContents.on('will-navigate', (evento, url) => guardarNavegacao(evento, url));
-  w.webContents.on('will-redirect', (evento, url, _noLocal, ehQuadroPrincipal) => {
-    if (ehQuadroPrincipal) guardarNavegacao(evento, url);
-  });
-
-  /*
-   * Válvula de escape do login.
-   *
-   * Permitir a navegação dentro da janela reintroduz o problema que o bloqueio
-   * original evitava: se algo travar no meio do fluxo — e o caso provável é o
-   * Google recusar a tela de consentimento num user-agent embutido, o que não dá
-   * para testar daqui — a pessoa fica numa janela sem barra de endereço e sem
-   * como voltar. `Esc` traz o app de volta.
-   *
-   * Só age com um login em curso e a janela fora do app; no app, `Esc` é do
-   * próprio React, e mexer nisso seria tirar um atalho da pessoa.
-   */
-  w.webContents.on('before-input-event', (evento, entrada) => {
-    if (entrada.type !== 'keyDown' || entrada.key !== 'Escape') return;
-    if (!loginPreparado || Date.now() > loginPreparado.expiraEm) return;
-    if (w.webContents.getURL().startsWith(APP_ORIGIN)) return;
-    evento.preventDefault();
-    loginPreparado = null;
-    void w.loadURL(APP_ORIGIN);
+  w.webContents.on('will-navigate', (evento, url) => {
+    if (!url.startsWith(APP_ORIGIN)) {
+      evento.preventDefault();
+      if (/^https?:/.test(url)) void shell.openExternal(url);
+    }
   });
 
   return w;
@@ -194,26 +110,6 @@ function criarJanela(): BrowserWindow {
 
 function registrarIpc(): void {
   ipcMain.handle('desktop:listar-fontes', (_e, forcar: boolean) => listarFontes(forcar === true));
-
-  /*
-   * O renderer avisa para onde vai antes de ir. Só a origem é guardada, e ela
-   * precisa ser http(s): um `file:` ou um `data:` aqui viraria um destino
-   * liberado dentro da janela, que é justamente o que o bloqueio existe para
-   * impedir.
-   */
-  ipcMain.handle('desktop:preparar-login', (_e, url: unknown) => {
-    if (typeof url !== 'string' || !url) return false;
-    let origem: string;
-    try {
-      const u = new URL(url);
-      if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
-      origem = u.origin;
-    } catch {
-      return false;
-    }
-    loginPreparado = { origem, expiraEm: Date.now() + JANELA_DE_LOGIN_MS };
-    return true;
-  });
 
   ipcMain.handle('desktop:escolher-fonte', (_e, id: string) => {
     escolherFonte(typeof id === 'string' && id ? id : null);

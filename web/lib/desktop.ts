@@ -35,7 +35,6 @@ export interface DesktopApi {
   stopCapture(): Promise<void>;
   isCapturing(): Promise<boolean>;
   copyText(text: string): Promise<boolean>;
-  prepareLogin(url: string): Promise<boolean>;
   openPermissionSettings(): Promise<void>;
 }
 
@@ -73,24 +72,4 @@ export async function copiarTexto(texto: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/**
- * Começa um login que sai do app e volta para ele.
- *
- * No app desktop, avisar o processo principal antes de navegar é o que permite
- * a janela acompanhar o fluxo. Sem o aviso, a navegação para fora é bloqueada e
- * mandada para o navegador do sistema — que não tem o cookie de sessão, e então
- * o callback volta sem ele.
- *
- * Fora do Electron é um `location.assign` puro, e no navegador o cookie viaja na
- * mesma navegação, então nunca houve problema ali.
- *
- * A promise é esperada de propósito: `prepareLogin` precisa ter devolvido antes
- * de o `assign` sair, senão a navegação chega antes do aviso e é barrada.
- */
-export async function comecarLogin(url: string): Promise<void> {
-  const api = desktop();
-  if (api) await api.prepareLogin(url);
-  window.location.assign(url);
 }

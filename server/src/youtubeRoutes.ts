@@ -1,4 +1,5 @@
 import type { Express, Request, Response } from 'express';
+import { paginaConcluido } from './youtubeConcluido.js';
 import {
   CLIENT_ORIGINS,
   ensureSessionId,
@@ -35,19 +36,46 @@ export function registerYoutubeRoutes(app: Express): void {
     }
   });
 
+  /*
+   * Onde o navegador volta quando o fluxo termina.
+   *
+   * No app desktop o login roda no navegador do sistema — o Google recusa
+   * autenticar dentro da janela do Electron — e sem isto o callback abriria ali
+   * uma segunda cópia do app, que não é o que a pessoa está usando. Com isto, o
+   * navegador mostra uma tela de conclusão e a janela do desktop se atualiza
+   * quando recebe o foco.
+   *
+   * `pagina` é o nome que o cliente usa; qualquer outra coisa, ou a ausência do
+   * parâmetro, mantém o comportamento de sempre, que é voltar para o app.
+   */
+  const destinoDe = (voltarComo: 'app' | 'pagina' | undefined, estado: string, returnTo: string) =>
+    voltarComo === 'pagina'
+      ? `/api/youtube/oauth/concluido?estado=${encodeURIComponent(estado)}`
+      : withYoutubeQuery(returnTo, estado);
+
+  app.get('/api/youtube/oauth/concluido', (req, res) => {
+    const { status, html } = paginaConcluido(
+      typeof req.query.estado === 'string' ? req.query.estado : undefined,
+    );
+    res.status(status);
+    res.set('Cache-Control', 'no-store');
+    res.type('html').send(html);
+  });
+
   app.get('/api/youtube/oauth/start', async (req, res) => {
     const returnTo = safeReturnUrl(typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined);
+    const voltarComo = req.query.voltar === 'pagina' ? 'pagina' : 'app';
     if (!youtubeOAuthConfigured() || !sessionConfigured()) {
-      return res.redirect(withYoutubeQuery(returnTo, 'not_configured'));
+      return res.redirect(destinoDe(voltarComo, 'not_configured', returnTo));
     }
     try {
       const sessionId = ensureSessionId(req, res);
-      const url = await createAuthUrl(sessionId, returnTo);
-      if (!url) return res.redirect(withYoutubeQuery(returnTo, 'not_configured'));
+      const url = await createAuthUrl(sessionId, returnTo, voltarComo);
+      if (!url) return res.redirect(destinoDe(voltarComo, 'not_configured', returnTo));
       res.redirect(302, url);
     } catch {
       console.error('[youtube-oauth] falha ao iniciar autorização');
-      res.redirect(withYoutubeQuery(returnTo, 'error'));
+      res.redirect(destinoDe(voltarComo, 'error', returnTo));
     }
   });
 
@@ -59,16 +87,19 @@ export function registerYoutubeRoutes(app: Express): void {
 
     const pending = await takePending(state);
     const returnTo = pending?.returnTo ?? fallback;
+    // Sem `pending` não há como saber se o cliente pediu a tela de conclusão, e
+    // o `fallback` é um app: é para lá que um state inválido deve voltar.
+    const voltarComo = pending?.voltarComo ?? 'app';
 
     if (errorParam === 'access_denied') {
-      return res.redirect(withYoutubeQuery(returnTo, 'denied'));
+      return res.redirect(destinoDe(voltarComo, 'denied', returnTo));
     }
     if (errorParam) {
       console.error('[youtube-oauth] Google recusou a autorização:', errorParam);
-      return res.redirect(withYoutubeQuery(returnTo, 'error'));
+      return res.redirect(destinoDe(voltarComo, 'error', returnTo));
     }
     if (!pending || !code) {
-      return res.redirect(withYoutubeQuery(returnTo, 'error'));
+      return res.redirect(destinoDe(voltarComo, 'error', returnTo));
     }
 
     /*
@@ -107,12 +138,14 @@ export function registerYoutubeRoutes(app: Express): void {
         codeVerifier: pending.codeVerifier,
       });
       if (!result.ok) {
-        return res.redirect(withYoutubeQuery(returnTo, result.reason === 'denied' ? 'denied' : 'error'));
+        return res.redirect(
+          destinoDe(voltarComo, result.reason === 'denied' ? 'denied' : 'error', returnTo),
+        );
       }
-      res.redirect(withYoutubeQuery(returnTo, 'connected'));
+      res.redirect(destinoDe(voltarComo, 'connected', returnTo));
     } catch {
       console.error('[youtube-oauth] falha inesperada no callback');
-      res.redirect(withYoutubeQuery(returnTo, 'error'));
+      res.redirect(destinoDe(voltarComo, 'error', returnTo));
     }
   });
 

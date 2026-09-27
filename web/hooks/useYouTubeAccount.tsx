@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/router';
-import { comecarLogin } from '@/lib/desktop';
+import { isDesktop } from '@/lib/desktop';
 import {
   disconnectYoutube,
   fetchYoutubeStatus,
@@ -91,17 +91,17 @@ export function YoutubeAccountProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(() => {
     const returnTo = typeof window !== 'undefined' ? window.location.href : '/';
     /*
-     * `comecarLogin`, e não `location.assign` direto: no app desktop a
-     * navegação para fora é bloqueada e mandada para o navegador do sistema,
-     * que não tem o cookie de sessão. O callback voltaria sem ele, a conta seria
-     * gravada e rejeitada, e a pessoa voltaria para um app vazio depois de ter
-     * autorizado tudo. No navegador as duas são o mesmo `assign`.
+     * `voltar: 'pagina'` só no app desktop, e o motivo é o Google recusar
+     * autenticar dentro da janela do Electron. A autorização sai para o
+     * navegador do sistema, e é ele que recebe o callback: sem pedir a tela de
+     * conclusão, o navegador abriria uma segunda cópia do Juntos — que não é a
+     * janela em que a pessoa está — e ela continuaria sem conta nenhuma até
+     * clicar lá de volta.
      *
-     * O `returnTo` é a URL atual, que no desktop é `http://localhost:3210`:
-     * é exatamente para onde o fluxo tem de voltar, porque é de onde a sessão
-     * foi criada.
+     * No navegador as duas coisas são a mesma navegação: o cookie viaja junto e
+     * a aba é a mesma aba. Então ele volta para o app como sempre.
      */
-    void comecarLogin(youtubeConnectUrl(returnTo));
+    window.location.assign(youtubeConnectUrl(returnTo, isDesktop() ? 'pagina' : undefined));
   }, []);
 
   const disconnect = useCallback(async () => {

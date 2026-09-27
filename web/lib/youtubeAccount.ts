@@ -7,8 +7,22 @@ export type YoutubeAccountStatus = {
   channelId?: string;
 };
 
-export function youtubeConnectUrl(returnTo: string): string {
-  return `${SERVER_URL}/api/youtube/oauth/start?returnTo=${encodeURIComponent(returnTo)}`;
+/**
+ * URL que começa o login do YouTube.
+ *
+ * `voltar` decide para onde o navegador vai quando o fluxo termina:
+ *
+ * - sem ele, o callback devolve a pessoa para `returnTo`, que é o app. É o
+ *   comportamento do navegador, e está certo lá.
+ * - `'pagina'`, o callback mostra a tela de conclusão do servidor. É o que o
+ *   app desktop pede, porque o Google recusa autenticar dentro da janela do
+ *   Electron: a autorização sai para o navegador do sistema, e sem isso o
+ *   navegador abriria uma segunda cópia do Junto — que não é a janela em que a
+ *   pessoa está. A janela do desktop se atualiza quando recebe o foco.
+ */
+export function youtubeConnectUrl(returnTo: string, voltar?: 'pagina'): string {
+  const destino = `${SERVER_URL}/api/youtube/oauth/start?returnTo=${encodeURIComponent(returnTo)}`;
+  return voltar ? `${destino}&voltar=${voltar}` : destino;
 }
 
 export async function fetchYoutubeStatus(): Promise<YoutubeAccountStatus> {

@@ -73,25 +73,6 @@ export interface DesktopApi {
   isCapturing(): Promise<boolean>;
 
   /**
-   * Avisa que um login vai começar, para a janela poder sair do app durante o
-   * fluxo.
-   *
-   * O login do YouTube precisa acontecer **dentro** da janela, e não no
-   * navegador do sistema: o cookie de sessão vive no cookie jar do Electron, e
-   * o callback que volta do Google chega sem ele. Indo para o navegador, a
-   * conta era gravada no servidor e imediatamente rejeitada, e a pessoa voltava
-   * para um app sem conta nenhuma — depois de ter autorizado tudo.
-   *
-   * Só a origem é guardada, e só por dez minutos. `will-navigate` e
-   * `will-redirect` continuam barrando tudo o mais, então um link de convite ou
-   * os Termos seguem indo para o navegador do sistema como antes.
-   *
-   * Devolve `false` quando a URL não serve, e aí o fluxo vai para o navegador
-   * do sistema como sempre — o login continua possível, só não dentro da janela.
-   */
-  prepareLogin(url: string): Promise<boolean>;
-
-  /**
    * Copia texto para a área de transferência do sistema.
    *
    * Existe porque `navigator.clipboard.writeText` não funciona de forma
