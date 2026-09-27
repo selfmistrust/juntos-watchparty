@@ -16,6 +16,14 @@ interface Props {
   onReady: () => void;
   onEnded: () => void;
   /**
+   * Prefixo dos logs de diagnóstico, para distinguir as fontes.
+   *
+   * A origem importa: um `moov` no fim que não resolve com o Drive pode estar
+   * perfeitamente bem no mesmo arquivo servido pelo bucket, e sem o rótulo os
+   * dois casos viram um só.
+   */
+  rotulo?: string;
+  /**
    * O elemento não conseguiu carregar a mídia.
    *
    * Sem isto, uma src que responde erro produz o pior resultado possível: um
@@ -27,7 +35,63 @@ interface Props {
 }
 
 /**
- * O que o erro diz, na ordem em que costuma ajudar mais.
+ * O diagnóstico do player, em um lugar só.
+ *
+ * ## Por que cada evento
+ *
+ * Um `<video>` que não reproduz tem quatro causas que produzem exatamente a
+ * mesma tela preta, e cada uma é confirmada por um evento diferente:
+ *
+ * - **Range/streaming quebrado**: `error` com `MEDIA_ERR_SRC_NOT_SUPPORTED`, e
+ *   nenhum `loadedmetadata` — o player nunca chega a ter metadados.
+ * - **`moov` no fim do MP4**: `loadedmetadata` só chega depois de o player pedir
+ *   o fim do arquivo. Sem `Content-Range` na resposta a esse pedido, ele nunca
+ *   chega: é o sintoma que parece falta de banda e é falta de cabeçalho.
+ * - **Codec de vídeo incompatível**: `loadedmetadata` chega, e o que falha é
+ *   `canplay`; `canPlayType` do tipo do vídeo responde string vazia.
+ * - **Codec de áudio incompatível**: o mesmo de vídeo, mas `canPlayType` do
+ *   vídeo responde o tipo e o do áudio responde vazio.
+ *
+ * Registrar os seis eventos é o que separa os quatro. Sem isso, qualquer um
+ * deles vira "não toca", que não ajuda ninguém.
+ */
+function diagnosticarVideo(video: HTMLVideoElement, rotulo: string): void {
+  const estado = {
+    rotulo,
+    currentTime: video.currentTime,
+    duration: video.duration,
+    readyState: video.readyState,
+    networkState: video.networkState,
+    seeking: video.seeking,
+    videoWidth: video.videoWidth,
+    videoHeight: video.videoHeight,
+  };
+  console.info('[player] evento', estado);
+}
+
+function diagnosticarErro(video: HTMLVideoElement, rotulo: string): void {
+  /*
+   * `video.error.message` é quase sempre vazio no Chromium, então registrar
+   * apenas ele não diria nada. O código é o que separa as causas, e o
+   * `canPlayType` do tipo que o navegador deduziu é o que diz se o problema é
+   * de decodificação ou de transporte.
+   */
+  const tipo = video.canPlayType('video/mp4');
+  const tipoGenerico = video.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"');
+  console.error('[player] erro', {
+    rotulo,
+    codigo: video.error?.code,
+    mensagem: video.error?.message,
+    readyState: video.readyState,
+    networkState: video.networkState,
+    duration: video.duration,
+    videoWidth: video.videoWidth,
+    canPlayMp4: tipo,
+    canPlayAvcAAC: tipoGenerico,
+  });
+}
+
+/** O que o erro diz, na ordem em que costuma ajudar mais.
  *
  * O código do `MediaError` sozinho não distingue "sem permissão" de "formato
  * inválido", e o texto do Google às vezes ajuda. Por isso os dois são repassados
@@ -50,7 +114,7 @@ function descreverErro(video: HTMLVideoElement): string {
 }
 
 export const FilePlayer = forwardRef<PlayerHandle, Props>(function FilePlayer(
-  { src, stream, onReady, onEnded, onError },
+  { src, stream, onReady, onEnded, onError, rotulo = src },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -120,9 +184,32 @@ export const FilePlayer = forwardRef<PlayerHandle, Props>(function FilePlayer(
       // volume do sistema inteiro quando a pessoa ajusta o controle.
       src={stream ? undefined : src}
       playsInline
-      onLoadedMetadata={onReady}
+      onLoadedMetadata={() => {
+        diagnosticarVideo(videoRef.current as HTMLVideoElement, `${rotulo} loadedmetadata`);
+        onReady();
+      }}
+      onCanPlay={() => diagnosticarVideo(videoRef.current as HTMLVideoElement, `${rotulo} canplay`)}
+      onCanPlayThrough={() =>
+        diagnosticarVideo(videoRef.current as HTMLVideoElement, `${rotulo} canplaythrough`)
+      }
+      onWaiting={() => {
+        const v = videoRef.current as HTMLVideoElement;
+        // `waiting` em rajada é o sintoma do `moov` no fim: o player esvaziou o
+        // buffer esperando um trecho que não chega.
+        console.info('[player] waiting', { rotulo, readyState: v.readyState, currentTime: v.currentTime });
+      }}
+      onStalled={() =>
+        console.info('[player] stalled', {
+          rotulo,
+          readyState: videoRef.current?.readyState,
+          networkState: videoRef.current?.networkState,
+        })
+      }
       onError={() => {
-        if (videoRef.current) onError?.(descreverErro(videoRef.current));
+        if (videoRef.current) {
+          diagnosticarErro(videoRef.current, rotulo);
+          onError?.(descreverErro(videoRef.current));
+        }
       }}
       // Uma transmissão não "termina": o `MediaStream` segue até o dono
       // parar, e o fim real chega pelo evento `stream:stopped`. Ouvir `ended`

@@ -163,6 +163,7 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
       <FilePlayer
         ref={ref}
         src={urlDeMidia(fileId)}
+        rotulo="drive"
         onReady={onReady}
         onEnded={onEnded}
         /*

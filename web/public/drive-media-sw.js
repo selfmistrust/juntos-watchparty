@@ -319,13 +319,49 @@ async function repassar(pedido, fileId) {
     return new Response(texto, { status: resposta.status });
   }
 
+  /*
+   * Os cabeçalhos que o player precisa, e a ordem deles não importa — o que
+   * importa é a lista.
+   *
+   * `Content-Range` é o crítico: sem ele num `206`, o navegador não sabe qual
+   * parte do arquivo recebeu e trata a resposta como incompleta, o que derruba
+   * a reprodução. `ETag` e `Last-Modified` são repassados porque o player os usa
+   * para validar uma nova requisição de intervalo, e inventar um `ETag` falso
+   * faria o navegador recusar um intervalo válido.
+   */
+  const CABECALHOS_REPASSADOS = [
+    'content-type',
+    'content-length',
+    'content-range',
+    'accept-ranges',
+    'etag',
+    'last-modified',
+  ];
   const repassados = new Headers();
-  for (const nome of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+  for (const nome of CABECALHOS_REPASSADOS) {
     const valor = resposta.headers.get(nome);
     if (valor) repassados.set(nome, valor);
   }
-  repassados.set('Accept-Ranges', 'bytes');
+  /*
+   * `Accept-Ranges` só é afirmado quando o Google o disse. Declarar `bytes` em
+   * uma resposta que não tem `Content-Range` é anunciar um contrato que a
+   * resposta não cumpre, e é assim que o player descobre que o byte pedido não
+   * chegou.
+   */
+  if (!repassados.has('accept-ranges') && resposta.headers.get('content-range')) {
+    repassados.set('Accept-Ranges', 'bytes');
+  }
   repassados.set('Cache-Control', 'no-store');
+
+  /*
+   * Um `206` sem `Content-Range` é um contrato quebrado, e é a falha exata que
+   * impede o seek: o player recebe 200 bytes e não sabe onde eles estão no
+   * arquivo. O log existe para transformar um sintoma ("não reproduz") em um
+   * dado ("o Google devolveu 206 sem Content-Range").
+   */
+  if (resposta.status === 206 && !repassados.has('content-range')) {
+    console.error('[drive-sw] 206 sem Content-Range: o player não consegue posicionar o trecho');
+  }
 
   /*
    * O `content-type` é a prova de que o arquivo chegou inteiro. Sem ele — ou com
@@ -337,12 +373,37 @@ async function repassar(pedido, fileId) {
   if (!tipo.startsWith('video/') && !tipo.startsWith('audio/')) {
     await registrarFalha({ motivo: 'tipo_invalido', status: resposta.status, detalhe: tipo });
   }
+
+  /*
+   * O log de ida é o que separa "o Google não mandou" de "a gente não repassou".
+   * São dois defeitos com o mesmo sintoma — o player não consegue posicionar o
+   * trecho — e consertos opostos: um é do arquivo no Drive, o outro é deste
+   * proxy. Registrar o que saiu do Google e o que está saindo daqui torna a
+   * diferença visível em uma linha.
+   */
+  const devolvidos = {};
+  for (const nome of CABECALHOS_REPASSADOS) {
+    devolvidos[nome] = repassados.get(nome);
+  }
   console.info('[drive-sw] devolvendo ao player', {
+    pedido: range ?? '(sem Range)',
     status: resposta.status,
-    contentType: tipo,
-    contentRange: resposta.headers.get('content-range'),
+    doGoogle: {
+      contentRange: resposta.headers.get('content-range'),
+      contentLength: resposta.headers.get('content-length'),
+      contentType: resposta.headers.get('content-type'),
+    },
+    devolvido: devolvidos,
   });
 
+  /*
+   * O corpo vai como stream, sem `arrayBuffer()` nem `blob()`.
+   *
+   * Um filme de 700 MB em memória seria 700 MB de RAM por espectador, e é
+   * exatamente o que o proxy client-side veio evitar. `response.body` é um
+   * ReadableStream: o `206` chega ao player conforme o Google entrega, e o
+   * primeiro bloco toca antes de o arquivo inteiro passar.
+   */
   return new Response(resposta.body, {
     status: resposta.status,
     statusText: resposta.statusText,
