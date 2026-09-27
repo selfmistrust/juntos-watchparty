@@ -3,9 +3,10 @@ import { SERVER_URL } from '@/lib/socket';
 /**
  * Cliente do Google Drive.
  *
- * O servidor fornece a conexão OAuth e o access token temporário. Metadados e
- * bytes são obtidos diretamente da Drive API pelo cliente que escolheu o vídeo
- * (navegador ou renderer do desktop) e a cópia vai direto para o bucket da sala.
+ * O servidor cuida da conexão OAuth e do token. O cliente só escolhe o
+ * arquivo e pede a concessão de reprodução: a partir daí o vídeo é servido por
+ * `/api/drive/stream/<token>`, que encaminha o `Range` do `<video>` para o
+ * Drive. Nenhum byte do arquivo passa pela memória do navegador.
  */
 
 export type DriveAccountStatus = {
@@ -13,15 +14,14 @@ export type DriveAccountStatus = {
   connected: boolean;
 };
 
-export type DriveVideo = {
-  id: string;
+/** O que o servidor devolve ao pedir a reprodução de um arquivo. */
+export type DriveStreamTarget = {
+  /** Caminho da rota; a URL absoluta é `SERVER_URL` + este caminho. */
+  path: string;
   name: string;
-  mimeType: string;
+  duration?: number;
   size?: number;
-  durationMs?: number;
 };
-
-const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
 
 export const GOOGLE_PICKER_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_PICKER_API_KEY ?? '';
 export const GOOGLE_CLOUD_PROJECT_NUMBER = process.env.NEXT_PUBLIC_GOOGLE_CLOUD_PROJECT_NUMBER ?? '';
@@ -81,51 +81,26 @@ export async function fetchDrivePickerToken(signal?: AbortSignal): Promise<strin
   return data.accessToken;
 }
 
-export async function fetchDriveVideo(fileId: string, accessToken: string, signal?: AbortSignal): Promise<DriveVideo> {
-  if (!/^[A-Za-z0-9_-]{10,256}$/.test(fileId)) throw new Error('bad_file');
-  const url = new URL(`${DRIVE_FILES}/${encodeURIComponent(fileId)}`);
-  url.searchParams.set('fields', 'id,name,mimeType,size,videoMediaMetadata(durationMillis)');
-  url.searchParams.set('supportsAllDrives', 'true');
-
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal });
+/**
+ * Pede ao servidor a concessão de reprodução de um arquivo escolhido.
+ *
+ * O servidor monta a URL do Drive a partir do `fileId` e devolve um token
+ * opaco; nada é baixado aqui. A URL que vai para a fila é `SERVER_URL` + path,
+ * e é ela que o `<video>` vai pedir por partes.
+ */
+export async function requestDriveStream(fileId: string, signal?: AbortSignal): Promise<DriveStreamTarget> {
+  const res = await fetch(`${SERVER_URL}/api/drive/stream-token`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileId }),
+    signal,
+  });
   if (!res.ok) {
-    if (res.status === 401) throw new Error('token_expired');
-    if (res.status === 404) throw new Error('not_found');
-    if (res.status === 403) throw new Error('drive_permission');
-    throw new Error('metadata_failed');
+    const data = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(data?.error ?? 'stream_failed');
   }
-
-  const file = (await res.json()) as {
-    id?: string;
-    name?: string;
-    mimeType?: string;
-    size?: string;
-    videoMediaMetadata?: { durationMillis?: string };
-  };
-  if (!file.mimeType?.startsWith('video/')) throw new Error('not_a_video');
-  return {
-    id: file.id ?? fileId,
-    name: file.name || 'Vídeo',
-    mimeType: file.mimeType,
-    size: file.size ? Number(file.size) : undefined,
-    durationMs: file.videoMediaMetadata?.durationMillis
-      ? Number(file.videoMediaMetadata.durationMillis)
-      : undefined,
-  };
-}
-
-export async function downloadDriveVideo(fileId: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
-  if (!/^[A-Za-z0-9_-]{10,256}$/.test(fileId)) throw new Error('bad_file');
-  const url = new URL(`${DRIVE_FILES}/${encodeURIComponent(fileId)}`);
-  url.searchParams.set('alt', 'media');
-  url.searchParams.set('supportsAllDrives', 'true');
-
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal });
-  if (!res.ok) {
-    if (res.status === 401) throw new Error('token_expired');
-    if (res.status === 404) throw new Error('not_found');
-    if (res.status === 403) throw new Error('drive_permission');
-    throw new Error('download_failed');
-  }
-  return res;
+  const target = (await res.json()) as DriveStreamTarget;
+  if (!target?.path) throw new Error('stream_failed');
+  return target;
 }

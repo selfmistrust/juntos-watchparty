@@ -1,5 +1,6 @@
 import { redis } from './redis.js';
 import { decryptSecret, encryptSecret } from './secretBox.js';
+import { apagarConcessoesDaSessao } from './driveStream.js';
 import {
   GOOGLE_AUTH,
   GOOGLE_REVOKE,
@@ -393,5 +394,7 @@ async function revokeGoogleToken(token: string): Promise<void> {
 export async function revokeAndDelete(sessionId: string): Promise<void> {
   const record = await loadTokens(sessionId);
   await deleteTokens(sessionId);
+  // Desconectar precisa levar junto as reproduções que o token sustentava.
+  await apagarConcessoesDaSessao(sessionId);
   if (record) await revokeGoogleToken(record.refreshToken);
 }

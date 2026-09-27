@@ -209,10 +209,29 @@ Colar um link do YouTube continua funcionando sem OAuth.
 
 ### Google Drive (Picker + `drive.file`)
 
-A pessoa escolhe um vídeo no Google Picker; o navegador baixa esse arquivo e o copia para o bucket
-da sala. A playlist recebe `kind: 'file'`, então todos assistem pela mesma URL sem precisar de
-permissão no Drive. Os bytes nunca passam pelo servidor. O app não enumera o Drive: o escopo
-`drive.file` permite trabalhar apenas com arquivos que a pessoa selecionou ou abriu com o app.
+A pessoa escolhe um vídeo no Google Picker e ele entra na fila **na hora**, sem esperar o arquivo
+inteiro baixar. A faixa aponta para `/api/drive/stream/<token>`, que repassa o `Range` do `<video>`
+para a Drive API e devolve os bytes por partes: a reprodução começa no primeiro bloco que chega, o
+seek funciona, e a sincronização da sala continua operando como em qualquer outro arquivo. O escopo
+`drive.file` permite trabalhar apenas com arquivos que a pessoa selecionou, e o app não enumera o
+Drive.
+
+Isso inverte uma decisão anterior do projeto, e vale registrar o motivo e o preço. Antes, o arquivo
+era baixado inteiro do Drive e subido para o bucket antes de a faixa existir: duas transferências
+sequenciais pela mesma conexão de quem escolheu, e um pico de memória no navegador de cerca de duas
+vezes o tamanho do arquivo — 2,2 GB viravam alguns gigabytes de RAM. O preço de hoje é que **o vídeo
+passa pelo servidor**, uma vez por espectador. Numa sala com quatro pessoas, um filme de 2 GB são
+~8 GB de saída do Render. O bucket continua sendo o caminho do envio comum, e não guarda cópia do
+que veio do Drive.
+
+O token do Drive pertence a quem escolheu o arquivo, e é ele que serve o stream para a sala toda.
+Se essa pessoa desconectar a conta ou revogar o acesso, a faixa para de funcionar — e a concessão é
+apagada junto. Não existe cópia de segurança no bucket para esse caso.
+
+O `<video>` é servido por um token opaco de 128 bits, criado pelo servidor, e não por `Origin`:
+uma requisição de elemento de mídia não manda esse cabeçalho. O token morre quando o item sai da
+fila, quando a conta é desconectada e no vencimento da sala — garantias que a URL pública do bucket,
+usada no envio comum, não tem.
 
 No [Google Cloud Console](https://console.cloud.google.com/):
 
@@ -241,21 +260,26 @@ No [Google Cloud Console](https://console.cloud.google.com/):
 recusa o Picker dentro da janela do Electron. O app abre a autorização com `trigger_onepick`, o
 Google devolve o ID do vídeo escolhido no callback, e o servidor guarda esse ID **vinculado à sessão
 do app** — o navegador externo não tem o cookie da sessão, e sem esse vínculo a seleção não
-alcançaria o app. A cópia do arquivo continua no app, com barra de progresso. Não há chave de API
-para configurar no desktop, e o `returnTo` do OAuth não importa: o callback mostra uma página de
-conclusão em vez de abrir uma segunda cópia do Juntos no navegador.
+alcançaria o app. A reprodução continua na janela do app, com o vídeo vindo do servidor. Não há
+chave de API para configurar no desktop, e o `returnTo` do OAuth não importa: o callback mostra uma
+página de conclusão em vez de abrir uma segunda cópia do Juntos no navegador.
 
 `drive.file` é um escopo não sensível, o que normalmente evita a verificação de escopos sensíveis
-exigida por `drive.readonly`; isso não dispensa seguir os requisitos de publicação do Google. Contas
-que já autorizaram a versão antiga precisam reconectar: os tokens locais antigos com acesso amplo
-são descartados, e o novo consentimento solicita somente `drive.file`.
+exigida por `drive.readonly`; isso não dispensa seguir os requisitos de publicação do Google, e a
+política de privacidade precisa dizer que o vídeo é transmitido pelo servidor. Contas que já
+autorizaram a versão antiga precisam reconectar: os tokens locais antigos com acesso amplo são
+descartados, e o novo consentimento solicita somente `drive.file`.
 
-**Custo de cada cópia:** o arquivo ocupa espaço no bucket até a limpeza periódica, e o download
-conta contra a cota da Google Drive API. O painel mostra o progresso do download e do envio.
+**Custo:** banda do servidor por espectador, e cota da Google Drive API por reprodução. O
+`MAX_UPLOAD_MB` do servidor deixou de valer para o Drive — ele limita o envio de arquivo do
+dispositivo, não a reprodução.
 
 **Testes do fluxo:** `cd server && npm run test:drive`. A suíte sobe um servidor de salas real em
 uma porta efêmera, com Redis e token do Google simulados, e cobre o vínculo da seleção à sessão do
-app, o `state` de uso único, o PKCE, o cancelamento nos dois lados e a expiração.
+app, o `state` de uso único, o PKCE, o cancelamento nos dois lados, a expiração, e a rota de
+reprodução: encaminhamento de `Range`, resposta `206`, recusa de intervalo múltiplo, morte da
+concessão ao desconectar, e a garantia de que a URL do Drive é montada pelo servidor a partir do id
+validado.
 
 ### Busca no YouTube (chave de API, opcional)
 

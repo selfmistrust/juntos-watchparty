@@ -51,6 +51,7 @@ import {
   type SystemEventKind,
 } from './types.js';
 import { createUploadTarget, deleteUploadIfOwned, isAllowedVideoFile, MAX_UPLOAD_BYTES } from './storage.js';
+import { apagarStream, extrairTokenDeSrc, lerStream } from './driveStream.js';
 import { redis } from './redis.js';
 
 /** Resposta do handler `upload:requestToken`, entregue via callback de ack. */
@@ -290,6 +291,20 @@ export function registerSocketHandlers(io: Server) {
     socket.on('playlist:add', async (item: Omit<PlaylistItem, 'id' | 'addedBy'>) => {
       await editar(async (room) => {
         const user = room.users[socket.id];
+        /*
+         * Um `src` que aponta para a rota de stream do Drive precisa ser um
+         * token que o servidor emitiu. Sem esta checagem, o `playlist:add`
+         * (que hoje aceita qualquer URL) viraria um jeito de mandar o servidor
+         * buscar um endereço qualquer em nome de uma sala — o proxy viraria
+         * aberto. O caminho da requisição é montado no servidor, a partir do
+         * `fileId` que ele validou, então aqui só interessa saber que o token
+         * existe.
+         */
+        const streamToken = extrairTokenDeSrc(item.src);
+        if (streamToken && !(await lerStream(streamToken))) {
+          socket.emit('room:denied', 'Esse vídeo do Drive não está mais disponível.');
+          return;
+        }
         const entry: PlaylistItem = {
           ...item,
           id: newId(),
@@ -355,6 +370,11 @@ export function registerSocketHandlers(io: Server) {
         // A remoção no bucket é uma ida à API externa e não toca na sala: fazer
         // isso dentro do lock seguraria a fila da sala pela latência do S3.
         if (removed?.kind === 'file') void deleteUploadIfOwned(removed.src);
+        // A concessão de stream morre junto com o item. Sem isso, um link de
+        // Drive continuaria servindo o arquivo de quem escolheu mesmo depois
+        // de tirá-lo da fila — o equivalente no R2 é uma URL pública do bucket.
+        const streamToken = extrairTokenDeSrc(removed?.src);
+        if (streamToken) void apagarStream(streamToken);
         if (index < room.currentIndex) room.currentIndex -= 1;
         else if (index === room.currentIndex) {
           room.currentIndex = Math.min(room.currentIndex, room.playlist.length - 1);

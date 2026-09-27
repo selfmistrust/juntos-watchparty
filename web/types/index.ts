@@ -11,6 +11,14 @@ export type MediaKind = 'youtube' | 'file' | 'stream';
 export interface PlaylistItem {
   id: string;
   kind: MediaKind;
+  /**
+   * videoId do YouTube, URL direta de um .mp4, ou vazio em `stream`.
+   *
+   * Também pode ser a rota `/api/drive/stream/<token>`, para um arquivo escolhido
+   * no Drive de quem adicionou. O `kind` continua `file` porque o player trata
+   * igual, com posição seekável e `Range`; muda de onde os bytes vêm, não como
+   * se reproduz.
+   */
   src: string;
   title: string;
   thumbnail?: string;

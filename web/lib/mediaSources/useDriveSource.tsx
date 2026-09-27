@@ -20,15 +20,17 @@ import { READY, checking } from './types';
  *
  * ## O que a fonte realmente faz
  *
- * O card não "toca do Drive". Ele abre um seletor de arquivos, e o que a pessoa
- * escolhe é **copiado** para o bucket da sala. A fonte nunca vira item de
- * playlist com `kind: 'drive'` — não existe esse `kind`, e não precisa: a faixa
- * entra como `kind: 'file'`, igual a um envio comum, e o player não ganha um
- * modo novo.
+ * O card não "toca do Drive" e também não copia nada. O que a pessoa escolhe no
+ * Picker entra na fila como `kind: 'file'`, com o `src` apontando para a rota de
+ * stream do servidor, e o `<video>` pede os bytes por partes. Não existe um
+ * `kind` novo, e o player não ganha um modo novo.
  *
- * Isso é o que resolve o problema de fundo de um arquivo privado: se a faixa
- * apontasse para o Drive, só quem escolheu conseguiria tocar. Depois da cópia,
- * todo mundo assiste da mesma URL, sem token e sem permissão de compartilhamento.
+ * ## O preço disso
+ *
+ * O token do Drive é de quem escolheu, e é ele que serve o stream para a sala
+ * toda. Se essa pessoa desconectar, a faixa para. Em troca, ninguém espera o
+ * arquivo baixar: a reprodução começa no primeiro bloco que chega, e.seek
+ * funciona.
  */
 export function useDriveSource(): {
   provider: MediaSourceProvider;
@@ -67,7 +69,7 @@ export function useDriveSource(): {
       description: !conta.configured
         ? 'O Google Drive ainda não está configurado para este app.'
         : conta.connected
-          ? 'Escolha um vídeo no Picker para copiá-lo para a sala.'
+          ? 'Escolha um vídeo no Picker e a sala assiste na hora.'
           : 'Conecte sua conta para escolher um vídeo do Drive.',
       /*
        * Nunca fica realmente indisponível. Sem conta, abrir o seletor mostra o

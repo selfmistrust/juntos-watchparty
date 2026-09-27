@@ -1,19 +1,15 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { CloudArrowDown, FilmStrip, WarningCircle, X } from '@phosphor-icons/react';
+import { FilmStrip, WarningCircle, X } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/Button';
 import { Portal } from '@/components/ui/Portal';
 import { SourceAccountRow } from '@/components/media/SourceAccountRow';
-import {
-  downloadDriveVideo,
-  fetchDrivePickerToken,
-  fetchDriveVideo,
-  type DriveVideo,
-} from '@/lib/driveAccount';
+import { fetchDrivePickerToken, requestDriveStream } from '@/lib/driveAccount';
 import { escolherVideoNoGoogleDrive } from '@/lib/googlePicker';
 import { escolherVideoNoNavegador } from '@/lib/driveBrowserPicker';
 import { isDesktop } from '@/lib/desktop';
+import { SERVER_URL } from '@/lib/socket';
 import type { MediaSourceAccount, MediaSourceContext } from '@/lib/mediaSources';
 
 interface Props {
@@ -24,7 +20,7 @@ interface Props {
   refreshAccount: () => Promise<void>;
 }
 
-type Fase = 'picker' | 'navegador' | 'metadata' | 'baixando' | 'enviando' | null;
+type Fase = 'picker' | 'navegador' | 'concedendo' | null;
 
 const MENSAGENS_ERRO: Record<string, string> = {
   browser_open_failed: 'Não foi possível abrir o navegador. Tente de novo.',
@@ -36,45 +32,37 @@ const MENSAGENS_ERRO: Record<string, string> = {
   picker_not_configured: 'O Google Picker ainda não está configurado para este app.',
   picker_load_failed: 'Não foi possível abrir o Google Picker. Verifique sua conexão e tente de novo.',
   not_found: 'Esse vídeo não está mais disponível no seu Drive.',
+  bad_file: 'Esse arquivo do Drive não tem um id válido.',
   not_a_video: 'Escolha um arquivo de vídeo.',
-  token_expired: 'A autorização do Drive expirou. Conecte novamente e selecione o vídeo.',
-  drive_permission: 'Não foi possível acessar esse arquivo. Reabra o Picker e escolha outro vídeo.',
+  no_download: 'O dono desse arquivo bloqueou o download. Escolha outro vídeo.',
+  drive_unreachable: 'O Google Drive não respondeu. Tente de novo.',
+  stream_failed: 'Não foi possível liberar esse vídeo para a sala. Tente de novo.',
 };
 
-function tamanhoLegivel(bytes?: number): string {
-  if (!bytes || bytes <= 0) return '';
-  const mb = bytes / (1024 * 1024);
-  if (mb < 1024) return `${mb.toFixed(0)} MB`;
-  return `${(mb / 1024).toFixed(1)} GB`;
-}
-
-function duracaoLegivel(ms?: number): string {
-  if (!ms || ms <= 0) return '';
-  const total = Math.round(ms / 1000);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  return h > 0
-    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${m}:${String(s).padStart(2, '0')}`;
-}
-
-function comTimeout<T>(promise: Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>;
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('timeout')), 30_000);
-    }),
-  ]).finally(() => clearTimeout(timer!));
-}
-
-/** Escolhe um vídeo com o Google Picker e copia-o para o bucket da sala. */
+/**
+ * Escolhe um vídeo do Drive e o coloca na fila.
+ *
+ * ## Não há mais download aqui
+ *
+ * Este painel já baixava o arquivo inteiro do Drive e subia para o bucket antes
+ * de a faixa existir. Para um episódio isso era duas transferências
+ * sequenciais pela mesma conexão, e o pico de memória no navegador era de cerca
+ * de duas vezes o tamanho do arquivo — 2,2 GB viravam alguns gigabytes de RAM.
+ *
+ * Agora a única coisa que acontece depois da escolha é um POST pedindo a
+ * concessão de reprodução. O item entra na fila na hora, com um `src` que é a
+ * rota de stream, e o `<video>` pede os bytes por partes. Por isso não existe
+ * mais barra de progresso aqui: não há o que esperar.
+ *
+ * ## A autorização é de quem escolheu
+ *
+ * O token do Drive pertence à pessoa que selecionou o arquivo, e é ele que
+ * serve o stream para todo mundo. Se essa pessoa desconectar ou revogar, a
+ * faixa para de funcionar — é o preço de não copiar o vídeo para o bucket.
+ */
 export function DrivePickerPanel({ open, onClose, context, account, refreshAccount }: Props) {
   const [erro, setErro] = useState<string | null>(null);
-  const [video, setVideo] = useState<DriveVideo | null>(null);
   const [ocupado, setOcupado] = useState(false);
-  const [progresso, setProgresso] = useState(0);
   const [fase, setFase] = useState<Fase>(null);
   const operacao = useRef<AbortController | null>(null);
   const externo = isDesktop();
@@ -89,80 +77,12 @@ export function DrivePickerPanel({ open, onClose, context, account, refreshAccou
     onClose();
   };
 
-  const copiarParaASala = async (arquivo: DriveVideo, accessToken: string, signal: AbortSignal) => {
-    setVideo(arquivo);
-    setFase('baixando');
-    setProgresso(0);
-
-    const resposta = await comTimeout(downloadDriveVideo(arquivo.id, accessToken, signal));
-    const total = Number(resposta.headers.get('content-length') ?? arquivo.size ?? 0);
-    const corpo = await (async () => {
-      if (!resposta.body || !total) return await resposta.arrayBuffer();
-      const leitor = resposta.body.getReader();
-      const partes: Uint8Array[] = [];
-      let recebido = 0;
-      for (;;) {
-        const { done, value } = await leitor.read();
-        if (done) break;
-        if (value) {
-          partes.push(value);
-          recebido += value.byteLength;
-          setProgresso(Math.min(99, Math.round((recebido / total) * 100)));
-        }
-      }
-      return new Blob(partes as BlobPart[]).arrayBuffer();
-    })();
-    signal.throwIfAborted();
-    const arquivoLocal = new File([corpo], arquivo.name, { type: arquivo.mimeType });
-
-    setFase('enviando');
-    setProgresso(0);
-    const token = await context.requestUploadToken({
-      fileName: arquivo.name,
-      fileSize: arquivoLocal.size,
-      mimeType: arquivo.mimeType,
-    });
-    signal.throwIfAborted();
-    if (!token.ok) throw new Error(token.error);
-
-    await new Promise<void>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      const abortar = () => xhr.abort();
-      const concluir = (error?: Error) => {
-        signal.removeEventListener('abort', abortar);
-        if (error) reject(error);
-        else resolve();
-      };
-      xhr.open('PUT', token.uploadUrl);
-      xhr.setRequestHeader('Content-Type', token.contentType);
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) setProgresso(Math.round((event.loaded / event.total) * 100));
-      };
-      xhr.onload = () =>
-        xhr.status >= 200 && xhr.status < 300 ? concluir() : concluir(new Error('upload_failed'));
-      xhr.onerror = () => concluir(new Error('upload_failed'));
-      xhr.onabort = () => concluir(new DOMException('Envio cancelado', 'AbortError'));
-      signal.addEventListener('abort', abortar, { once: true });
-      xhr.send(arquivoLocal);
-    });
-
-    signal.throwIfAborted();
-    context.addToPlaylist({
-      kind: 'file',
-      src: token.publicUrl,
-      title: arquivo.name.replace(/\.[^./]+$/, '') || arquivo.name,
-      duration: arquivo.durationMs ? Math.round(arquivo.durationMs / 1000) : undefined,
-    });
-    onClose();
-  };
-
   const escolherVideo = async () => {
     if (operacao.current) return;
     const controller = new AbortController();
     operacao.current = controller;
     const { signal } = controller;
     setErro(null);
-    setVideo(null);
     setOcupado(true);
     setFase('picker');
     try {
@@ -171,34 +91,33 @@ export function DrivePickerPanel({ open, onClose, context, account, refreshAccou
         fileId = await escolherVideoNoNavegador(signal, () => setFase('navegador'));
         if (!signal.aborted) void refreshAccount();
       } else {
-        const pickerToken = await comTimeout(fetchDrivePickerToken(signal));
         // O prazo de rede não se aplica ao tempo que a pessoa leva para escolher.
+        const pickerToken = await fetchDrivePickerToken(signal);
         fileId = await escolherVideoNoGoogleDrive(pickerToken, signal);
       }
       if (!fileId || signal.aborted) return;
 
-      // Reconsulta o token depois da seleção para que uma sessão longa no Picker
-      // não deixe o download começar com um access token prestes a expirar.
-      setFase('metadata');
-      const accessToken = await comTimeout(fetchDrivePickerToken(signal));
-      const arquivo = await comTimeout(fetchDriveVideo(fileId, accessToken, signal));
+      setFase('concedendo');
+      const target = await requestDriveStream(fileId, signal);
       signal.throwIfAborted();
-      await copiarParaASala(arquivo, accessToken, signal);
+      context.addToPlaylist({
+        kind: 'file',
+        src: `${SERVER_URL}${target.path}`,
+        title: target.name.replace(/\.[^./]+$/, '') || target.name,
+        duration: target.duration,
+      });
+      onClose();
     } catch (e) {
       if (signal.aborted) return;
       const motivo = e instanceof Error ? e.message : '';
       if (motivo === 'not_connected') void refreshAccount();
-      setErro(
-        MENSAGENS_ERRO[motivo] ?? 'Não foi possível copiar o vídeo do Drive. Tente de novo.',
-      );
+      setErro(MENSAGENS_ERRO[motivo] ?? 'Não foi possível escolher esse vídeo do Drive.');
     } finally {
       controller.abort();
       if (operacao.current === controller) {
         operacao.current = null;
         setOcupado(false);
         setFase(null);
-        setVideo(null);
-        setProgresso(0);
       }
     }
   };
@@ -208,13 +127,8 @@ export function DrivePickerPanel({ open, onClose, context, account, refreshAccou
   const rotulos: Record<Exclude<Fase, null>, string> = {
     picker: externo ? 'Abrindo navegador' : 'Abrindo Google Picker',
     navegador: 'Aguardando seleção no navegador',
-    metadata: 'Preparando o vídeo',
-    baixando: 'Baixando do Drive',
-    enviando: 'Enviando para a sala',
+    concedendo: 'Liberando o vídeo para a sala',
   };
-  const metadados = video && [duracaoLegivel(video.durationMs), tamanhoLegivel(video.size)]
-    .filter(Boolean)
-    .join(' · ');
 
   return (
     <Portal>
@@ -230,12 +144,12 @@ export function DrivePickerPanel({ open, onClose, context, account, refreshAccou
         <div className="animate-fade-up flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl border border-hairline bg-surface shadow-lift sm:rounded-2xl">
           <div className="flex items-center gap-3 border-b border-hairline p-3">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-black/25 text-ink-faint">
-              {ocupado ? <CloudArrowDown size={18} className="animate-pulse text-accent" /> : <FilmStrip size={18} />}
+              <FilmStrip size={18} />
             </span>
             <div className="min-w-0 flex-1">
               <h2 className="text-sm font-medium text-ink">Google Drive</h2>
               <p className="text-2xs leading-relaxed text-ink-faint">
-                Selecione um vídeo; ele será copiado para a sala.
+                Selecione um vídeo; a sala começa a assistir na hora.
               </p>
             </div>
             <button
@@ -271,30 +185,16 @@ export function DrivePickerPanel({ open, onClose, context, account, refreshAccou
 
             {ocupado && (
               <div className="mt-5 rounded-xl border border-hairline bg-raised/60 p-3">
-                <p className="truncate text-sm text-ink">{video?.name ?? rotulos[fase ?? 'picker']}</p>
-                {metadados && <p className="mt-0.5 text-2xs text-ink-faint">{metadados}</p>}
+                <p role="status" className="text-sm text-ink">{rotulos[fase ?? 'picker']}</p>
                 {fase === 'navegador' && (
                   <>
-                    <p role="status" className="mt-2 text-2xs leading-relaxed text-ink-faint">
-                      Escolha o vídeo na aba do Google e volte para o Juntos. A cópia continuará aqui.
-                      Se fechar a aba, cancele esta seleção para tentar novamente.
+                    <p className="mt-2 text-2xs leading-relaxed text-ink-faint">
+                      Escolha o vídeo na aba do Google e volte para o Juntos. Se fechar a aba, cancele
+                      esta seleção para tentar novamente.
                     </p>
                     <Button size="sm" variant="outline" className="mt-3" onClick={() => operacao.current?.abort()}>
                       Cancelar seleção
                     </Button>
-                  </>
-                )}
-                {(fase === 'baixando' || fase === 'enviando') && (
-                  <>
-                    <p className="mt-2 text-2xs text-accent">
-                      {fase ? rotulos[fase] : 'Trabalhando'} — {progresso}%
-                    </p>
-                    <span className="mt-1 block h-1 overflow-hidden rounded-full bg-hover">
-                      <span
-                        className="block h-full rounded-full bg-accent transition-[width] duration-200"
-                        style={{ width: `${progresso}%` }}
-                      />
-                    </span>
                   </>
                 )}
               </div>
@@ -310,8 +210,9 @@ export function DrivePickerPanel({ open, onClose, context, account, refreshAccou
           </div>
 
           <p className="border-t border-hairline px-4 py-2.5 text-2xs leading-relaxed text-ink-faint">
-            O app só acessa arquivos escolhidos no Picker. O vídeo é copiado para o bucket da sala;
-            os outros participantes não precisam de acesso ao seu Drive.
+            O vídeo é reproduzido direto do seu Drive, por partes, sem esperar o arquivo inteiro
+            baixar. O app só acessa o arquivo escolhido no Picker — mas ele é lido pela conta que
+            conectou, então desconectar essa conta interrompe a faixa.
           </p>
         </div>
       </div>

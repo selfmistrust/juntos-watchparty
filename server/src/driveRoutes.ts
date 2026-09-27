@@ -24,6 +24,34 @@ import {
   type DrivePickerResult,
 } from './driveOAuth.js';
 
+import {
+  apagarStream,
+  abrirArquivo,
+  corpoComoStream,
+  criarStream,
+  extrairTokenDeSrc,
+  lerStream,
+  rangeDe,
+  repassarCabecalhos,
+  type DriveStreamFailure,
+} from './driveStream.js';
+
+/** Motivo de recusa virado em resposta HTTP, para o painel saber o que dizer. */
+function motivoDe(reason: DriveStreamFailure): { http: number; error: string } {
+  switch (reason) {
+    case 'not_connected':
+      return { http: 401, error: 'not_connected' };
+    case 'bad_file':
+      return { http: 400, error: 'bad_file' };
+    case 'not_a_video':
+      return { http: 422, error: 'not_a_video' };
+    case 'no_download':
+      return { http: 422, error: 'no_download' };
+    default:
+      return { http: 502, error: 'drive_unreachable' };
+  }
+}
+
 function jsonError(res: Response, http: number, error: string) {
   res.status(http).json({ error });
 }
@@ -207,6 +235,93 @@ export function registerDriveRoutes(app: Express): void {
     } catch {
       jsonError(res, 500, 'token_unavailable');
     }
+  });
+
+  /**
+   * Concede a reprodução de um arquivo escolhido no Picker.
+   *
+   * O `fileId` vem do cliente porque foi a pessoa que escolheu, mas é validado
+   * contra a concessão dela: sem Drive conectado, ou para um id que não é
+   * vídeo, a resposta é um motivo — nunca uma URL. O `path` volta relativo de
+   * propósito, para o cliente compor com o `SERVER_URL` que ele já tem, tanto
+   * no navegador quanto no app desktop.
+   */
+  app.post('/api/drive/stream-token', async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
+    const sessionId = readSessionId(req);
+    if (!sessionId) return jsonError(res, 401, 'no_session');
+    try {
+      const fileId = typeof req.body?.fileId === 'string' ? req.body.fileId : '';
+      const result = await criarStream(sessionId, fileId);
+      if (!result.ok) {
+        const { http, error } = motivoDe(result.reason);
+        return jsonError(res, http, error);
+      }
+      res.json(result.target);
+    } catch (err) {
+      console.error('[drive-stream] falha ao conceder reprodução', err);
+      jsonError(res, 500, 'stream_token_failed');
+    }
+  });
+
+  /**
+   * A mídia em si: encaminha o `Range` do `<video>` para o Drive e repassa os
+   * bytes, sem nunca juntar o arquivo inteiro em memória.
+   *
+   * Duas coisas que não são óbvias:
+   *
+   * 1. **Sem `isTrustedOrigin`.** Uma requisição de elemento de mídia não manda
+   *    `Origin`, então a guarda de origem rejeitaria toda reprodução. A
+   *    autorização aqui é o token de 128 bits do `src` — posse do link, como a
+   *    rota de upload já é. Quem quiser fechar isso mais é verificar a sessão
+   *    do cookie, mas ela não prova estar na sala: todo visitante tem uma.
+   *
+   * 2. **O abort acompanha o cliente.** Um espectador que sai no meio, ou um
+   *    `seek` que descarta a requisição anterior, fecha a leitura do Drive.
+   *    Sem isso, o processo segura streams de um público que já foi embora.
+   */
+  app.get('/api/drive/stream/:token', async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    const grant = await lerStream(String(req.params.token ?? ''));
+    if (!grant) return jsonError(res, 404, 'not_found');
+
+    const token = await getValidAccessToken(grant.sessionId);
+    if (!token.ok) {
+      // A concessão da pessoa pode ter sido revogada depois que o item entrou
+      // na fila. Sem token não há stream, e o bucket não tem cópia deste Drive.
+      return jsonError(res, token.reason === 'not_connected' ? 404 : 502, token.reason);
+    }
+
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
+
+    // `Response` aqui é o do Express, então o tipo da resposta do Drive vem do
+    // retorno da função — nomeá-lo importaria o objeto errado.
+    let upstream: Awaited<ReturnType<typeof abrirArquivo>>;
+    try {
+      upstream = await abrirArquivo(grant, rangeDe(req.headers.range), token.accessToken, controller.signal);
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      console.error('[drive-stream] falha ao abrir o arquivo no Drive', err);
+      return jsonError(res, 502, 'drive_unreachable');
+    }
+
+    // Um 4xx do Drive vira status nosso, sem o corpo: a página de erro do Google
+    // não interessa a um `<video>` e só gastaria banda.
+    if (!upstream.ok) {
+      await upstream.body?.cancel().catch(() => {});
+      return jsonError(res, upstream.status === 404 ? 404 : 502, upstream.status === 404 ? 'not_found' : 'drive_unreachable');
+    }
+
+    repassarCabecalhos(upstream, res);
+    res.status(upstream.status);
+    if (!upstream.body) return res.end();
+
+    // `pipe` sem fim: o Node aplica backpressure, então a memória do processo
+    // não cresce com o tamanho do vídeo, e o spectator lento segura o stream
+    // em vez de acelerar o download do Drive.
+    corpoComoStream(upstream).on('error', () => res.destroy()).pipe(res);
   });
 
   app.get('/api/drive/oauth/concluido', (req, res) => {

@@ -12,19 +12,20 @@ servidor de salas e o mesmo contrato de socket.
 | Áudio do sistema na captura | impossível (`getDisplayMedia` só dá microfone) | `loopback`, com o áudio da máquina inteira |
 | Transmitir tela para a sala | o navegador entrega o fluxo só para a própria aba | WebRTC um-para-muitos |
 | Autoplay do vídeo da fila | bloqueado sem gesto | liberado |
-| Escolher vídeo no Drive | Picker dentro da página | Picker no navegador do sistema, e a cópia volta para a janela |
+| Escolher vídeo no Drive | Picker dentro da página | Picker no navegador do sistema, e a reprodução vem do servidor |
 | Origem | a da hospedagem | `http://localhost:3210`, fixa |
 
 O motivo de o servidor de salas continuar intocado é que ele é multiusuário: a
 sincronização entre pessoas é dele. O Electron cuida só da janela.
 
-A linha do Drive tem uma consequência prática: **o app não precisa da chave da
-Google Picker API**. O seletor é do Google e roda no navegador do sistema, então
-só o navegador e o front na web usam o Picker dentro da página. No desktop, o
-Google devolve o ID do vídeo escolhido no callback, o servidor de salas guarda
-esse ID vinculado à sessão do app, e a janela continua a cópia com a barra de
-progresso. Como o Picker externo exige `prompt=consent`, cada escolha mostra a
-tela de autorização do Google uma vez.
+A linha do Drive tem duas consequências práticas. **O app não precisa da chave
+da Google Picker API**: o seletor é do Google e roda no navegador do sistema,
+então só o navegador e o front na web usam o Picker dentro da página. No
+desktop, o Google devolve o ID do vídeo escolhido no callback, o servidor de
+salas guarda esse ID vinculado à sessão do app, e a faixa entra na fila com a
+rota de stream — a janela não copia mais nada para o bucket, e a reprodução
+vai do servidor em partes. Como o Picker externo exige `prompt=consent`, cada
+escolha mostra a tela de autorização do Google uma vez.
 
 ## Antes de rodar: uma mudança obrigatória no servidor
 

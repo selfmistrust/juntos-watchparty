@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/Button';
 import Link from 'next/link';
 
 export default function PrivacyPolicy() {
-  const lastUpdated = '24 de setembro de 2026';
+  const lastUpdated = '27 de setembro de 2026';
 
   return (
     <>
@@ -20,7 +20,7 @@ export default function PrivacyPolicy() {
             Política de Privacidade
           </h1>
           <p className="mt-3 text-sm text-ink-muted">
-            Última atualização: <time dateTime="2026-09-24">{lastUpdated}</time>
+            Última atualização: <time dateTime="2026-09-27">{lastUpdated}</time>
           </p>
         </header>
 
@@ -72,7 +72,7 @@ export default function PrivacyPolicy() {
                   <ul className="mt-2 list-disc list-inside text-sm text-ink-muted space-y-1">
                     <li>Mensagens de chat (texto, GIFs, imagens comprimidas)</li>
                     <li>Eventos de sincronização (play, pause, seek)</li>
-                    <li>Itens da fila (links YouTube, arquivos .mp4)</li>
+                    <li>Itens da fila (links do YouTube, arquivos enviados e vídeos escolhidos no Google Drive)</li>
                     <li>Reações e sons disparados durante a sessão</li>
                   </ul>
                 </div>
@@ -88,6 +88,56 @@ export default function PrivacyPolicy() {
                     <li>Nunca enviados ao navegador; usados apenas no backend para buscas</li>
                     <li>Revogados e excluídos ao clicar em &ldquo;Desconectar&rdquo;</li>
                   </ul>
+                </div>
+              </div>
+
+              {/*
+                O Drive é o caso mais delicado desta política, e por isso tem um
+                bloco próprio. Duas coisas precisam ficar explícitas: o app só
+                alcança os arquivos que a pessoa escolheu, e o conteúdo do
+                vídeo passa pelo nosso servidor para chegar aos participantes da
+                sala. A segunda é a que mudou nesta atualização.
+              */}
+              <div className="flex gap-3 p-4 rounded-xl border border-hairline bg-raised/60">
+                <Lock size={22} weight="fill" className="mt-1 shrink-0 text-accent" />
+                <div>
+                  <h3 className="font-medium text-ink">Google Drive (opcional, por usuário)</h3>
+                  <ul className="mt-2 list-disc list-inside text-sm text-ink-muted space-y-1">
+                    <li>
+                      Access token e refresh token do Google com o escopo restrito
+                      {' '}<code className="font-mono text-xs bg-hover px-1 rounded">drive.file</code>, que permite ao
+                      juntos acessar <strong>somente os arquivos que você selecionar</strong> no seletor do Google.
+                      Não pedimos e não temos acesso ao restante do seu Drive, e não podemos listar seu conteúdo.
+                    </li>
+                    <li>Armazenados <strong>criptografados (AES-256-GCM)</strong> no Redis, vinculados à sua sessão</li>
+                    <li>
+                      O refresh token <strong>nunca</strong> sai do servidor. O access token de curta duração é entregue ao
+                      seu navegador apenas para abrir o seletor oficial do Google, e no app desktop nem isso acontece.
+                    </li>
+                    <li>
+                      Ao escolher um vídeo, guardamos o identificador e o nome do arquivo para reproduzi-lo na sala
+                    </li>
+                    <li>Revogados no Google e excluídos do nosso lado ao clicar em &ldquo;Trocar de conta&rdquo;</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="flex gap-3 p-4 rounded-xl border border-hairline bg-raised/60">
+                <WifiHigh size={22} weight="fill" className="mt-1 shrink-0 text-accent" />
+                <div>
+                  <h3 className="font-medium text-ink">Conteúdo de vídeo do Drive</h3>
+                  <p className="mt-2 text-sm text-ink-muted">
+                    Quando você escolhe um vídeo do Drive para a sala, o arquivo <strong>não é copiado</strong> para o
+                    nosso bucket. Ele é lido do Google e <strong>transmitido pelo nosso servidor</strong> para os
+                    participantes da sala, por partes, à medida que cada pessoa assiste. Isso significa que o conteúdo
+                    do arquivo passa pela nossa infraestrutura e pelo provedor de hospedagem, e que
+                    <strong> quem está na sala assiste ao seu arquivo</strong>. Não guardamos cópia do vídeo em
+                    nenhum armazenamento nosso.
+                  </p>
+                  <p className="mt-2 text-sm text-ink-muted">
+                    Se você desconectar a conta do Drive, as reproduções que dependiam dela deixam de funcionar
+                    imediatamente e o registro do arquivo é apagado. Não existe cópia de segurança.
+                  </p>
                 </div>
               </div>
 
@@ -115,6 +165,11 @@ export default function PrivacyPolicy() {
               <li><strong>Funcionamento da sala:</strong> sincronizar vídeo, chat, fila, reações em tempo real via Socket.io</li>
               <li><strong>Identidade na sala:</strong> mostrar seu nome, cor, avatar para os demais participantes</li>
               <li><strong>Busca YouTube autenticada:</strong> se você conectar sua conta, usamos <em>seu</em> token para buscar vídeos na API do YouTube em seu nome</li>
+              <li>
+                <strong>Reprodução a partir do Google Drive:</strong> se você escolher um vídeo do seu Drive, usamos
+                o acesso que você concedeu para ler <em>apenas aquele arquivo</em> e repassá-lo aos participantes da
+                sala. Não usamos o arquivo para nenhum outro fim, e não o guardamos
+              </li>
               <li><strong>Segurança e abuso:</strong> rate limiting, prevenção de spam, proteção contra flood</li>
               <li><strong>Melhoria do serviço:</strong> logs agregados e anonimizados de erros e performance</li>
             </ul>
@@ -129,7 +184,16 @@ export default function PrivacyPolicy() {
             <ul className="mt-3 list-disc list-inside space-y-2 text-ink-muted">
               <li><strong>Participantes da mesma sala:</strong> veem seu nome, avatar, cor, mensagens e ações (play/pause/seek)</li>
               <li><strong>Google (YouTube API):</strong> apenas se você conectar a conta; enviamos seu access token para <code className="font-mono text-xs bg-hover px-1 rounded">youtube.googleapis.com</code> para buscas e leitura do canal</li>
-              <li><strong>Provedores de infraestrutura:</strong> Redis (Upstash), hospedagem (Vercel/Railway/Render), bucket de uploads (Cloudflare R2 ou AWS S3) — todos com acordos de processamento de dados (DPA)</li>
+              <li>
+                <strong>Google (Drive API):</strong> apenas se você conectar a conta; enviamos seu access token para
+                {' '}<code className="font-mono text-xs bg-hover px-1 rounded">www.googleapis.com</code> para ler o
+                arquivo que você selecionou. O Google não nos dá acesso ao restante do seu Drive
+              </li>
+              <li>
+                <strong>Participantes da sala, quanto ao vídeo:</strong> quem estiver na sala recebe os bytes do
+                arquivo escolhido. Ao adicioná-lo à fila, você está autorizando os demais a assistirem
+              </li>
+              <li><strong>Provedores de infraestrutura:</strong> Redis (Upstash), hospedagem (Vercel/Railway/Render), bucket de uploads (Cloudflare R2 ou AWS S3) — todos com acordos de processamento de dados (DPA). O conteúdo do vídeo do Drive atravessa a hospedagem, embora não seja gravado no bucket</li>
               <li><strong>Nunca vendemos</strong> dados a anunciantes ou brokers de dados</li>
             </ul>
           </section>
@@ -143,6 +207,11 @@ export default function PrivacyPolicy() {
             <ul className="mt-3 list-disc list-inside space-y-2 text-ink-muted">
               <li><strong>Salas ativas:</strong> mantidas enquanto houver participantes; expiram 10 min após última pessoa sair</li>
               <li><strong>Tokens OAuth:</strong> mantidos enquanto a conta estiver conectada; excluídos ao desconectar ou revogar</li>
+              <li>
+                <strong>Reproduções do Drive:</strong> cada item da fila tem uma concessão de acesso que é apagada
+                quando o item sai da fila, quando você desconecta a conta ou no máximo 24 h depois. Nenhum conteúdo
+                de vídeo é retido
+              </li>
               <li><strong>Sessão (cookie):</strong> 1 ano de inatividade; renova a cada acesso</li>
               <li><strong>Logs de servidor:</strong> 30 dias, depois anonimizados/agregados</li>
               <li>Você pode solicitar exclusão total a qualquer momento via <a href="mailto:privacy@juntoswatchparty.vercel.app" className="text-accent hover:underline">email</a></li>
@@ -161,7 +230,7 @@ export default function PrivacyPolicy() {
               <li><strong>Exclusão:</strong> apagar seus dados (exceto obrigações legais)</li>
               <li><strong>Portabilidade:</strong> receber dados em formato estruturado</li>
               <li><strong>Oposição/Restrição:</strong> limitar processamento não essencial</li>
-              <li><strong>Revogação de consentimento:</strong> desconectar YouTube a qualquer momento na interface</li>
+              <li><strong>Revogação de consentimento:</strong> desconectar o YouTube ou o Google Drive a qualquer momento, direto na interface da fonte de mídia</li>
             </ul>
             <p className="mt-3">
               Para exercer: <a href="mailto:privacy@juntoswatchparty.vercel.app" className="text-accent hover:underline">
@@ -182,6 +251,15 @@ export default function PrivacyPolicy() {
               <li>Tokens OAuth criptografados em repouso (AES-256-GCM)</li>
               <li>Segredos (client_secret, chaves de criptografia) apenas em variáveis de ambiente do servidor</li>
               <li>Rate limiting e validação de entrada em todas as APIs</li>
+              <li>
+                <strong>Links de reprodução do Drive</strong> carregam um identificador aleatório gerado pelo
+                servidor, e não o identificador do arquivo nem o seu nome de conta. Ele é revogado quando o item sai
+                da fila, quando você desconecta a conta ou no vencimento da sala
+              </li>
+              <li>
+                Escopo do Google limitado a <code className="font-mono text-xs bg-hover px-1 rounded">drive.file</code>:
+                o app não tem permissão para ler, listar ou modificar o restante do seu Drive
+              </li>
             </ul>
           </section>
 
@@ -219,6 +297,12 @@ export default function PrivacyPolicy() {
               Podemos atualizar esta política. A versão mais recente sempre estará em
               <Link href="/privacy" className="text-accent hover:underline">/privacy</Link>.
               Mudanças materiais serão notificadas na interface ou por email (se tivermos seu contato).
+            </p>
+            <p className="mt-3 text-sm text-ink-faint">
+              Em 27 de setembro de 2026, a reprodução de vídeos do Google Drive passou a ser feita pelo nosso
+              servidor, por partes, em vez de copiar o arquivo antes de assistir. O escopo solicitado ao Google
+              também foi reduzido para <code className="font-mono text-xs bg-hover px-1 rounded">drive.file</code>.
+              Nenhuma outra informação foi alterada.
             </p>
           </section>
 

@@ -59,9 +59,10 @@ function DriveMark({ size = 24 }: { size?: number }) {
 /**
  * Google Drive.
  *
- * O Google Picker seleciona um arquivo acessível com `drive.file`; depois o
- * navegador de quem escolheu copia os bytes para o bucket compartilhado da sala.
- * A playlist continua usando `kind: 'file'`, sem um player ou proxy novo.
+ * O Picker escolhe um arquivo, e a faixa entra na fila com o `src` da rota de
+ * stream. O `<video>` pede os bytes por partes ao servidor, que repassa o
+ * `Range` para o Drive: a reprodução começa antes de o arquivo inteiro passar,
+ * e seek funciona. O bucket continua sendo caminho do envio comum, não do Drive.
  */
 export const driveProvider: MediaSourceProvider = {
   id: 'drive',
@@ -69,7 +70,7 @@ export const driveProvider: MediaSourceProvider = {
   // O texto definitivo vem de `useDriveSource`, que sabe se a conta está
   // conectada. Este é o estado inicial, que é o que o modal mostra no primeiro
   // render, antes do status chegar.
-  description: 'Escolha um vídeo do Drive e copie-o para a sala.',
+  description: 'Escolha um vídeo do Drive e assista na sala.',
   icon: <DriveMark />,
   // O ícone já tem as cores da marca, então este `accent` não chega a ser
   // usado. Fica no azul oficial (#3186FF) para o caso do card cair no
@@ -77,5 +78,5 @@ export const driveProvider: MediaSourceProvider = {
   accent: 'text-[#3186FF]',
   requiresControl: true,
   controlReason:
-    'Copiar um vídeo do Drive para a fila é só para quem controla a fila: o token de upload é autorizado pelo servidor, e o arquivo vai para um bucket com custo e limite de taxa.',
+    'Escolher um vídeo do Drive é só para quem controla a fila: o stream é servido pelo servidor, com a banda e a cota de quem concedeu o acesso.',
 };
