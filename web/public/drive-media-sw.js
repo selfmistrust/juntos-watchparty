@@ -204,8 +204,19 @@ async function repassar(pedido, fileId) {
      */
     let detalhe = texto.slice(0, 200);
     try {
-      const corpo = JSON.parse(texto) as { error?: { message?: string } };
-      if (corpo.error?.message) detalhe = corpo.error.message.slice(0, 200);
+      /*
+       * Sem `as`: este arquivo é JavaScript puro e é servido como está, sem
+       * passar por compilador nenhum. Uma anotação de tipo aqui quebra o worker
+       * inteiro com `SyntaxError` na linha 207, e o sintoma é o pior possível —
+       * nenhuma requisição é interceptada, o `<video>` pede o arquivo e leva
+       * 404 da Vercel, e a página recebe um erro que não tem nada a ver com a
+       * causa. A lição é que nada aqui pode ser TypeScript, e nada aqui pode
+       * falhar em tempo de parse.
+       */
+      const corpo = JSON.parse(texto);
+      if (corpo && corpo.error && typeof corpo.error.message === 'string') {
+        detalhe = corpo.error.message.slice(0, 200);
+      }
     } catch {
       // Corpo não-JSON: o recorte do texto serve.
     }
