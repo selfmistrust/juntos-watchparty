@@ -43,6 +43,16 @@ interface Props {
  * ordem: se não houver faixa em português, ele cai para outra.
  */
 function legendaParams(captionsOn: boolean): Record<string, string> {
+  /*
+   * Este é o padrão do player, e é o que garante que vídeo nenhum suba com
+   * legenda sozinha: sem param algum, o YouTube não carrega faixa. O `1` abaixo
+   * só existe depois que alguém clica no botão — não é um default.
+   *
+   * Deixar o `0` explícito aqui seria mais legível e não faria nada. Já foi
+   * medido: quando o YouTube devolve legenda por preferência da conta, nem a
+   * ausência do param segura, nem `0`, nem `cc_lang_pref` inválido. Mandar o `0`
+   * daria a impressão de controle que não existe.
+   */
   if (!captionsOn) return {};
   return { cc_load_policy: '1', cc_lang_pref: 'pt' };
 }
