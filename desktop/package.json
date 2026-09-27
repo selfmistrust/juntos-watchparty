@@ -9,9 +9,10 @@
     "build:web": "node scripts/build-web.mjs",
     "build:electron": "tsc -p tsconfig.json",
     "build": "npm run build:web && npm run build:electron",
+    "build:prod": "node scripts/build-web.mjs --prod && npm run build:electron",
     "start": "npm run build && electron .",
     "start:fast": "npm run build:electron && electron .",
-    "dist": "npm run build && electron-builder --win --publish never",
+    "dist": "npm run build:prod && electron-builder --win --publish never",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

@@ -1,5 +1,6 @@
 import { ArrowRight, LockSimple } from '@phosphor-icons/react';
 import { useRouter } from 'next/router';
+import Head from 'next/head';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
@@ -36,6 +37,17 @@ export default function Home() {
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-6 py-8 sm:px-10">
+      {/*
+        A tag de verificação do Google precisa sair no <head> do HTML servido:
+        o Google busca a home e procura o token antes de executar qualquer
+        JavaScript. Dentro do <header> ela ia para o corpo, e com React 18
+        (que não tem o hoisting de metadados do React 19) era onde de fato
+        acabava. Por isso via `next/head`, e não escrita no lugar.
+      */}
+      <Head>
+        <meta name="google-site-verification" content="iZ6sHjUinkThA7wIjJSKKzw0ObFiuUwl9_Ch5UNh65c" />
+      </Head>
+
       <header className="flex items-center justify-between gap-4">
         <span className="font-display text-lg tracking-tight">juntos</span>
       </header>

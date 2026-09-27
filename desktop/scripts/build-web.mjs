@@ -71,13 +71,41 @@ console.log('\n2/3  build do web (standalone)');
 // Ele é embutido no bundle em build, então precisa vir no momento do build —
 // não dá para ajustar depois. Sem ela, `lib/socket.ts` cai no default
 // `http://localhost:4000`, que é o servidor de desenvolvimento.
-const servidor = process.env.NEXT_PUBLIC_SERVER_URL;
-if (!servidor) {
+//
+// Dois modos, porque eles querem coisas opostas:
+//
+//   dev  (npm start)  -> falar com o servidor da sua máquina, para testar
+//   prod (npm run dist) -> falar com o Render, porque o instalador vai para
+//                          a casa de outra pessoa
+//
+// O modo prod existe por um motivo concreto: o Next também lê `web/.env.local`
+// durante o build, e lá mora `http://localhost:4001` para uso local. Sem esta
+// distinção, um `npm run dist` gerava um instalador de 94 MB que abria sem
+// nunca achar servidor de sala — e o aviso passava batido num log de build.
+const SERVIDOR_PROD = 'https://juntos-watchparty.onrender.com';
+const prod = process.argv.includes('--prod');
+
+let servidor = (process.env.NEXT_PUBLIC_SERVER_URL ?? '').trim();
+const apontandoParaLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(servidor);
+
+if (prod && (!servidor || apontandoParaLocal)) {
+  if (servidor) {
+    console.log(
+      `\nNEXT_PUBLIC_SERVER_URL está como ${servidor}, que só existe na sua máquina.\n` +
+        'Um instalador distribuído não acharia o servidor de salas: o app abriria\n' +
+        'normal e nunca entraria em nenhuma sala. Vou usar ' +
+        SERVIDOR_PROD +
+        '.\n',
+    );
+  } else {
+    console.log(`\nNEXT_PUBLIC_SERVER_URL não vem no ambiente; usando ${SERVIDOR_PROD}.`);
+  }
+  servidor = SERVIDOR_PROD;
+} else if (!prod && !servidor) {
   console.warn(
-    '\nAVISO: NEXT_PUBLIC_SERVER_URL não definida. O app vai apontar para o\n' +
-      'default http://localhost:4000 e não vai encontrar o servidor de salas.\n' +
-      'Para gerar o instalador de produção:\n' +
-      '  $env:NEXT_PUBLIC_SERVER_URL="https://juntos-watchparty.onrender.com"; npm run dist\n',
+    '\nAVISO: NEXT_PUBLIC_SERVER_URL não definida. O build vai ler web/.env.local\n' +
+      'e o app apontará para o servidor de desenvolvimento. Para gerar o\n' +
+      'instalador use "npm run dist", que fixa o servidor de produção.\n',
   );
 }
 
@@ -142,6 +170,39 @@ if (faltando.length > 0) {
       'Juntos e rode de novo.',
   );
   process.exit(1);
+}
+
+// Última checagem: o endereço do servidor de salas realmente embutido no
+// bundle, lido do arquivo que o app vai executar.
+//
+// Confiar no aviso não funciona — o aviso sobre NEXT_PUBLIC_SERVER_URL passou
+// batido e mesmo assim o instalador saiu apontando para localhost, porque o
+// Next lê `web/.env.local` no build. Aqui a verificação é sobre o artefato, e
+// não sobre a intenção: ou o host esperado está no bundle, ou o build está
+// errado e o `electron-builder` não deve nem começar a empacotar 94 MB em
+// volta disso.
+if (servidor) {
+  const host = servidor.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  const pedacos = [];
+  const colecionar = (dir) => {
+    for (const entrada of fs.readdirSync(dir, { withFileTypes: true, recursive: true })) {
+      if (entrada.isFile() && entrada.name.endsWith('.js')) pedacos.push(path.join(entrada.parentPath ?? entrada.path, entrada.name));
+    }
+  };
+  colecionar(path.join(destino, '.next', 'static'));
+  colecionar(path.join(destino, 'pages'));
+
+  const achou = pedacos.some((p) => fs.readFileSync(p, 'utf8').includes(host));
+  if (!achou) {
+    console.error(
+      `\nO bundle não referencia ${host}.\n` +
+        `Varre ${pedacos.length} arquivo(s) em .next/static e pages e nada contém esse host.\n` +
+        'O Next provavelmente leu web/.env.local e venceu a variável do ambiente.\n' +
+        'Confira web/.env.local e rode de novo.',
+    );
+    process.exit(1);
+  }
+  console.log(`  bundle aponta para ${host} ( conferido em ${pedacos.length} arquivo(s) )`);
 }
 
 const tamanho = fs
