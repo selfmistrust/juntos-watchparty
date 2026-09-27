@@ -62,6 +62,23 @@ export function VideoStage({
   const stageRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<PlayerHandle>(null);
   const readyRef = useRef(false);
+  /*
+   * `targetPosition` num ref, e o motivo é a lista de dependências.
+   *
+   * Ela é um `useCallback([state])`, então ganha **identidade nova a cada
+   * snapshot** — e snapshot chega a cada play, pause e seek de qualquer pessoa da
+   * sala. Listá-la como dependência dos laços recriava o `setInterval` inteiro a
+   * cada comando, reiniciando o contador de 1,2 s da correção de deriva antes
+   * que ela completasse um tique. Com gente dando play e pause, a deriva nunca
+   * chegava a ser corrigida, e a sala slowly saía de sincronia sem que nada
+   * aparecesse na tela.
+   *
+   * Pelo ref, o laço lê sempre a função atual sem depender da identidade dela.
+   * O `useEffect` passa a reagir só ao que realmente importa: se está tocando,
+   * e se a faixa é ao vivo.
+   */
+  const targetRef = useRef(targetPosition);
+  targetRef.current = targetPosition;
   const hideTimer = useRef<ReturnType<typeof setTimeout>>();
   /** Segunda tentativa de `seek` logo após o player ficar pronto. */
   const seekRetryRef = useRef<ReturnType<typeof setTimeout>>();
@@ -144,7 +161,7 @@ export function VideoStage({
       return;
     }
 
-    const at = targetPosition();
+    const at = targetRef.current();
     player.seek(at);
     setDuration(player.getDuration());
 
@@ -153,7 +170,7 @@ export function VideoStage({
       if (playerRef.current !== player) return;
       if (Math.abs(player.getCurrentTime() - at) > 1.5) player.seek(at);
     }, 700);
-  }, [isPlaying, isStream, muted, targetPosition, volume]);
+  }, [isPlaying, isStream, muted, volume]);
 
   useEffect(() => () => clearTimeout(seekRetryRef.current), []);
 
@@ -165,11 +182,15 @@ export function VideoStage({
     if (isPlaying) player.play();
     else if (!isStream) {
       player.pause();
-      player.seek(targetPosition());
+      player.seek(targetRef.current());
     }
-    // targetPosition muda a cada snapshot; só queremos reagir à transição de estado.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPlaying, isStream, state?.serverTime]);
+    /*
+     * Reage ao *estado*, não a cada snapshot. Um `play` repetido a cada snapshot
+     * seria um laço: o comando reativa o player, o player emite um evento, o
+     * evento pode gerar outro snapshot, e a sala gasta banda com um `play` que
+     * não muda nada. A dependência é `isPlaying`, e é a transição que importa.
+     */
+  }, [isPlaying, isStream]);
 
   /** Relógio de UI. */
   useEffect(() => {
@@ -199,7 +220,8 @@ export function VideoStage({
       const player = playerRef.current;
       if (!player || !readyRef.current || !isPlaying) return;
 
-      const drift = targetPosition() - player.getCurrentTime();
+      const alvo = targetRef.current();
+      const drift = alvo - player.getCurrentTime();
       const abs = Math.abs(drift);
 
       // Só chama quando o valor muda: este laço roda a cada 1,2s e, no
@@ -211,7 +233,7 @@ export function VideoStage({
       };
 
       if (abs > HARD_SYNC_THRESHOLD) {
-        player.seek(targetPosition());
+        player.seek(alvo);
         setRate(1);
         setDrifting(true);
       } else if (abs > SOFT_SYNC_THRESHOLD) {
@@ -223,7 +245,7 @@ export function VideoStage({
       }
     }, 1200);
     return () => clearInterval(id);
-  }, [isPlaying, isStream, targetPosition]);
+  }, [isPlaying, isStream]);
 
   /** Auto-hide dos controles: some com o mouse parado, volta ao pausar. */
   const revealControls = useCallback(() => {

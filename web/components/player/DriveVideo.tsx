@@ -20,13 +20,41 @@ import type { PlayerHandle } from '@/types';
 import { FilePlayer } from './FilePlayer';
 
 /**
- * `falhou` é separado de `indisponivel` de propósito: `indisponivel` é uma
- * impossibilidade conhecida antes de tentar (sem service worker, o Picker não
- * configurado), e `falhou` é o `<video>` recusando a leitura depois que tudo
- * parecia estar certo. A pessoa precisa poder tentar de novo em um, e entender o
- * que houve no outro.
+ * Os estados da preparação, na ordem em que acontecem.
+ *
+ * A separação importa porque cada um tem uma duração diferente e um motivo
+ * diferente de estar parado. Um único "carregando…" esconde justamente o que a
+ * pessoa precisa saber: se está faltando conta, se o navegador recusou o
+ * service worker, ou se o vídeo já está pronto e o que falta é a sala alcançá-lo.
+ *
+ * `falhou` continua separado de `indisponivel` por outro motivo: o primeiro é o
+ * `<video>` recusando a leitura depois que tudo parecia certo, e o segundo é uma
+ * impossibilidade conhecida antes de tentar. Recomeçar resolve um, e não o outro.
  */
-type Estado = 'conferindo' | 'autorizar' | 'pronto' | 'falhou' | 'indisponivel';
+type Estado =
+  /** Só começou; ainda não perguntou nada à rede. */
+  | 'iniciando'
+  /** Conferindo conta e permissão do arquivo. */
+  | 'conferindo'
+  /** Worker assumindo a página — o passo que trava mais. */
+  | 'preparando'
+  /** Player montado, aguardando metadados do Google. */
+  | 'carregando'
+  /** Pronto; falta alinhar com a posição da sala. */
+  | 'sincronizando'
+  | 'pronto'
+  | 'autorizar'
+  | 'falhou'
+  | 'indisponivel';
+
+/** O que a pessoa lê em cada etapa, e por que está esperando. */
+const ROTULOS: Record<string, string> = {
+  iniciando: 'Preparando o Google Drive…',
+  conferindo: 'Conferindo seu acesso ao vídeo…',
+  preparando: 'Conectando ao Google Drive…',
+  carregando: 'Preparando vídeo…',
+  sincronizando: 'Sincronizando com a sala…',
+};
 
 interface Props {
   fileId: string;
@@ -59,7 +87,10 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
 ) {
   const router = useRouter();
   const { status, loading: contaCarregando, busy: contaBusy, connect, refresh } = useDriveAccount();
-  const [estado, setEstado] = useState<Estado>('conferindo');
+  // Começa em `iniciando`, e não em `conferindo`: entre o primeiro render e a
+  // primeira chamada à rede há um instante, e um rótulo que já diz "conferindo"
+  // sem estar conferindo é uma informação falsa muito cedo.
+  const [estado, setEstado] = useState<Estado>('iniciando');
   const [erro, setErro] = useState<string | null>(null);
   const [autorizando, setAutorizando] = useState(false);
   const operacao = useRef<AbortController | null>(null);
@@ -94,7 +125,15 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
         setEstado('indisponivel');
         return;
       }
+      setEstado('conferindo');
       const token = await fetchDrivePickerToken(controller.signal);
+      /*
+       * Este é o passo que trava: o worker precisa assumir a página, e ele só
+       * faz isso depois de um `activate` que pode demorar. Dizer "conectando ao
+       * Google Drive" aqui é mais honesto do que um "carregando" genérico,
+       * porque a pessoa sabe que a espera é do navegador, não da rede do Drive.
+       */
+      setEstado('preparando');
       /*
        * O token precisa estar gravado no worker **antes** do `<video>` pedir o
        * primeiro intervalo, e a gravação é assíncrona. Sem esperar a
@@ -112,7 +151,16 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
         return;
       }
       const temAcesso = await temAcessoAoArquivo(fileId, token, controller.signal);
-      setEstado(temAcesso ? 'pronto' : 'autorizar');
+      if (!temAcesso) {
+        setEstado('autorizar');
+        return;
+      }
+      /*
+       * A partir daqui o `<video>` é montado e o navegador busca os metadados no
+       * Google. A espera é dele, e o rótulo muda porque a pessoa já não tem nada
+       * a fazer: só esperar o primeiro bloco.
+       */
+      setEstado('carregando');
     } catch (e) {
       if (controller.signal.aborted) return;
       const motivo = e instanceof Error ? e.message : '';
@@ -158,27 +206,40 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
     }
   }, [autorizando, fileId, conferir]);
 
-  if (estado === 'pronto') {
+  /*
+   * O `MediaError` sozinho não diz nada de útil: no Chromium um 401 do Google e
+   * um arquivo num formato que o navegador não decodifica dão o mesmo código, e
+   * o conserto é oposto — um é reconectar, o outro é escolher outro vídeo. O
+   * worker registrou o que o Google respondeu, e é ele que vira a frase.
+   */
+  const falhar = useCallback((fallback: string) => {
+    void lerFalhaDoWorker().then((falha) => {
+      setErro(explicarFalha(falha, fallback));
+      setEstado('falhou');
+    });
+  }, []);
+
+  /*
+   * Um único caminho de player, para `carregando`, `sincronizando` e `pronto`.
+   *
+   * Ramificar por estado aqui criaria dois `<FilePlayer>` com o mesmo `src`, e o
+   * React veria um elemento diferente em cada transição — desmontando e
+   * remontando o vídeo, o que joga o buffer fora e recomeça do zero. É
+   * exatamente o que estraga quem entra no meio do filme: ele perde a posição
+   * que a sala alcança.
+   */
+  if (estado === 'carregando' || estado === 'sincronizando' || estado === 'pronto') {
     return (
       <FilePlayer
         ref={ref}
         src={urlDeMidia(fileId)}
         rotulo="drive"
-        onReady={onReady}
-        onEnded={onEnded}
-        /*
-         * O `MediaError` sozinho não diz nada de útil: no Chromium um 401 do
-         * Google e um arquivo num formato que o navegador não decodifica dão o
-         * mesmo código, e a conserto é oposto — um é reconectar, o outro é
-         * escolher outro vídeo. O worker registrou o que o Google respondeu, e é
-         * ele que vira a frase que a pessoa lê.
-         */
-        onError={(fallback) => {
-          void lerFalhaDoWorker().then((falha) => {
-            setErro(explicarFalha(falha, fallback));
-            setEstado('falhou');
-          });
+        onReady={() => {
+          setEstado('pronto');
+          onReady();
         }}
+        onEnded={onEnded}
+        onError={falhar}
       />
     );
   }
@@ -189,8 +250,12 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
         <FilmStrip size={20} />
       </span>
 
-      {estado === 'conferindo' ? (
-        <p role="status" className="text-2xs text-ink-faint">Conferindo seu acesso ao vídeo…</p>
+      {estado === 'iniciando' || estado === 'conferindo' || estado === 'preparando' ? (
+        // `aria-live` para o leitor de tela: quem não enxerga a mudança de estado
+        // fica sem nenhuma pista de que algo está acontecendo.
+        <p role="status" aria-live="polite" className="text-2xs text-ink-faint">
+          {ROTULOS[estado] ?? ROTULOS.iniciando}
+        </p>
       ) : estado === 'falhou' ? (
         <>
           <p className="max-w-sm text-sm text-ink">A leitura deste vídeo falhou.</p>
