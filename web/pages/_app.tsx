@@ -2,6 +2,7 @@ import type { AppProps } from 'next/app';
 import { Bricolage_Grotesque, Inter } from 'next/font/google';
 import Head from 'next/head';
 import { YoutubeAccountProvider } from '@/hooks/useYouTubeAccount';
+import { DriveAccountProvider } from '@/hooks/useDriveAccount';
 import '@/styles/globals.css';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
@@ -35,7 +36,9 @@ export default function App({ Component, pageProps }: AppProps) {
       </Head>
       <div className={`${inter.variable} ${display.variable} font-sans`}>
         <YoutubeAccountProvider>
-          <Component {...pageProps} />
+          <DriveAccountProvider>
+            <Component {...pageProps} />
+          </DriveAccountProvider>
         </YoutubeAccountProvider>
         {/* Alvo dos portais (pickers, dropdowns). Fica dentro deste wrapper de
             propósito: é daqui que o conteúdo teleportado herda a tipografia do

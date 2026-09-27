@@ -1,21 +1,35 @@
-import crypto from 'node:crypto';
-import { customAlphabet } from 'nanoid';
+import {
+  GOOGLE_AUTH,
+  GOOGLE_REVOKE,
+  PENDING_TTL_SEC,
+  clientId,
+  clientSecret,
+  exchangeToken,
+  expiraEmMs,
+  isInvalidGrant,
+  isTemporaryError,
+  newState,
+  oauthConfigured,
+  pkce,
+  redirectUriDe,
+  type AuthFailure,
+} from './googleOAuth.js';
 import { redis } from './redis.js';
 import { decryptSecret, encryptSecret } from './secretBox.js';
 
-const GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
-const GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token';
-const GOOGLE_REVOKE = 'https://oauth2.googleapis.com/revoke';
 const YT_CHANNELS = 'https://www.googleapis.com/youtube/v3/channels';
 const YT_SEARCH = 'https://www.googleapis.com/youtube/v3/search';
 
 const SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+export type { AuthFailure } from './googleOAuth.js';
+
+export function redirectUri(): string {
+  return redirectUriDe('youtube');
+}
+
 const TOKEN_KEY = (sessionId: string) => `yt:tokens:${sessionId}`;
 const PENDING_KEY = (state: string) => `yt:oauth:${state}`;
 const REFRESH_LOCK = (sessionId: string) => `yt:refreshlock:${sessionId}`;
-
-const PENDING_TTL_SEC = 10 * 60;
-const newState = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 32);
 
 export type YoutubePublicStatus = {
   configured: boolean;
@@ -66,41 +80,9 @@ type PendingOAuth = {
   voltarComo: 'app' | 'pagina';
 };
 
-export type AuthFailure =
-  | 'not_connected'
-  | 'not_configured'
-  | 'revoked'
-  | 'expired'
-  | 'denied'
-  | 'api_error';
-
-function clientId(): string {
-  return process.env.GOOGLE_CLIENT_ID ?? '';
-}
-
-function clientSecret(): string {
-  return process.env.GOOGLE_CLIENT_SECRET ?? '';
-}
-
-export function redirectUri(): string {
-  return (
-    process.env.GOOGLE_REDIRECT_URI ??
-    `http://localhost:${process.env.PORT ?? 4000}/api/youtube/oauth/callback`
-  );
-}
 
 export function youtubeOAuthConfigured(): boolean {
   return Boolean(clientId() && clientSecret() && process.env.SESSION_SECRET);
-}
-
-function b64url(buf: Buffer): string {
-  return buf.toString('base64url');
-}
-
-function pkce(): { verifier: string; challenge: string } {
-  const verifier = b64url(crypto.randomBytes(32));
-  const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
-  return { verifier, challenge };
 }
 
 async function loadTokens(sessionId: string): Promise<TokenRecord | null> {
@@ -177,42 +159,6 @@ export async function takePending(state: string): Promise<PendingOAuth | null> {
   }
 }
 
-type GoogleTokenResponse = {
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number;
-  scope?: string;
-  error?: string;
-  _httpStatus?: number;
-  _body?: string;
-};
-
-async function exchangeToken(body: Record<string, string>): Promise<GoogleTokenResponse> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-  try {
-    const response = await fetch(GOOGLE_TOKEN, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-      body: new URLSearchParams(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      return { error: `http_${response.status}`, _httpStatus: response.status, _body: text };
-    }
-    const data = (await response.json()) as GoogleTokenResponse;
-    if (data.error) {
-      return { error: data.error, _httpStatus: response.status };
-    }
-    return data;
-  } catch (err) {
-    clearTimeout(timeout);
-    if (err instanceof Error && err.name === 'AbortError') return { error: 'timeout' };
-    return { error: 'invalid_response' };
-  }
-}
 
 async function fetchChannel(accessToken: string): Promise<{ id: string; title: string } | null> {
   const controller = new AbortController();
@@ -234,17 +180,6 @@ async function fetchChannel(accessToken: string): Promise<{ id: string; title: s
     clearTimeout(timeout);
     return null;
   }
-}
-
-function isInvalidGrant(err: string | undefined): boolean {
-  return err === 'invalid_grant' || err === 'unauthorized_client' || err === 'invalid_token';
-}
-
-function isTemporaryError(err: string | undefined, httpStatus?: number): boolean {
-  if (!err) return false;
-  if (httpStatus === 429) return true;
-  if (httpStatus !== undefined && httpStatus >= 500) return true;
-  return err === 'temporarily_unavailable' || err === 'timeout' || err === 'server_error';
 }
 
 export async function completeOAuth(params: {
@@ -285,8 +220,7 @@ export async function completeOAuth(params: {
     return { ok: false, reason: 'api_error' };
   }
 
-  const expiresIn = Number(token.expires_in ?? 3600);
-  const expiresInMs = Math.max(30, Math.min(expiresIn, 7200) - 60) * 1000;
+  const expiresInMs = expiraEmMs(token.expires_in);
   const nextGeneration = (existing?.generation ?? 0) + 1;
   await saveTokens(params.sessionId, {
     refreshToken,
@@ -332,8 +266,7 @@ async function refreshAccessToken(sessionId: string, record: TokenRecord): Promi
       }
       return null;
     }
-    const expiresIn = Number(token.expires_in ?? 3600);
-    const expiresInMs = Math.max(30, Math.min(expiresIn, 7200) - 60) * 1000;
+    const expiresInMs = expiraEmMs(token.expires_in);
     const next: TokenRecord = {
       ...record,
       accessToken: token.access_token,

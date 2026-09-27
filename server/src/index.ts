@@ -9,6 +9,7 @@ import { pubClient, subClient } from './redis.js';
 import { registerSocketHandlers, startPresenceCleanup } from './socket.js';
 import { scheduleUploadCleanup } from './uploadCleanup.js';
 import { registerYoutubeRoutes } from './youtubeRoutes.js';
+import { registerDriveRoutes } from './driveRoutes.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
 
@@ -60,6 +61,7 @@ app.get('/api/rooms/:id', async (req, res) => {
 });
 
 registerYoutubeRoutes(app);
+registerDriveRoutes(app);
 
 /**
  * Proxy de busca de GIFs. Usa Tenor se `TENOR_API_KEY` estiver definida,

@@ -6,6 +6,7 @@ import { Portal } from '@/components/ui/Portal';
 import { TruncatedText } from '@/components/ui/TruncatedText';
 import { useYoutubeSource } from '@/lib/mediaSources/useYoutubeSource';
 import { useScreenShare } from '@/lib/mediaSources/useScreenShare';
+import { useDriveSource } from '@/lib/mediaSources/useDriveSource';
 import type { StreamController } from '@/hooks/useStreamBridge';
 import {
   MEDIA_SOURCES,
@@ -52,12 +53,14 @@ export function MediaSourceModal({
   const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   /**
-   * Fontes do registro + as duas que vêm de hook porque abrem painel com
-   * estado próprio: a busca do YouTube e o seletor de tela. As listas se
-   * misturam aqui, num só lugar: o resto do modal não sabe a diferença.
+   * Fontes do registro + as que vêm de hook porque abrem painel com estado
+   * próprio: a busca do YouTube, o seletor de tela e o seletor de arquivos do
+   * Drive. As listas se misturam aqui, num só lugar: o resto do modal não sabe a
+   * diferença.
    */
   const youtube = useYoutubeSource();
   const tela = useScreenShare(streamBridge);
+  const drive = useDriveSource();
   const sources = useMemo<MediaSourceProvider[]>(
     () =>
       MEDIA_SOURCES.flatMap((f) => {
@@ -67,9 +70,10 @@ export function MediaSourceModal({
         // quando uma fonte ganha painel próprio.
         if (f.id === 'upload') return [f, youtube.provider];
         if (f.id === 'screen') return [tela.provider];
+    if (f.id === 'drive') return [drive.provider];
         return [f];
       }),
-    [youtube.provider, tela.provider],
+    [youtube.provider, tela.provider, drive.provider],
   );
 
   const context = useRef<MediaSourceContext>({ canControl, addToPlaylist, requestUploadToken });
@@ -245,6 +249,7 @@ export function MediaSourceModal({
     <>
       {youtube.panel}
       {tela.panel}
+      {drive.panel}
     </>
   );
 

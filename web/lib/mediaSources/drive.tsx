@@ -1,5 +1,4 @@
 import type { MediaSourceProvider } from './types';
-import { unavailable } from './types';
 
 /**
  * Ícone do Google Drive.
@@ -73,11 +72,16 @@ function DriveMark({ size = 24 }: { size?: number }) {
 export const driveProvider: MediaSourceProvider = {
   id: 'drive',
   name: 'Google Drive',
-  description: 'Vídeos do seu Drive. Em breve.',
+  // O texto definitivo vem de `useDriveSource`, que sabe se a conta está
+  // conectada. Este é o estado inicial, que é o que o modal mostra no primeiro
+  // render, antes do status chegar.
+  description: 'Conecte sua conta para copiar um vídeo do Drive.',
   icon: <DriveMark />,
   // O ícone já tem as cores da marca, então este `accent` não chega a ser
-  // usado. Fica no azul oficial (#3186FF) para o caso de o card cair no
+  // usado. Fica no azul oficial (#3186FF) para o caso do card cair no
   // `currentColor` em algum caminho.
   accent: 'text-[#3186FF]',
-  resolveState: async () => unavailable('O Drive precisa de um servidor intermediário. Em breve.'),
+  requiresControl: true,
+  controlReason:
+    'Copiar um vídeo do Drive para a fila é só para quem controla a fila: o token de upload é autorizado pelo servidor, e o arquivo vai para um bucket com custo e limite de taxa.',
 };

@@ -207,6 +207,49 @@ o registro local.
 A busca por texto ainda aceita `YOUTUBE_API_KEY` como fallback quando ninguém conectou a conta.
 Colar um link do YouTube continua funcionando sem OAuth.
 
+### Google Drive (OAuth por usuário)
+
+Quem conecta a conta escolhe um vídeo do Drive e ele é **copiado para o bucket da sala** — a faixa
+entra como `kind: 'file'`, igual a um envio comum. Ninguém mais precisa de acesso ao Drive, e o
+Render nunca vê o vídeo.
+
+A cópia é a única opção que funciona, e vale registrar por quê: um arquivo do Drive é privado, e o
+token de quem o escolheu não viaja para os outros participantes; e o Drive não tem URL de vídeo
+reproduzível, porque o `uc?export=download` devolve uma página HTML de confirmação assim que o
+arquivo passa de algumas dezenas de MB — justamente o tamanho de um episódio. Deixar a faixa
+apontando para o Drive exigiria um proxy com autenticação por sala, e o vídeo passaria inteiro
+pelo servidor.
+
+No [Google Cloud Console](https://console.cloud.google.com/):
+
+1. Ative a **Google Drive API**.
+2. Em **Tela de consentimento OAuth**, acrescente o escopo
+   `https://www.googleapis.com/auth/drive.readonly`.
+   Ele é **sensível**, então o app continua no modo Testes: cada conta que for usar precisa estar
+   em **Usuários de teste**, e o refresh token expira em 7 dias. É o mesmo limite que o YouTube já
+   tem, não uma novidade desta integração.
+3. Em **URIs de redirecionamento**, acrescente uma segunda URI, do mesmo client:
+
+   ```
+   https://<seu-back>/api/drive/oauth/callback
+   ```
+
+   O Google casa o callback por caminho: a URI do YouTube não serve para o Drive. É o passo que
+   mais costuma faltar, e o sintoma é o callback dar `redirect_uri_mismatch`.
+4. Em `server/.env`:
+
+   ```
+   GOOGLE_DRIVE_REDIRECT_URI=https://<seu-back>/api/drive/oauth/callback
+   ```
+
+   As demais chaves (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) são as mesmas do YouTube: a
+   integração reusa a credencial existente, e o `client_secret` e os refresh tokens ficam só no
+   servidor (Redis, cifrados).
+
+**Custo de cada cópia:** o arquivo ocupa espaço no bucket até a limpeza periódica, e baixar pela
+API do Drive conta contra a cota diária do Google. O seletor mostra o progresso das duas etapas
+porque o round trip é longo e um cartão parado sem explicação parece travado.
+
 ### Busca no YouTube (chave de API, opcional)
 
 A aba Fila aceita links do YouTube e `.mp4` sem nenhuma configuração. Para habilitar a busca por
