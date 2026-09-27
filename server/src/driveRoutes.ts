@@ -209,9 +209,26 @@ export function registerDriveRoutes(app: Express): void {
       if (!result.ok) {
         return await concluir(result.reason === 'denied' ? 'denied' : 'error', { status: 'error' });
       }
-      // No desktop, o state identifica o app e o navegador mantém a própria
-      // sessão. No fluxo web, o callback restaura o cookie na mesma aba.
-      if (voltarComo === 'app') setSessionCookie(res, sessionId);
+      /*
+       * O cookie é restaurado nos **dois** caminhos, e antes isso só acontecia
+       * no desktop.
+       *
+       * O `sessionId` vem do `state` (que o cliente gravou), e não do cookie
+       * atual: o callback chega do Google, e no fluxo web a requisição chega sem
+       * o cookie que o `/start` gravou — a sessão existe, o navegador é que não
+       * a apresentou de novo. Sem esta linha, `/api/drive/status` respondia
+       * "desconectada" logo depois de um OAuth bem-sucedido, e o F5 levava a
+       * pessoa de volta ao botão de conectar.
+       *
+       * O sintoma era a tela da captura: o modal dizia "Conta do Drive
+       * conectada" — o `state`, já atualizado — enquanto o player dizia
+       * "conecte sua conta", lendo o mesmo campo um instante antes do
+       * `refresh`.
+       *
+       * No desktop o `state` também identifica o app, e gravar o cookie é
+       * inofensivo: o valor é o mesmo que o navegador já tem.
+       */
+      setSessionCookie(res, sessionId);
       if (pickerId) return await concluir('picked', { status: 'picked', fileId });
       res.redirect(destinoDe(voltarComo, 'connected', returnTo));
     } catch {

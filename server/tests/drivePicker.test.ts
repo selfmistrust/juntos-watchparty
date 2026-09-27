@@ -283,7 +283,24 @@ test('o navegador externo entrega o vídeo somente à sessão do desktop, com st
 
   const response = await callback(request.url, { code: 'google-code', picked_file_ids: videoId }, browserCookie);
   assert.equal(response.headers.get('location'), '/api/drive/oauth/concluido?estado=picked');
-  assert.equal(response.headers.get('set-cookie'), null, 'o callback não substitui a sessão do navegador');
+  /*
+   * O `set-cookie` **é** emitido aqui, e a afirmação contrária que existia antes
+   * foi o que deixou o bug passar.
+   *
+   * A intenção original era não sobrescrever a sessão do navegador do desktop —
+   * que já tem a dele. Mas o caso do `trigger_onepick` é justamente o
+   * contrário: o pedido saiu de uma aba da web e volta pelo navegador do
+   * sistema, então o `state` do app é que está certo, e gravar o cookie é o que
+   * amarra o token ao lugar de onde ele veio.
+   *
+   * O valor gravado é o `sessionId` que o próprio pedido carregava, então isso
+   * não troca a sessão de ninguém: só garante que ela exista no navegador que
+   * está respondendo agora.
+   */
+  assert.ok(
+    response.headers.get('set-cookie'),
+    'o callback precisa restaurar a sessão que o state carrega',
+  );
   assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
   assert.equal(exchanges.length, 1);
   const verifier = exchanges[0].get('code_verifier');

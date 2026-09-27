@@ -70,9 +70,35 @@ export function DriveAccountProvider({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  /*
+   * `message` é um **evento** — "acabei de conectar" — e `status.connected` é
+   * um **estado**. Misturar os dois produz a tela da captura: a linha de status
+   * dizia "Nenhuma conta conectada" e, logo abaixo, "Conta do Drive conectada",
+   * porque a mensagem do OAuth continuava na tela depois que o estado já era o
+   * oposto.
+   *
+   * A divergência tem um caminho silencioso: `refresh` roda a cada foco de
+   * janela, e ele atualiza o estado sem tocar na mensagem. Quem saía do OAuth
+   * vê a confirmação — e, se depois algo desconectasse a conta por outro caminho
+   * (a aba do Google, o `token_unavailable` do servidor), a confirmação ficaria
+   * lá para sempre, ao lado de um status que a contradiz.
+   *
+   * A regra aqui é estreita e é a que resolve: **o que o estado diz agora
+   * vence**. A mensagem de sucesso é de consulta única — aparece no retorno do
+   * OAuth e sai assim que o estado confirma. Uma mensagem de erro, essa sim,
+   * persiste, porque não é contrariada por um estado que voltou a ser bom.
+   */
   const refresh = useCallback(async () => {
     try {
-      setStatus(await fetchDriveStatus());
+      const novo = await fetchDriveStatus();
+      setStatus(novo);
+      if (novo.connected) {
+        setMessage((atual) => (atual && atual.startsWith('Conta do Drive conectada') ? null : atual));
+      } else {
+        // Conectado e depois desconectado sem passar por aqui: o estado manda,
+        // e a confirmação antiga é information falsa.
+        setMessage((atual) => (atual === 'Conta do Drive conectada.' ? null : atual));
+      }
     } catch {
       setStatus(idle);
     } finally {
@@ -105,6 +131,12 @@ export function DriveAccountProvider({ children }: { children: ReactNode }) {
     if (!router.isReady) return;
     const aviso = mensagemDe(query);
     if (!aviso) return;
+    /*
+     * A confirmação é mostrada **antes** do `refresh` terminar, para não haver um
+     * instante em que a tela não diz nada. O `refresh` decide se ela fica: se o
+     * servidor responder que a conta não está conectada, o aviso de sucesso é
+     * information falsa e sai junto.
+     */
     setMessage(aviso);
     if (query === 'connected' || query === 'denied' || query === 'error') void refresh();
     const resto = { ...router.query };
