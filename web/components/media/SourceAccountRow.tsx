@@ -71,7 +71,7 @@ export function SourceAccountRow({
             <span className="min-w-0 text-2xs leading-snug text-ink-faint">
               {account.configured
                 ? 'Nenhuma conta conectada'
-                : 'Integração não configurada no servidor'}
+                : 'Integração não configurada'}
             </span>
           )}
         </span>

@@ -207,48 +207,55 @@ o registro local.
 A busca por texto ainda aceita `YOUTUBE_API_KEY` como fallback quando ninguém conectou a conta.
 Colar um link do YouTube continua funcionando sem OAuth.
 
-### Google Drive (OAuth por usuário)
+### Google Drive (Picker + `drive.file`)
 
-Quem conecta a conta escolhe um vídeo do Drive e ele é **copiado para o bucket da sala** — a faixa
-entra como `kind: 'file'`, igual a um envio comum. Ninguém mais precisa de acesso ao Drive, e o
-Render nunca vê o vídeo.
-
-A cópia é a única opção que funciona, e vale registrar por quê: um arquivo do Drive é privado, e o
-token de quem o escolheu não viaja para os outros participantes; e o Drive não tem URL de vídeo
-reproduzível, porque o `uc?export=download` devolve uma página HTML de confirmação assim que o
-arquivo passa de algumas dezenas de MB — justamente o tamanho de um episódio. Deixar a faixa
-apontando para o Drive exigiria um proxy com autenticação por sala, e o vídeo passaria inteiro
-pelo servidor.
+A pessoa escolhe um vídeo no Google Picker; o navegador baixa esse arquivo e o copia para o bucket
+da sala. A playlist recebe `kind: 'file'`, então todos assistem pela mesma URL sem precisar de
+permissão no Drive. Os bytes nunca passam pelo servidor. O app não enumera o Drive: o escopo
+`drive.file` permite trabalhar apenas com arquivos que a pessoa selecionou ou abriu com o app.
 
 No [Google Cloud Console](https://console.cloud.google.com/):
 
-1. Ative a **Google Drive API**.
-2. Em **Tela de consentimento OAuth**, acrescente o escopo
-   `https://www.googleapis.com/auth/drive.readonly`.
-   Ele é **sensível**, então o app continua no modo Testes: cada conta que for usar precisa estar
-   em **Usuários de teste**, e o refresh token expira em 7 dias. É o mesmo limite que o YouTube já
-   tem, não uma novidade desta integração.
-3. Em **URIs de redirecionamento**, acrescente uma segunda URI, do mesmo client:
+1. Ative **Google Drive API** e **Google Picker API** no mesmo projeto Cloud que contém o client OAuth.
+2. Configure a tela de consentimento OAuth com o escopo
+   `https://www.googleapis.com/auth/drive.file`. Não solicite `drive.readonly`.
+3. Use o client OAuth Web já configurado para o YouTube, dentro desse mesmo projeto. O callback do
+   Drive continua sendo uma URI separada; acrescente `https://<seu-back>/api/drive/oauth/callback` em **URIs de
+   redirecionamento** e mantenha `GOOGLE_DRIVE_REDIRECT_URI` em `server/.env`. O `client_secret` e
+   os refresh tokens ficam no servidor (Redis, cifrados).
+4. Crie uma chave de API para o Picker. É necessária **só para o Picker dentro da página** (navegador
+   e front na web); o app desktop não a usa. Restrinja-a à **Google Picker API** e à **Google Drive API**, e em
+   *Restrições de site* inclua o front e `https://docs.google.com/*` — sem essa última o Picker
+   exibe "API developer key is invalid", porque o seletor é um iframe do Google.
+5. Configure em `web/.env.local` (e nas variáveis de build da Vercel/desktop):
 
    ```
-   https://<seu-back>/api/drive/oauth/callback
+   NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=...
+   NEXT_PUBLIC_GOOGLE_CLOUD_PROJECT_NUMBER=...
    ```
 
-   O Google casa o callback por caminho: a URI do YouTube não serve para o Drive. É o passo que
-   mais costuma faltar, e o sintoma é o callback dar `redirect_uri_mismatch`.
-4. Em `server/.env`:
+   O segundo valor é o número do projeto Cloud usado como **App ID** pelo Picker. A chave de API
+   é pública por natureza; mantenha as restrições de origem e API.
 
-   ```
-   GOOGLE_DRIVE_REDIRECT_URI=https://<seu-back>/api/drive/oauth/callback
-   ```
+**No app desktop a seleção acontece no navegador do sistema**, pelo mesmo motivo do login: o Google
+recusa o Picker dentro da janela do Electron. O app abre a autorização com `trigger_onepick`, o
+Google devolve o ID do vídeo escolhido no callback, e o servidor guarda esse ID **vinculado à sessão
+do app** — o navegador externo não tem o cookie da sessão, e sem esse vínculo a seleção não
+alcançaria o app. A cópia do arquivo continua no app, com barra de progresso. Não há chave de API
+para configurar no desktop, e o `returnTo` do OAuth não importa: o callback mostra uma página de
+conclusão em vez de abrir uma segunda cópia do Juntos no navegador.
 
-   As demais chaves (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`) são as mesmas do YouTube: a
-   integração reusa a credencial existente, e o `client_secret` e os refresh tokens ficam só no
-   servidor (Redis, cifrados).
+`drive.file` é um escopo não sensível, o que normalmente evita a verificação de escopos sensíveis
+exigida por `drive.readonly`; isso não dispensa seguir os requisitos de publicação do Google. Contas
+que já autorizaram a versão antiga precisam reconectar: os tokens locais antigos com acesso amplo
+são descartados, e o novo consentimento solicita somente `drive.file`.
 
-**Custo de cada cópia:** o arquivo ocupa espaço no bucket até a limpeza periódica, e baixar pela
-API do Drive conta contra a cota diária do Google. O seletor mostra o progresso das duas etapas
-porque o round trip é longo e um cartão parado sem explicação parece travado.
+**Custo de cada cópia:** o arquivo ocupa espaço no bucket até a limpeza periódica, e o download
+conta contra a cota da Google Drive API. O painel mostra o progresso do download e do envio.
+
+**Testes do fluxo:** `cd server && npm run test:drive`. A suíte sobe um servidor de salas real em
+uma porta efêmera, com Redis e token do Google simulados, e cobre o vínculo da seleção à sessão do
+app, o `state` de uso único, o PKCE, o cancelamento nos dois lados e a expiração.
 
 ### Busca no YouTube (chave de API, opcional)
 

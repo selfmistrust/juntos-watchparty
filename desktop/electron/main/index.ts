@@ -119,7 +119,7 @@ function registrarIpc(): void {
    * confiável da conversa: um `file:` ou um `data:` aqui viraria a abertura de
    * um conteúdo que não é uma página.
    */
-  ipcMain.handle('desktop:abrir-no-navegador', (_e, url: unknown) => {
+  ipcMain.handle('desktop:abrir-no-navegador', async (_e, url: unknown) => {
     if (typeof url !== 'string' || url.length === 0 || url.length > 2048) return false;
     let destino: string;
     try {
@@ -129,8 +129,12 @@ function registrarIpc(): void {
     } catch {
       return false;
     }
-    void shell.openExternal(destino);
-    return true;
+    try {
+      await shell.openExternal(destino);
+      return true;
+    } catch {
+      return false;
+    }
   });
 
   ipcMain.handle('desktop:escolher-fonte', (_e, id: string) => {

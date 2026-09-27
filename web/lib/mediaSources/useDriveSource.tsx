@@ -3,6 +3,8 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { DrivePickerPanel } from '@/components/media/DrivePickerPanel';
 import { useDriveAccount } from '@/hooks/useDriveAccount';
+import { drivePickerConfigured } from '@/lib/driveAccount';
+import { isDesktop } from '@/lib/desktop';
 import { driveProvider } from './drive';
 import type { MediaSourceAccount, MediaSourceContext, MediaSourceProvider, MediaSourceState } from './types';
 import { READY, checking } from './types';
@@ -32,16 +34,13 @@ export function useDriveSource(): {
   provider: MediaSourceProvider;
   panel: ReactNode;
 } {
-  const { status, loading, busy, message, error, connect, disconnect } = useDriveAccount();
+  const { status, loading, busy, message, error, connect, disconnect, refresh } = useDriveAccount();
   const [contexto, setContexto] = useState<MediaSourceContext | null>(null);
 
   const conta = useMemo<MediaSourceAccount>(
     () => ({
-      configured: status.configured,
+      configured: status.configured && (isDesktop() || drivePickerConfigured()),
       connected: status.connected,
-      // O Drive não tem "canal": quem identifica a conta é a pessoa, e o nome de
-      // exibição do Google serve.
-      detail: status.displayName || status.email,
       busy,
       message,
       error,
@@ -66,11 +65,10 @@ export function useDriveSource(): {
       // dependências e traz os mesmos dois campos, então descrever por ela
       // evita a lista de dependências divergir do que o memo realmente lê.
       description: !conta.configured
-        ? 'A integração com o Drive não está configurada no servidor.'
+        ? 'O Google Drive ainda não está configurado para este app.'
         : conta.connected
-          ? 'Copie um vídeo do seu Drive para a fila.'
-          : 'Conecte sua conta para copiar um vídeo do Drive.',
-      account: conta,
+          ? 'Escolha um vídeo no Picker para copiá-lo para a sala.'
+          : 'Conecte sua conta para escolher um vídeo do Drive.',
       /*
        * Nunca fica realmente indisponível. Sem conta, abrir o seletor mostra o
        * botão de conectar dentro dele; o problema é "não tenho conta", não
@@ -86,6 +84,6 @@ export function useDriveSource(): {
 
   return {
     provider,
-    panel: contexto ? <DrivePickerPanel open context={contexto} onClose={fechar} /> : null,
+    panel: contexto ? <DrivePickerPanel open context={contexto} account={conta} refreshAccount={refresh} onClose={fechar} /> : null,
   };
 }

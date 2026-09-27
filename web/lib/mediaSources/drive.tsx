@@ -59,15 +59,9 @@ function DriveMark({ size = 24 }: { size?: number }) {
 /**
  * Google Drive.
  *
- * A integração existe no modal desde já, mas fica indisponível: o item de
- * playlist atual guarda `kind` + `src`, e o Drive não entrega um link direto de
- * vídeo reproduzível no navegador — precisaria de proxy no servidor, com
- * autenticação por sala. Esse trabalho é de backend e fica de fora desta
- * entrega.
- *
- * A entrada está aqui de propósito: mostra que "aplicação indisponível" é um
- * estado de primeira classe, e o lugar do código já está reservado para quando
- * o proxy existir.
+ * O Google Picker seleciona um arquivo acessível com `drive.file`; depois o
+ * navegador de quem escolheu copia os bytes para o bucket compartilhado da sala.
+ * A playlist continua usando `kind: 'file'`, sem um player ou proxy novo.
  */
 export const driveProvider: MediaSourceProvider = {
   id: 'drive',
@@ -75,7 +69,7 @@ export const driveProvider: MediaSourceProvider = {
   // O texto definitivo vem de `useDriveSource`, que sabe se a conta está
   // conectada. Este é o estado inicial, que é o que o modal mostra no primeiro
   // render, antes do status chegar.
-  description: 'Conecte sua conta para copiar um vídeo do Drive.',
+  description: 'Escolha um vídeo do Drive e copie-o para a sala.',
   icon: <DriveMark />,
   // O ícone já tem as cores da marca, então este `accent` não chega a ser
   // usado. Fica no azul oficial (#3186FF) para o caso do card cair no

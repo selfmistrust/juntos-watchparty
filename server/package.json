@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
+    "test:drive": "tsx --tsconfig ../web/tsconfig.json --test tests/drivePicker.test.ts ../web/tests/driveBrowserPicker.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

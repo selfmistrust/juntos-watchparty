@@ -18,8 +18,8 @@ import {
 } from './googleOAuth.js';
 
 /**
- * Google Drive: conectar a conta, listar os vídeos, e autorizar a leitura de um
- * arquivo escolhido.
+ * Google Drive: conectar a conta e autorizar a leitura dos arquivos escolhidos
+ * explicitamente pela pessoa no Google Picker.
  *
  * ## O que o Drive entrega, e o que ele não entrega
  *
@@ -35,28 +35,36 @@ import {
  * de token, ninguém precisa de permissão de compartilhamento, e o player não
  * ganha um modo novo.
  *
- * O comentário antigo no card do Drive falava em "proxy no servidor, com
- * autenticação por sala", que é a solução para a outra abordagem — deixar a
- * faixa apontar para o Drive. Aqui a faixa não aponta para o Drive, então o
- * proxy não é necessário e o Render não vê o vídeo.
+ * O Picker limita o acesso do app aos arquivos selecionados; o escopo
+ * `drive.file` não permite enumerar o Drive inteiro. A faixa não aponta para o
+ * Drive, então o proxy não é necessário e o Render não vê o vídeo.
  */
 
-const DRIVE_ABOUT = 'https://www.googleapis.com/drive/v3/about';
-const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
-const DRIVE_DOWNLOAD = 'https://www.googleapis.com/drive/v3/files';
-
-const SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const LEGACY_WIDE_SCOPES = new Set([
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/drive.readonly',
+]);
 const TOKEN_KEY = (sessionId: string) => `drive:tokens:${sessionId}`;
 const PENDING_KEY = (state: string) => `drive:oauth:${state}`;
+const PICKER_KEY = (sessionId: string, requestId: string) => `drive:picker:${sessionId}:${requestId}`;
 const REFRESH_LOCK = (sessionId: string) => `drive:refreshlock:${sessionId}`;
 const TOKEN_TTL_SEC = 30 * 24 * 60 * 60;
+
+export type DrivePickerResult =
+  | { status: 'pending' }
+  | { status: 'picked'; fileId: string }
+  | { status: 'cancelled' }
+  | { status: 'error' };
+
+type PickerRequest = {
+  oauthState: string;
+  result: DrivePickerResult;
+};
 
 export type DrivePublicStatus = {
   configured: boolean;
   connected: boolean;
-  /** Nome de exibição da conta, para o card não ficar anônimo. */
-  displayName?: string;
-  email?: string;
 };
 
 type TokenRecord = {
@@ -64,8 +72,6 @@ type TokenRecord = {
   accessToken: string;
   accessExpiresAt: number;
   scope: string;
-  displayName: string;
-  email: string;
   connectedAt: number;
   generation: number;
 };
@@ -76,16 +82,8 @@ type PendingOAuth = {
   returnTo: string;
   /** Mesma ideia do YouTube: o desktop pede a tela de conclusão do servidor. */
   voltarComo: 'app' | 'pagina';
-};
-
-export type DriveFile = {
-  id: string;
-  name: string;
-  mimeType: string;
-  /** Bytes, quando o Drive informa. */
-  size?: number;
-  /** Milissegundos, quando o Drive sabe extrair do arquivo. */
-  durationMs?: number;
+  /** Pedido de seleção, vinculado à sessão que abriu o navegador do sistema. */
+  pickerId?: string;
 };
 
 export function driveOAuthConfigured(): boolean {
@@ -141,24 +139,40 @@ export async function getPublicStatus(sessionId: string | null): Promise<DrivePu
   if (!configured || !sessionId) return { configured, connected: false };
   const record = await loadTokens(sessionId);
   if (!record) return { configured, connected: false };
-  return {
-    configured,
-    connected: true,
-    displayName: record.displayName || undefined,
-    email: record.email || undefined,
-  };
+  if (!hasLimitedDriveScope(record.scope)) {
+    // Tokens criados antes do Picker podiam ler o Drive inteiro. Revoga-os e
+    // pede que a pessoa reconecte para receber apenas drive.file.
+    await revokeAndDelete(sessionId);
+    return { configured, connected: false };
+  }
+  return { configured, connected: true };
+}
+
+function hasLimitedDriveScope(scope: string | undefined): boolean {
+  if (!scope) return false;
+  const scopes = scope.split(/\s+/);
+  return scopes.includes(SCOPE) && !scopes.some((item) => LEGACY_WIDE_SCOPES.has(item));
 }
 
 export async function createAuthUrl(
   sessionId: string,
   returnTo: string,
   voltarComo: PendingOAuth['voltarComo'] = 'app',
+  pickerId?: string,
 ): Promise<string | null> {
   if (!driveOAuthConfigured()) return null;
+  const existing = await loadTokens(sessionId);
+  if (existing && !hasLimitedDriveScope(existing.scope)) {
+    await revokeAndDelete(sessionId);
+  }
   const { verifier, challenge } = pkce();
   const state = newState();
-  const pending: PendingOAuth = { sessionId, codeVerifier: verifier, returnTo, voltarComo };
+  const pending: PendingOAuth = { sessionId, codeVerifier: verifier, returnTo, voltarComo, pickerId };
   await redis.set(PENDING_KEY(state), JSON.stringify(pending), 'EX', PENDING_TTL_SEC);
+  if (pickerId) {
+    const request: PickerRequest = { oauthState: state, result: { status: 'pending' } };
+    await redis.set(PICKER_KEY(sessionId, pickerId), JSON.stringify(request), 'EX', PENDING_TTL_SEC);
+  }
 
   const url = new URL(GOOGLE_AUTH);
   url.searchParams.set('client_id', clientId());
@@ -167,17 +181,68 @@ export async function createAuthUrl(
   url.searchParams.set('scope', SCOPE);
   url.searchParams.set('state', state);
   url.searchParams.set('access_type', 'offline');
-  // `consent` de propósito, como no YouTube: sem ele o Google só devolve o
-  // refresh token na primeira vez, e um segundo login silenciosamente falha.
+  // `consent` é necessário para obter um refresh token no fluxo do servidor.
   url.searchParams.set('prompt', 'consent');
-  url.searchParams.set('include_granted_scopes', 'true');
+  // O Picker externo aceita somente drive.file, sem agregar escopos anteriores.
+  url.searchParams.set('include_granted_scopes', 'false');
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
+  if (pickerId) {
+    url.searchParams.set('trigger_onepick', 'true');
+    url.searchParams.set('allow_multiple', 'false');
+    url.searchParams.set('mimetypes', [
+      'video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska',
+      'video/x-msvideo', 'video/mpeg', 'video/ogg', 'video/3gpp', 'video/x-ms-wmv',
+    ].join(','));
+  }
   return url.toString();
 }
 
+export async function createPickerRequest(sessionId: string, returnTo: string): Promise<{
+  url: string;
+  requestId: string;
+  expiresAt: number;
+} | null> {
+  const requestId = newState();
+  const url = await createAuthUrl(sessionId, returnTo, 'pagina', requestId);
+  if (!url) return null;
+  return { url, requestId, expiresAt: Date.now() + PENDING_TTL_SEC * 1000 };
+}
+
+async function loadPickerRequest(sessionId: string, requestId: string): Promise<PickerRequest | null> {
+  if (!/^[a-z0-9]{32}$/.test(requestId)) return null;
+  const raw = await redis.get(PICKER_KEY(sessionId, requestId));
+  return raw ? JSON.parse(raw) as PickerRequest : null;
+}
+
+export async function getPickerResult(sessionId: string, requestId: string): Promise<DrivePickerResult | null> {
+  return (await loadPickerRequest(sessionId, requestId))?.result ?? null;
+}
+
+export async function finishPickerRequest(
+  sessionId: string,
+  requestId: string,
+  result: Exclude<DrivePickerResult, { status: 'pending' }>,
+): Promise<boolean> {
+  const request = await loadPickerRequest(sessionId, requestId);
+  if (!request || request.result.status !== 'pending') return false;
+  // XX evita ressuscitar uma seleção cancelada enquanto a troca do código
+  // OAuth estava em andamento. O resultado pode ser relido após falha de rede.
+  const saved = await redis.set(
+    PICKER_KEY(sessionId, requestId), JSON.stringify({ ...request, result }),
+    'EX', PENDING_TTL_SEC, 'XX',
+  );
+  return saved === 'OK';
+}
+
+export async function cancelPickerRequest(sessionId: string, requestId: string): Promise<void> {
+  const request = await loadPickerRequest(sessionId, requestId);
+  if (!request) return;
+  await redis.del(PICKER_KEY(sessionId, requestId), PENDING_KEY(request.oauthState));
+}
+
 export async function takePending(state: string): Promise<PendingOAuth | null> {
-  if (!state) return null;
+  if (!/^[a-z0-9]{32}$/.test(state)) return null;
   const raw = await redis.getdel(PENDING_KEY(state));
   if (!raw) return null;
   try {
@@ -186,39 +251,6 @@ export async function takePending(state: string): Promise<PendingOAuth | null> {
     return parsed;
   } catch {
     return null;
-  }
-}
-
-/**
- * Quem é a pessoa conectada.
- *
- * O `about` é a única chamada que devolve identidade. O e-mail fica guardado
- * porque é o que a pessoa reconhece como "a conta que conectei" — e o card
- * mostra o nome, não o e-mail.
- */
-async function fetchAbout(accessToken: string): Promise<{ displayName: string; email: string }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-  try {
-    const url = new URL(DRIVE_ABOUT);
-    url.searchParams.set('fields', 'user(displayName,emailAddress)');
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!response.ok) return { displayName: '', email: '' };
-    const data = (await response.json()) as {
-      user?: { displayName?: string; emailAddress?: string };
-    };
-    return {
-      displayName: data.user?.displayName ?? '',
-      email: data.user?.emailAddress ?? '',
-    };
-  } catch {
-    clearTimeout(timeout);
-    // A identidade é secundária: sem ela a conexão funciona igual, e um timeout no `about` não pode custar o login inteiro.
-    return { displayName: '', email: '' };
   }
 }
 
@@ -247,6 +279,13 @@ export async function completeOAuth(params: {
     return { ok: false, reason: 'api_error' };
   }
 
+  const grantedScope = token.scope ?? SCOPE;
+  if (!hasLimitedDriveScope(grantedScope)) {
+    console.error('[drive-oauth] token retornado com escopo além de drive.file');
+    await revokeGoogleToken(token.refresh_token || token.access_token);
+    return { ok: false, reason: 'api_error' };
+  }
+
   const existing = await loadTokens(params.sessionId);
   const refreshToken = token.refresh_token || existing?.refreshToken;
   if (!refreshToken) {
@@ -254,15 +293,11 @@ export async function completeOAuth(params: {
     return { ok: false, reason: 'api_error' };
   }
 
-  const about = await fetchAbout(token.access_token);
-
   await saveTokens(params.sessionId, {
     refreshToken,
     accessToken: token.access_token,
     accessExpiresAt: Date.now() + expiraEmMs(token.expires_in),
-    scope: token.scope ?? SCOPE,
-    displayName: about.displayName || existing?.displayName || '',
-    email: about.email || existing?.email || '',
+    scope: grantedScope,
     connectedAt: existing?.connectedAt ?? Date.now(),
     generation: (existing?.generation ?? 0) + 1,
   });
@@ -308,6 +343,10 @@ async function refreshAccessToken(
       scope: token.scope ?? record.scope,
       generation: record.generation + 1,
     };
+    if (!hasLimitedDriveScope(next.scope)) {
+      await revokeAndDelete(sessionId);
+      return null;
+    }
     await saveTokens(sessionId, next, record.generation);
     return next;
   } finally {
@@ -321,6 +360,10 @@ export async function getValidAccessToken(
 ): Promise<{ ok: true; accessToken: string } | { ok: false; reason: AuthFailure }> {
   const record = await loadTokens(sessionId);
   if (!record) return { ok: false, reason: 'not_connected' };
+  if (!hasLimitedDriveScope(record.scope)) {
+    await revokeAndDelete(sessionId);
+    return { ok: false, reason: 'not_connected' };
+  }
   if (record.accessExpiresAt > Date.now() + 15_000) {
     return { ok: true, accessToken: record.accessToken };
   }
@@ -333,114 +376,22 @@ export async function getValidAccessToken(
   return { ok: true, accessToken: refreshed.accessToken };
 }
 
-/**
- * Os vídeos da conta, mais recentes primeiro.
- *
- * O filtro é por tipo MIME de vídeo, e não por extensão: o Drive conhece o
- * conteúdo de um `.mkv` mesmo quando o nome não diz nada, e `mimeType contains
- * 'video/'` pega também os formatos que o Google não lista no `video/mp4` de
- * propósito — um `.mkv` com codec estranho ainda é `video/x-matroska`.
- *
- * Sem `thumbnailLink`: os thumbnails do Drive são URLs temporárias que às vezes
- * exigem o mesmo token, e um `<img src>` não consegue mandar cabeçalho. Trocar
- * um thumbnail quebrado por um ícone de arquivo é o melhor negócio.
- */
-export async function listarVideos(
-  accessToken: string,
-  busca?: string,
-): Promise<{ ok: true; files: DriveFile[] } | { ok: false; reason: string }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-  try {
-    const url = new URL(DRIVE_FILES);
-    url.searchParams.set('q', "mimeType contains 'video/' and trashed = false");
-    if (busca && busca.trim()) {
-      // O `name contains` ignora maiúsculas no Drive, então não precisa do
-      // truque de lower().
-      url.searchParams.set(
-        'q',
-        `mimeType contains 'video/' and trashed = false and name contains '${busca.trim().replace(/'/g, "\\'")}'`,
-      );
-    }
-    url.searchParams.set('fields', 'files(id,name,mimeType,size,videoMediaMetadata(durationMsec))');
-    url.searchParams.set('orderBy', 'modifiedTime desc');
-    url.searchParams.set('pageSize', '50');
-    url.searchParams.set('supportsAllDrives', 'true');
-    url.searchParams.set('includeItemsFromAllDrives', 'true');
-
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (response.status === 401 || response.status === 403) {
-      return { ok: false, reason: 'unauthorized' };
-    }
-    if (!response.ok) return { ok: false, reason: 'api_error' };
-
-    const data = (await response.json()) as {
-      files?: {
-        id: string;
-        name?: string;
-        mimeType?: string;
-        size?: string;
-        videoMediaMetadata?: { durationMsec?: string };
-      }[];
-    };
-
-    return {
-      ok: true,
-      files: (data.files ?? []).map((f) => ({
-        id: f.id,
-        name: f.name ?? 'Vídeo',
-        mimeType: f.mimeType ?? 'application/octet-stream',
-        size: f.size ? Number(f.size) : undefined,
-        durationMs: f.videoMediaMetadata?.durationMsec
-          ? Number(f.videoMediaMetadata.durationMsec)
-          : undefined,
-      })),
-    };
-  } catch (err) {
-    clearTimeout(timeout);
-    if (err instanceof Error && err.name === 'AbortError') return { ok: false, reason: 'timeout' };
-    return { ok: false, reason: 'api_error' };
-  }
-}
-
-/**
- * URL de download de um arquivo, e o nome do tipo de conteúdo.
- *
- * O `alt=media` faz o Google devolver os bytes em vez do JSON de metadados. A
- * leitura exige o `Authorization: Bearer`, e é por isso que o token chega ao
- * renderer — o `alt=media` não aceita URL assinada, e um proxy no servidor
- * puxaria o vídeo inteiro pelo Render, que é o oposto do motivo de esta
- * integração existir.
- *
- * O id do arquivo é validado aqui: o id vai para dentro de um caminho de URL, e
- * um id com `/` ou `..` mudaria o endpoint chamado.
- */
-export function downloadUrlDe(fileId: string): { url: string } | { erro: 'bad_file' } {
-  if (!/^[A-Za-z0-9_-]{10,128}$/.test(fileId)) return { erro: 'bad_file' };
-  const url = new URL(`${DRIVE_DOWNLOAD}/${fileId}`);
-  url.searchParams.set('alt', 'media');
-  url.searchParams.set('supportsAllDrives', 'true');
-  return { url: url.toString() };
-}
-
-export async function revokeAndDelete(sessionId: string): Promise<void> {
-  const record = await loadTokens(sessionId);
-  await deleteTokens(sessionId);
-  if (!record) return;
+async function revokeGoogleToken(token: string): Promise<void> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
-    await fetch(`${GOOGLE_REVOKE}?token=${encodeURIComponent(record.refreshToken)}`, {
+    await fetch(`${GOOGLE_REVOKE}?token=${encodeURIComponent(token)}`, {
       method: 'POST',
       signal: controller.signal,
     });
     clearTimeout(timeout);
   } catch {
-    // Revogar no Google é cortesia: o token local já saiu do Redis, e o
-    // refresh token deixa de valer quando o app não o tem mais.
+    // A remoção local continua valendo mesmo se a revogação remota falhar.
   }
+}
+
+export async function revokeAndDelete(sessionId: string): Promise<void> {
+  const record = await loadTokens(sessionId);
+  await deleteTokens(sessionId);
+  if (record) await revokeGoogleToken(record.refreshToken);
 }

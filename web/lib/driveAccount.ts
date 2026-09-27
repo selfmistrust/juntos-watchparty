@@ -3,25 +3,14 @@ import { SERVER_URL } from '@/lib/socket';
 /**
  * Cliente do Google Drive.
  *
- * ## O arquivo não sai daqui
- *
- * Nenhuma função deste arquivo baixa vídeo. O que sai daqui é:
- *
- * - o estado da conexão;
- * - a URL do Google para o consentimento;
- * - a **lista** de vídeos (metadados);
- * - a URL de download e um access token de **uma hora** para um arquivo.
- *
- * Os bytes vão do Drive direto para o bucket da sala, pelo navegador de quem
- * escolheu. O Render nunca vê o vídeo, que é o motivo de a integração existir
- * em vez de um proxy.
+ * O servidor fornece a conexão OAuth e o access token temporário. Metadados e
+ * bytes são obtidos diretamente da Drive API pelo cliente que escolheu o vídeo
+ * (navegador ou renderer do desktop) e a cópia vai direto para o bucket da sala.
  */
 
 export type DriveAccountStatus = {
   configured: boolean;
   connected: boolean;
-  displayName?: string;
-  email?: string;
 };
 
 export type DriveVideo = {
@@ -32,15 +21,14 @@ export type DriveVideo = {
   durationMs?: number;
 };
 
-/** O que o servidor devolve para um arquivo escolhido. */
-export type DriveDownload = {
-  url: string;
-  token: string;
-  name: string;
-  mimeType: string;
-  size?: number;
-  durationMs?: number;
-};
+const DRIVE_FILES = 'https://www.googleapis.com/drive/v3/files';
+
+export const GOOGLE_PICKER_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_PICKER_API_KEY ?? '';
+export const GOOGLE_CLOUD_PROJECT_NUMBER = process.env.NEXT_PUBLIC_GOOGLE_CLOUD_PROJECT_NUMBER ?? '';
+
+export function drivePickerConfigured(): boolean {
+  return Boolean(GOOGLE_PICKER_API_KEY && GOOGLE_CLOUD_PROJECT_NUMBER);
+}
 
 export async function fetchDriveStatus(): Promise<DriveAccountStatus> {
   const res = await fetch(`${SERVER_URL}/api/drive/status`, { credentials: 'include' });
@@ -84,28 +72,60 @@ export async function driveStartUrl(
   return { url: data.url };
 }
 
-export async function listarVideosDrive(busca?: string): Promise<DriveVideo[]> {
-  const url = new URL(`${SERVER_URL}/api/drive/arquivos`);
-  if (busca?.trim()) url.searchParams.set('busca', busca.trim().slice(0, 120));
-  const res = await fetch(url, { credentials: 'include' });
-  if (!res.ok) throw new Error(res.status === 401 ? 'not_connected' : 'list_failed');
-  const data = (await res.json()) as { files?: DriveVideo[] };
-  return data.files ?? [];
+export async function fetchDrivePickerToken(signal?: AbortSignal): Promise<string> {
+  const res = await fetch(`${SERVER_URL}/api/drive/picker-token`, { credentials: 'include', signal });
+  const data = (await res.json().catch(() => null)) as { accessToken?: string } | null;
+  if (!res.ok || !data?.accessToken) {
+    throw new Error(res.status === 401 ? 'not_connected' : 'token_unavailable');
+  }
+  return data.accessToken;
 }
 
-/**
- * URL e token para baixar um arquivo.
- *
- * O token é o **access token**, que o Google expira em uma hora. O refresh token
- * não sai do servidor em momento nenhum: ele fica no Redis e só o servidor o
- * usa. Um access token de leitura que vaza é ruim; um refresh token vazando
- * seria pior, e não acontece.
- */
-export async function pedirDownload(fileId: string): Promise<DriveDownload> {
-  const res = await fetch(`${SERVER_URL}/api/drive/arquivo/${encodeURIComponent(fileId)}/baixar`, {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error(res.status === 404 ? 'not_found' : 'download_failed');
-  return (await res.json()) as DriveDownload;
+export async function fetchDriveVideo(fileId: string, accessToken: string, signal?: AbortSignal): Promise<DriveVideo> {
+  if (!/^[A-Za-z0-9_-]{10,256}$/.test(fileId)) throw new Error('bad_file');
+  const url = new URL(`${DRIVE_FILES}/${encodeURIComponent(fileId)}`);
+  url.searchParams.set('fields', 'id,name,mimeType,size,videoMediaMetadata(durationMillis)');
+  url.searchParams.set('supportsAllDrives', 'true');
+
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('token_expired');
+    if (res.status === 404) throw new Error('not_found');
+    if (res.status === 403) throw new Error('drive_permission');
+    throw new Error('metadata_failed');
+  }
+
+  const file = (await res.json()) as {
+    id?: string;
+    name?: string;
+    mimeType?: string;
+    size?: string;
+    videoMediaMetadata?: { durationMillis?: string };
+  };
+  if (!file.mimeType?.startsWith('video/')) throw new Error('not_a_video');
+  return {
+    id: file.id ?? fileId,
+    name: file.name || 'Vídeo',
+    mimeType: file.mimeType,
+    size: file.size ? Number(file.size) : undefined,
+    durationMs: file.videoMediaMetadata?.durationMillis
+      ? Number(file.videoMediaMetadata.durationMillis)
+      : undefined,
+  };
+}
+
+export async function downloadDriveVideo(fileId: string, accessToken: string, signal?: AbortSignal): Promise<Response> {
+  if (!/^[A-Za-z0-9_-]{10,256}$/.test(fileId)) throw new Error('bad_file');
+  const url = new URL(`${DRIVE_FILES}/${encodeURIComponent(fileId)}`);
+  url.searchParams.set('alt', 'media');
+  url.searchParams.set('supportsAllDrives', 'true');
+
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('token_expired');
+    if (res.status === 404) throw new Error('not_found');
+    if (res.status === 403) throw new Error('drive_permission');
+    throw new Error('download_failed');
+  }
+  return res;
 }

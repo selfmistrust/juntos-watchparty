@@ -147,7 +147,7 @@ export function DriveAccountProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       await disconnectDrive();
-      setStatus((prev) => ({ ...prev, connected: false, displayName: undefined, email: undefined }));
+      setStatus((prev) => ({ ...prev, connected: false }));
       setMessage('Conta do Google Drive desconectada.');
     } catch {
       setError('Não foi possível desconectar. Tente de novo.');

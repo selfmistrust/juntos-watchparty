@@ -1,5 +1,5 @@
 import type { Express, Request, Response } from 'express';
-import { paginaConcluido } from './youtubeConcluido.js';
+import { paginaDriveConcluido } from './driveConcluido.js';
 import {
   CLIENT_ORIGINS,
   ensureSessionId,
@@ -8,27 +8,25 @@ import {
   safeReturnUrl,
   sessionConfigured,
   setSessionCookie,
-  withYoutubeQuery,
 } from './session.js';
 import {
+  cancelPickerRequest,
   completeOAuth,
   createAuthUrl,
-  deleteTokens,
-  downloadUrlDe,
+  createPickerRequest,
   driveOAuthConfigured,
+  finishPickerRequest,
+  getPickerResult,
   getPublicStatus,
   getValidAccessToken,
-  listarVideos,
   revokeAndDelete,
   takePending,
+  type DrivePickerResult,
 } from './driveOAuth.js';
 
 function jsonError(res: Response, http: number, error: string) {
   res.status(http).json({ error });
 }
-
-/** Quantos vídeos uma busca devolve. O Drive pagina, e isto não é um DataGrid. */
-const MAX_ARQUIVOS = 50;
 
 export function registerDriveRoutes(app: Express): void {
   /*
@@ -36,10 +34,12 @@ export function registerDriveRoutes(app: Express): void {
    * JSON porque o `/start` dele não pode ser buscado pelo navegador do sistema,
    * que forjaria uma sessão nova e ligaria a conta a ela.
    */
-  const destinoDe = (voltarComo: 'app' | 'pagina' | undefined, estado: string, returnTo: string) =>
-    voltarComo === 'pagina'
-      ? `/api/drive/oauth/concluido?estado=${encodeURIComponent(estado)}`
-      : withYoutubeQuery(returnTo, estado);
+  const destinoDe = (voltarComo: 'app' | 'pagina', estado: string, returnTo: string) => {
+    if (voltarComo === 'pagina') return `/api/drive/oauth/concluido?estado=${encodeURIComponent(estado)}`;
+    const url = new URL(returnTo);
+    url.searchParams.set('drive', estado);
+    return url.toString();
+  };
 
   app.get('/api/drive/status', async (req, res) => {
     try {
@@ -93,138 +93,124 @@ export function registerDriveRoutes(app: Express): void {
     }
   });
 
+  // O POST nasce no app com seu cookie. O navegador recebe apenas a URL do
+  // Google; os cookies dele não identificam a sessão que receberá a seleção.
+  app.post('/api/drive/picker/start', async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
+    if (!driveOAuthConfigured() || !sessionConfigured()) return jsonError(res, 503, 'not_configured');
+    try {
+      const sessionId = ensureSessionId(req, res);
+      const returnTo = safeReturnUrl(typeof req.body?.returnTo === 'string' ? req.body.returnTo : undefined);
+      const picker = await createPickerRequest(sessionId, returnTo);
+      if (!picker) return jsonError(res, 503, 'not_configured');
+      res.json(picker);
+    } catch {
+      jsonError(res, 500, 'picker_start_failed');
+    }
+  });
+
+  app.get('/api/drive/picker/:id', async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
+    const sessionId = readSessionId(req);
+    if (!sessionId) return jsonError(res, 401, 'no_session');
+    try {
+      const result = await getPickerResult(sessionId, req.params.id);
+      if (!result) return jsonError(res, 410, 'picker_expired');
+      res.json(result);
+    } catch {
+      jsonError(res, 500, 'picker_status_failed');
+    }
+  });
+
+  app.delete('/api/drive/picker/:id', async (req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
+    const sessionId = readSessionId(req);
+    if (!sessionId) return jsonError(res, 401, 'no_session');
+    try {
+      await cancelPickerRequest(sessionId, req.params.id);
+      res.sendStatus(204);
+    } catch {
+      jsonError(res, 500, 'picker_cancel_failed');
+    }
+  });
+
   app.get('/api/drive/oauth/callback', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.set('Referrer-Policy', 'no-referrer');
     const fallback = CLIENT_ORIGINS[0] ?? 'http://localhost:3000';
     const errorParam = typeof req.query.error === 'string' ? req.query.error : '';
     const state = typeof req.query.state === 'string' ? req.query.state : '';
     const code = typeof req.query.code === 'string' ? req.query.code : '';
 
-    const pending = await takePending(state);
-    const returnTo = pending?.returnTo ?? fallback;
-    const voltarComo = pending?.voltarComo ?? 'app';
-
-    if (errorParam === 'access_denied') {
-      return res.redirect(destinoDe(voltarComo, 'denied', returnTo));
-    }
-    if (errorParam) {
-      console.error('[drive-oauth] Google recusou a autorização:', errorParam);
-      return res.redirect(destinoDe(voltarComo, 'error', returnTo));
-    }
-    if (!pending || !code) {
-      return res.redirect(destinoDe(voltarComo, 'error', returnTo));
-    }
-
-    // A sessão vem do `pending`, e não do cookie deste request. Quem autentica é
-    // o `state`, de uso único e com prazo, guardado junto do `code_verifier` do
-    // PKCE. O mesmo raciocínio do YouTube, e pela mesma razão: no desktop a
-    // autorização acontece no navegador do sistema, que não tem o cookie jar do
-    // app.
-    const cookieSession = readSessionId(req);
-    if (cookieSession !== pending.sessionId) {
-      console.log('[drive-oauth] callback sem o cookie da sessão; seguindo a do state');
-    }
-    setSessionCookie(res, pending.sessionId);
-
+    let pending: Awaited<ReturnType<typeof takePending>> = null;
     try {
+      pending = await takePending(state);
+      if (!pending) return res.redirect(destinoDe('pagina', 'expired', fallback));
+      const { sessionId, returnTo, voltarComo, pickerId } = pending;
+      const concluir = async (estado: string, result: Exclude<DrivePickerResult, { status: 'pending' }>) => {
+        if (pickerId && !(await finishPickerRequest(sessionId, pickerId, result))) estado = 'expired';
+        return res.redirect(destinoDe(voltarComo, estado, returnTo));
+      };
+
+      if (pickerId && (await getPickerResult(sessionId, pickerId))?.status !== 'pending') {
+        return res.redirect(destinoDe('pagina', 'expired', returnTo));
+      }
+      if (errorParam === 'access_denied') {
+        return await concluir(pickerId ? 'cancelled' : 'denied', { status: 'cancelled' });
+      }
+      if (errorParam || !code) return await concluir('error', { status: 'error' });
+
+      const fileId = typeof req.query.picked_file_ids === 'string' ? req.query.picked_file_ids : '';
+      if (pickerId) {
+        if (!fileId) return await concluir('cancelled', { status: 'cancelled' });
+        // O Picker externo pede um único vídeo. O ID será consultado na Drive
+        // API com o token da sessão antes de qualquer cópia para a sala.
+        if (!/^[A-Za-z0-9_-]{10,256}$/.test(fileId)) return await concluir('error', { status: 'error' });
+      }
+
       const result = await completeOAuth({
-        sessionId: pending.sessionId,
+        sessionId,
         code,
         codeVerifier: pending.codeVerifier,
       });
       if (!result.ok) {
-        return res.redirect(
-          destinoDe(voltarComo, result.reason === 'denied' ? 'denied' : 'error', returnTo),
-        );
+        return await concluir(result.reason === 'denied' ? 'denied' : 'error', { status: 'error' });
       }
+      // No desktop, o state identifica o app e o navegador mantém a própria
+      // sessão. No fluxo web, o callback restaura o cookie na mesma aba.
+      if (voltarComo === 'app') setSessionCookie(res, sessionId);
+      if (pickerId) return await concluir('picked', { status: 'picked', fileId });
       res.redirect(destinoDe(voltarComo, 'connected', returnTo));
     } catch {
       console.error('[drive-oauth] falha inesperada no callback');
-      res.redirect(destinoDe(voltarComo, 'error', returnTo));
+      if (pending?.pickerId) {
+        await finishPickerRequest(pending.sessionId, pending.pickerId, { status: 'error' }).catch(() => {});
+      }
+      res.redirect(destinoDe(pending?.voltarComo ?? 'pagina', 'error', pending?.returnTo ?? fallback));
     }
   });
 
-  /**
-   * Os vídeos da conta.
-   *
-   * Só lista metadados. Os bytes não passam por aqui em momento nenhum — é o
-   * navegador de quem escolheu que baixa do Drive e sobe no bucket da sala.
-   */
-  app.get('/api/drive/arquivos', async (req, res) => {
-    if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
-    const sessionId = readSessionId(req);
-    if (!sessionId) return jsonError(res, 401, 'no_session');
-
-    const token = await getValidAccessToken(sessionId);
-    if (!token.ok) return jsonError(res, token.reason === 'not_connected' ? 401 : 502, token.reason);
-
-    const busca = typeof req.query.busca === 'string' ? req.query.busca.slice(0, 120) : undefined;
-    const result = await listarVideos(token.accessToken, busca);
-    if (!result.ok) {
-      // Um 401 do Google aqui significa token revogado do lado de lá. Apagar o
-      // local evita que o card fique mostrando "conectada" para sempre, que é o
-      // que acontecia sem isto.
-      if (result.reason === 'unauthorized') await deleteTokens(sessionId);
-      return jsonError(res, result.reason === 'unauthorized' ? 401 : 502, result.reason);
-    }
+  /** Access token curto para o Picker e para o download direto pelo navegador. */
+  app.get('/api/drive/picker-token', async (req, res) => {
     res.set('Cache-Control', 'private, no-store');
-    res.json({ files: result.files.slice(0, MAX_ARQUIVOS) });
-  });
-
-  /**
-   * Access token e URL de download, para o navegador de quem escolheu o arquivo.
-   *
-   * ## Por que o token sai daqui
-   *
-   * O `alt=media` do Drive não aceita URL assinada: ou o caller manda o
-   * `Authorization: Bearer`, ou ele não recebe os bytes. E a alternativa — o
-   * servidor fazer proxy do download — puxaria o vídeo inteiro pelo Render, que
-   * é exatamente o que esta integração existe para evitar.
-   *
-   * Então o token vai para o renderer. O que **não** vai é o refresh token: ele
-   * fica no Redis, e o renderer recebe só o access token, que o Google expira em
-   * uma hora. Um vazamento de token de leitura do Drive, com o `drive.readonly`,
-   * é ruim; um vazamento de refresh token seria pior e não acontece.
-   *
-   * O arquivo escolhido é revalidado contra a lista antes de responder, para
-   * que a URL não aceite um id que a pessoa não enxerga. Sem isso, o endpoint
-   * seria um "baixe qualquer id que você souber".
-   */
-  app.post('/api/drive/arquivo/:id/baixar', async (req: Request, res: Response) => {
     if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden_origin');
     const sessionId = readSessionId(req);
     if (!sessionId) return jsonError(res, 401, 'no_session');
 
-    const id = String(req.params.id ?? '');
-    const alvo = downloadUrlDe(id);
-    if ('erro' in alvo) return jsonError(res, 400, 'bad_file');
-
-    const token = await getValidAccessToken(sessionId);
-    if (!token.ok) return jsonError(res, token.reason === 'not_connected' ? 401 : 502, token.reason);
-
-    // A lista é a única forma de confirmar que o arquivo é um vídeo desta
-    // conta. Custa uma chamada e é o que impede este endpoint de virar um
-    // "baixe qualquer coisa do meu Drive pelo id".
-    const listados = await listarVideos(token.accessToken);
-    if (!listados.ok) {
-      if (listados.reason === 'unauthorized') await deleteTokens(sessionId);
-      return jsonError(res, listados.reason === 'unauthorized' ? 401 : 502, listados.reason);
+    try {
+      const token = await getValidAccessToken(sessionId);
+      if (!token.ok) return jsonError(res, ['not_connected', 'revoked'].includes(token.reason) ? 401 : 502, token.reason);
+      res.json({ accessToken: token.accessToken });
+    } catch {
+      jsonError(res, 500, 'token_unavailable');
     }
-    const arquivo = listados.files.find((f) => f.id === id);
-    if (!arquivo) return jsonError(res, 404, 'not_found');
-
-    res.set('Cache-Control', 'no-store');
-    res.json({
-      url: alvo.url,
-      token: token.accessToken,
-      name: arquivo.name,
-      mimeType: arquivo.mimeType,
-      size: arquivo.size,
-      durationMs: arquivo.durationMs,
-    });
   });
 
   app.get('/api/drive/oauth/concluido', (req, res) => {
-    const { status, html } = paginaConcluido(
+    const { status, html } = paginaDriveConcluido(
       typeof req.query.estado === 'string' ? req.query.estado : undefined,
     );
     res.status(status);
