@@ -46,7 +46,13 @@ export interface DesktopApi {
   /** `true` quando está rodando dentro do Electron. */
   readonly isDesktop: true;
 
-  /** Versão do app, para a UI conseguir mostrar "versão 1.0.0". */
+  /**
+   * Versão do app, para a UI conseguir mostrar "versão 1.0.1".
+   *
+   * Vem de `app.getVersion()`, que lê o `package.json` empacotado. Não é uma
+   * string escrita aqui: as duas pontas precisam concordar, e discordar em
+   * silêncio é como o app passa a anunciar um número diferente do instalador.
+   */
   readonly version: string;
 
   /**

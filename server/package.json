@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "test:drive": "tsx --tsconfig ../web/tsconfig.json --test tests/drivePicker.test.ts tests/permissaoMidia.test.ts ../web/tests/driveBrowserPicker.test.ts ../web/tests/driveMedia.test.ts ../web/tests/driveMediaSemSuporte.test.ts ../web/tests/driveMediaClaim.test.ts ../web/tests/driveMediaRange.test.ts ../web/tests/driveRange.test.ts ../web/tests/syncLoop.test.ts ../web/tests/driveBotaoConectar.test.ts ../web/tests/controlesPlayer.test.ts ../web/tests/driveVigiaLogin.test.ts ../web/tests/playerYoutubeControles.test.ts ../web/tests/playerYoutubeLegenda.test.ts",
+    "test:drive": "tsx --tsconfig ../web/tsconfig.json --test tests/drivePicker.test.ts tests/permissaoMidia.test.ts ../web/tests/driveBrowserPicker.test.ts ../web/tests/driveMedia.test.ts ../web/tests/driveMediaSemSuporte.test.ts ../web/tests/driveMediaClaim.test.ts ../web/tests/driveMediaRange.test.ts ../web/tests/driveRange.test.ts ../web/tests/syncLoop.test.ts ../web/tests/driveBotaoConectar.test.ts ../web/tests/controlesPlayer.test.ts ../web/tests/driveVigiaLogin.test.ts ../web/tests/playerYoutubeControles.test.ts ../web/tests/playerYoutubeLegenda.test.ts ../web/tests/desktopVersao.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

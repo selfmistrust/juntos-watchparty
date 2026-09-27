@@ -171,7 +171,27 @@ function registrarIpc(): void {
     erroDe(razao as CaptureErrorReason, typeof mensagem === 'string' ? mensagem : undefined),
   );
 
-  ipcMain.handle('desktop:versao', () => app.getVersion());
+  /*
+   * Versão, e por que `on` e não `handle`.
+   *
+   * Este canal já existia como `ipcMain.handle`, e nada o chamava: o preload
+   * entregava uma string fixa e o handler ficava morto. `handle` só responde a
+   * `ipcRenderer.invoke`, que é assíncrono, e o contrato de `DesktopApi.version`
+   * é síncrono — mudá-lo para assíncrono obrigaria a UI a lidar com um estado
+   * de carregamento para mostrar um texto que não muda.
+   *
+   * `on` + `sendSync` resolve os dois: a resposta é síncrona e o contrato
+   * continua como está. O custo é um bloqueio, e ele é irrelevante aqui — é um
+   * `package.json` lido uma vez, quando o preload carrega, e antes de a janela
+   * existir.
+   *
+   * A versão agora tem uma fonte só. Ela era escrita à mão em dois lugares, e
+   * nenhum dos dois avisava quando o outro mudava: subir o `package.json` para
+   * 1.0.1 produzia um instalador 1.0.1 que se anunciava como 1.0.0.
+   */
+  ipcMain.on('desktop:versao', (evento) => {
+    evento.returnValue = app.getVersion();
+  });
 }
 
 /**

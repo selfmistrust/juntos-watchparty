@@ -20,7 +20,20 @@ function soTexto(valor: unknown): string | null {
 
 const api: DesktopApi = {
   isDesktop: true,
-  version: '1.0.0',
+  /*
+   * A versão vem do processo principal, que a lê do `package.json` empacotado.
+   *
+   * Era uma string escrita à mão aqui, e o `package.json` tinha a mesma
+   * informação em outro lugar. Os dois discordavam em silêncio: subir a versão
+   * gerava um instalador novo que a janela announcingava com o número antigo.
+   * Nenhum aviso, nenhum teste — só um app mentindo sobre a própria versão, o
+   * que é justamente o número que a pessoa usa para dizer o que está instalado.
+   *
+   * `sendSync` e não `invoke` porque `DesktopApi.version` é síncrono, e o que
+   * seria ganho trocando por Promise é um estado de carregamento para um texto
+   * que não muda. A leitura é de um `package.json`, uma vez, antes da janela.
+   */
+  version: ipcRenderer.sendSync('desktop:versao') as string,
 
   listCaptureSources: () =>
     ipcRenderer.invoke('desktop:listar-fontes', false) as Promise<CaptureSource[]>,
