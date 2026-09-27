@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { loadYoutubeApi } from '@/lib/youtubeApi';
 import type { PlayerHandle } from '@/types';
 
@@ -14,65 +14,38 @@ interface Props {
 /**
  * Params de legenda para o playerVar.
  *
- * A IFrame Player API não tem verbo de "esconder legenda". Isso foi conferido
- * com a legenda visível na tela, não só lendo estado: sem param nenhum ela
- * aparece, com `cc_load_policy=0` também, com `cc_lang_pref` inválido também, no
- * domínio `youtube-nocookie.com` também, e `setOption('captions', 'track', …)`
- * só aceita faixa válida. Em `getOptions('captions')` não existe "esconder" — só
- * `reload`, `fontSize`, `track`, `tracklist`, `translationLanguages` e
- * `sampleSubtitle`.
+ * Só o **ligar** é param de construção. O `cc_load_policy` é lido na construção
+ * do player, e é a única forma de fazer o YouTube carregar faixa.
  *
- * A única alavanca é `cc_load_policy`, e ela só é lida na **construção** do
- * player. Por isso o botão de legenda da watchparty recria o player nos dois
- * sentidos: ligado pede `cc_load_policy: 1`, desligado não pede nada e o
- * padrão do YouTube é não carregar.
+ * O **desligar** é comando de execução, e este texto tem uma história que vale
+ * mais que a informação: durante muito tempo o código afirmou que a IFrame Player
+ * API não tinha verbo para esconder legenda, e que `setOption('captions',
+ * 'track', …)` só aceitava faixa válida. As duas afirmações estavam erradas.
  *
- * A versão anterior deste texto afirmava que o `0` explícito não seguraria a
- * legenda que vem da preferência da conta, e que isso fora medido. Não fora, e a
- * afirmação foi removida em vez de reescrita: era um "não faz diferença" sem
- * medição, que desiste de uma alavanca possivelmente útil.
+ * `setOption('captions', 'track', {})` aceita objeto vazio, não lança, e
+ * **esconde a legenda que está na tela**. Foi conferido contra o player real
+ * depois do sintoma ser reportado por quem usa: o vídeo subia com legenda mesmo
+ * sem nenhum param, e some com o comando.
  *
- * ## O que mudou quando a barra nativa saiu
- *
- * Antes, o botão de CC do próprio YouTube era a rede de segurança do desligar:
- * `cc_load_policy` falhando ainda deixava quem ligou legenda desligá-la. Com
- * `controls: 0` essa rede não existe mais, e o recriar passou a ser a única via.
- *
- * A consequência honesta: se o YouTube devolver as legendas ligadas por conta
- * própria — ele guarda a preferência de legenda por vídeo na conta, e isso tem
- * precedência sobre o param — o botão da watchparty não tem como vencer, porque
- * não existe comando de API para isso. Essa é a fraqueza conhecida de usar só a
- * API, e é o preço de não ter duas barras competindo na tela.
+ * A consequência é boa. O desligar não precisa mais recriar o player: antes a
+ * única via era `cc_load_policy` na construção, então ligar e desligar os dois
+ * derrubavam e refaziam o player, com recarregamento e re-busca no meio da sala.
+ * Agora só o ligar recria, e o desligar é um comando.
  *
  * Português porque é o idioma de quase todo mundo na sala. O YouTube respeita a
  * ordem: se não houver faixa em português, ele cai para outra.
  */
 function legendaParams(captionsOn: boolean): Record<string, string> {
   /*
-   * Este é o padrão do player: sem param algum, o YouTube não carrega faixa. O
-   * `1` abaixo só existe depois que alguém clica no botão — não é um default.
+   * O `1` só existe depois que alguém clica no botão — não é um default. O
+   * caminho desligado manda `{}` e confia no padrão do YouTube, que é não
+   * carregar faixa.
    *
-   * ## O que não está escrito aqui, e por quê
-   *
-   * Existe uma versão anterior deste comentário que dizia que o `0` explícito
-   * não seguraria a legenda vinda da preferência da conta, e que isso tinha sido
-   * medido. Não foi. Ninguém mediu, e a afirmação sobreviveu porque era crível e
-   * ninguém foi conferir. Está aqui fora de propósito: um "não faz diferença"
-   * sem medição é pior do que o silêncio, porque desiste de uma alavanca que
-   * pode funcionar.
-   *
-   * O que se sabe de fato é mais estreito:
-   *
-   * - o YouTube guarda preferência de legenda por conta e por vídeo, e ela pode
-   *   vir acima do param. Isso é do YouTube, e não tem verbo de API;
-   * - `setOption('captions', 'track', {})` **não lança** — foi executado contra o
-   *   player real. O que ele faz é outra pergunta, e a resposta ainda não está
-   *   medida, porque medir exige uma conta com a preferência ligada;
-   * - `cc_load_policy` só é lida na construção, o que é o motivo de o botão
-   *   recriar o player.
-   *
-   * Ou seja: o botão de legenda é a única saída que temos quando a conta força
-   * legenda. Com a barra nativa desligada, ele virou a única de todas.
+   * Ficar em silêncio aqui **não** é garantia de nada quando o player fica
+   * pronto: o YouTube guarda preferência de legenda por conta e por vídeo, e ela
+   * pode vir acima do param. É por isso que `onReady` também chama
+   * `esconderLegenda` — o param cuida da construção, e o comando cuida da
+   * preferência que sobrevive a ela.
    */
   if (!captionsOn) return {};
   return { cc_load_policy: '1', cc_lang_pref: 'pt' };
@@ -141,17 +114,90 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
   callbacks.current = { onReady, onEnded };
 
   /*
+   * A intenção de legenda, lida por ref dentro do `onReady`.
+   *
+   * O `onReady` é criado uma vez por player, e roda depois. Se ele fechar sobre
+   * a prop, ele carrega a valor do instante em que o player foi construído — e
+   * dá para a pessoa desligar a legenda antes de o player ficar pronto, o que
+   * faria o `onReady` achar que a legenda está ligada e não esconder. Por ref, o
+   * `onReady` lê o valor do momento em que roda, que é o que interessa.
+   *
+   * A alternativa seria pôr `captionsOn` na dependência do efeito de criação, e
+   * aí desligar voltaria a recriar o player — que é exatamente o que o latch de
+   * `legendaAoConstruir` existe para evitar.
+   */
+  const legendaIntentada = useRef(captionsOn);
+  legendaIntentada.current = captionsOn;
+
+  /*
+   * `legendaAoConstruir` é "este player foi construído pedindo faixa", e não
+   * `captionsOn`.
+   *
+   * `captionsOn` é a intenção da pessoa e muda nos dois sentidos. O que muda a
+   * construção do player é uma coisa só: alguém pediu faixa ao YouTube. Pedido
+   * uma vez, o `cc_load_policy: 1` fica gravado no player — e o `setOption` tira
+   * a faixa da tela sem precisar de outro player.
+   *
+   * Daí a forma: é um latch que sobe para `true` e **não desce**. Descer seria
+   * recriar o player para desligar legenda, e recriar custava recarregar o
+   * vídeo com a sala inteira assistindo. Ele só recomeça em `videoId`, porque um
+   * player novo nasce do zero e precisa saber o que pedir.
+   *
+   * Sem essa separação, ligar e desligar os dois derrubavam o player.
+   */
+  const [legendaAoConstruir, setLegendaAoConstruir] = useState(captionsOn);
+
+  // Só o ligar recria: o param de construção é a única forma de pedir faixa.
+  useEffect(() => {
+    if (captionsOn) setLegendaAoConstruir(true);
+  }, [captionsOn]);
+
+  // Trocar de vídeo recomeça o latch, a partir da intenção atual de quem está
+  // olhando. A dependência é só o vídeo: entrar no efeito quando `captionsOn`
+  // mudaria faria o desligar recriar, que é o que se quer evitar.
+  useEffect(() => {
+    setLegendaAoConstruir(captionsOn);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId]);
+
+  /*
    * Não existe mais `hideControls`.
    *
    * Ele existia para rebater a barra nativa depois de cada comando nosso, porque
    * o `YT.Player` reconstrói a UI a cada `play`/`pause`/`seek`/`setVolume` — e a
    * correção de deriva dispara a cada ~1,2s, então a barra voltava a cada ciclo
    * se ninguém a escondesse. Com `controls: 0` a UI não é construída, e a
-   * a necessidade de escondê-la desaparece junto. Teria sido deixado como chamada inócua
-   * a cada comando, mas isso custa uma ida ao iframe por ciclo de correção para
-   * não fazer nada, e é o tipo de no-op que sobrevive anos sem ninguém saber por
-   * que existe.
+   * necessidade de escondê-la desaparece junto. Teria sido deixado como chamada
+   * inócua a cada comando, mas isso custa uma ida ao iframe por ciclo de
+   * correção para não fazer nada, e é o tipo de no-op que sobrevive anos sem
+   * ninguém saber por que existe.
    */
+
+  /**
+   * Esconde a legenda que está na tela agora, sem recriar o player.
+   *
+   * `setOption('captions', 'track', {})` com objeto vazio é o comando, e ele
+   * funciona — o vídeo subia com legenda mesmo sem nenhum `cc_load_policy`, e
+   * some com isto. O código dizia há bastante tempo que a API não tinha este
+   * verbo e que objeto vazio era rejeitado; as duas coisas estavam erradas, e a
+   * segunda sobreviveu tanto tempo porque um `try/catch` em volta esconde o
+   * resultado — um comando que não lança parece um comando que funciona, e foi
+   * assim que o defeito passou por revisão.
+   *
+   * É o que cobre a preferência de legenda da conta, que vem acima do param de
+   * construção. Por isso roda no `onReady` e não só quando alguém desliga: a
+   * intenção de quem entra na sala é não ver legenda, mesmo com a conta dela
+   * configurada para sempre mostrar.
+   */
+  const hideCaptions = useCallback(() => {
+    try {
+      playerRef.current?.setOption?.('captions', 'track', {});
+    } catch {
+      // Player ainda não pronto, ou já destruído. Sem legenda escondida, mas o
+      // `try/catch` é o que não pode sumir: sem ele, um player em destroys
+      // derrubaria o efeito inteiro.
+    }
+  }, []);
 
   useEffect(() => {
     // O wrapper é capturado aqui para o cleanup usar o mesmo nó: ele já está
@@ -232,10 +278,18 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
           rel: 0,
           // Sem anotações sobre o vídeo, que entravam por cima do palco.
           iv_load_policy: 3,
-          ...legendaParams(captionsOn),
+          ...legendaParams(legendaAoConstruir),
         },
         events: {
           onReady: () => {
+            /*
+             * A legenda é escondida no `onReady`, e não fica esperando alguém
+             * desligar. `cc_load_policy` ausente cobre a construção, e este
+             * comando cobre a preferência que o YouTube guarda por conta e por
+             * vídeo — que tem precedência sobre o param e sozinha fazia o vídeo
+             * subir com legenda.
+             */
+            if (!legendaIntentada.current) hideCaptions();
             callbacks.current.onReady();
           },
           onStateChange: (e: any) => {
@@ -257,7 +311,28 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
       // porque o React não pode remover o `<iframe>` que o player criou.
       if (wrap) wrap.innerHTML = '';
     };
-  }, [videoId, captionsOn]);
+  }, [videoId, legendaAoConstruir, hideCaptions]);
+
+  /*
+   * Desligar legenda não recria o player.
+   *
+   * O efeito de criação depende de `legendaAoConstruir`, e não de `captionsOn`.
+   * A diferença é o que separa "pedir faixa ao YouTube" de "tirar faixa da
+   * tela": a primeira só existe na construção, a segunda é o `setOption`. Com
+   * `captionsOn` na dependência, desligar derrubava e refazia o player — o vídeo
+   * recarregava e a posição voltava pelo `handleReady` do `VideoStage`, o que
+   * numa sala aparece como um soluço em todo mundo.
+   *
+   * O efeito abaixo roda só na virada para desligado, e é um comando. Ele é
+   * separado do efeito de criação de propósito: se ficasse no mesmo efeito, o
+   * desligar voltaria a recriar, que é o que se quer evitar.
+   */
+  const legendaAnterior = useRef(captionsOn);
+  useEffect(() => {
+    const antes = legendaAnterior.current;
+    legendaAnterior.current = captionsOn;
+    if (antes && !captionsOn) hideCaptions();
+  }, [captionsOn, hideCaptions]);
 
   /*
    * Os verbos da IFrame Player API, e a superfície inteira de comando sobre o

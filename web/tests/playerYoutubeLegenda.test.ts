@@ -125,26 +125,127 @@ test('cc_load_policy nao esta no playerVars, so vem da funcao', () => {
   );
   assert.match(
     bloco,
-    /\.\.\.legendaParams\(captionsOn\)/,
-    'o unico caminho de legenda e a funcao, que respeita a intencao',
+    /\.\.\.legendaParams\(legendaAoConstruir\)/,
+    'o unico caminho de legenda na construcao e a funcao, e ela recebe o latch — nao a intencao, que cairia no desligar',
   );
 });
 
-test('nenhum setOption ou getOptions de captions em tempo de execucao', () => {
+test('o comando que esconde legenda existe e roda no onReady', () => {
   /*
-   * A documentacao do player cita `setOption('captions', ...)` como
-   * possibilidade, e essa citacao e o que costuma ser confundido com codigo
-   * usando. Aqui a busca e feita **depois** de tirar os comentarios: o que
-   * sobrar e chamada de verdade, e nao deve sobrar nada.
+   * Este teste nasceu do contrario do que ele verifica hoje. Ele existia para
+   * garantir que `setOption` **nao** fosse chamado em execucao, com a justificativa
+   * de que a API nao tinha o verbo. As duas coisas estavam erradas: o verbo
+   * existe, aceita objeto vazio, e esconde a legenda que esta na tela.
+   *
+   * E o defeito era invisível por construção: um comando que não lança parece um
+   * comando que funciona, e envolvido em `try/catch` não deixa rastro nenhum. O
+   * código podia ter tentado esconder legenda durante anos e o sintoma seria o
+   * mesmo de nunca ter tentado.
+   *
+   * Por isso o `onReady` é o ponto obrigatório: o param de construção não cobre
+   * a preferencia de legenda que o YouTube guarda por conta e por video, e ela
+   * vem acima do param. Sem o comando no `onReady`, o video sobe com legenda
+   * mesmo sem nenhum `cc_load_policy`.
+   */
+  const codigo = semComentario(youtube);
+  assert.match(
+    codigo,
+    /setOption\?\.\('captions',\s*'track',\s*\{\}\)/,
+    'o comando de esconder legenda precisa existir de verdade',
+  );
+  /*
+   * Procurar `onReady` pela primeira ocorrência pega o da interface `Props` — e
+   * o teste passaria vazio, o que é o pior jeito de um teste falhar. A âncora é
+   * o bloco `events`, que só existe uma vez, dentro do construtor do player.
+   */
+  const iEvents = codigo.indexOf('events: {');
+  assert.ok(iEvents !== -1, 'o bloco events precisa existir');
+  const iReady = codigo.indexOf('onReady:', iEvents);
+  assert.ok(iReady !== -1, 'o onReady do player precisa existir');
+  const trecho = codigo.slice(iReady, iReady + 600);
+  assert.match(
+    trecho,
+    /if \(!legendaIntentada\.current\) hideCaptions\(\)/,
+    'e o onReady precisa esconder quando a intencao e desligado',
+  );
+});
+
+test('desligar legenda nao recria o player', () => {
+  /*
+   * O latch `legendaAoConstruir` é o que separa ligar de desligar.
+   *
+   * Sem ele, a dependência do efeito de criação seria `captionsOn`, e desligar
+   * derrubaria e refazia o player: o vídeo recarregava e a posição voltava pelo
+   * `handleReady` do `VideoStage`. Numa sala isso aparece como um soluço em todo
+   * mundo, por causa de um botão de legenda.
+   *
+   * O teste trava a forma: o latch sobe e não desce dentro do mesmo vídeo, e
+   * recomeça quando o vídeo muda. Descer é o que destruiria o ganho.
+   */
+  const codigo = semComentario(youtube);
+  assert.match(
+    codigo,
+    /const \[legendaAoConstruir, setLegendaAoConstruir\] = useState\(captionsOn\)/,
+    'o latch precisa existir separado da intencao',
+  );
+  assert.match(
+    codigo,
+    /if \(captionsOn\) setLegendaAoConstruir\(true\)/,
+    'e so subir quando alguem liga legenda',
+  );
+
+  const iDeps = codigo.indexOf('}, [videoId, legendaAoConstruir, hideCaptions])');
+  assert.ok(iDeps !== -1, 'a criacao depende do latch, nao da intencao');
+  assert.ok(
+    !/\[videoId, captionsOn/.test(codigo),
+    'depender de captionsOn faria o desligar recriar o player',
+  );
+
+  // O desligar tem de estar em um efeito que observa `captionsOn` de lado.
+  const iVirada = codigo.indexOf('const legendaAnterior');
+  assert.ok(iVirada !== -1, 'o desligar precisa de efeito proprio');
+  const trecho = codigo.slice(iVirada, iVirada + 400);
+  assert.match(
+    trecho,
+    /if \(antes && !captionsOn\) hideCaptions\(\)/,
+    'e ele esconde na virada de ligado para desligado',
+  );
+  assert.ok(
+    !/setLegendaAoConstruir\(false\)/.test(codigo),
+    'o latch nunca pode descer: descer recria o player',
+  );
+});
+
+test('o onReady le a intencao por ref, e nao por props', () => {
+  /*
+   * O `onReady` é criado uma vez por player e roda depois. Se fechar sobre a
+   * prop, ele carrega o valor do instante da construção — e dá para desligar a
+   * legenda antes de o player ficar pronto, o que faria o `onReady` achar que
+   * está ligado e não esconder. Por ref, ele lê o valor do momento em que roda.
+   */
+  const codigo = semComentario(youtube);
+  assert.match(
+    codigo,
+    /const legendaIntentada = useRef\(captionsOn\)/,
+    'a intencao precisa de ref para o onReady',
+  );
+  assert.match(
+    codigo,
+    /legendaIntentada\.current = captionsOn/,
+    'e a ref precisa ser atualizada a cada render',
+  );
+});
+
+test('nenhum getOptions de captions em tempo de execucao', () => {
+  /*
+   * `getOptions('captions')` devolveu objeto vazio em todos os videos testados,
+   * contra o player real. Não serve para decidir se há faixa, então não tem por
+   * que estar no código: ele só daria a ilusão de estar consultando algo.
    */
   const codigo = semComentario(youtube);
   assert.ok(
-    !/setOption\s*\(/.test(codigo),
-    'setOption nao pode ser chamado em execucao: so existe em comentario',
-  );
-  assert.ok(
     !/getOptions\s*\(/.test(codigo),
-    'getOptions idem',
+    'getOptions nao informa nada util aqui: devolve vazio',
   );
   assert.ok(
     !/loadModule\(|addEventListener\(['"]onCaptions/.test(codigo),
