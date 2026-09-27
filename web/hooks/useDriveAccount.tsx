@@ -26,6 +26,78 @@ type DriveAccountValue = {
 
 const DriveAccountContext = createContext<DriveAccountValue | null>(null);
 
+/*
+ * Vigia do login que não voltou.
+ *
+ * ## O buraco que isso fecha
+ *
+ * O OAuth do Drive é a única parte do fluxo em que a nossa página **sai** e
+ * alguém mais decide se volta. Se o Google morre na tela de escolha de conta, o
+ * callback nunca chega, e o app fica parado com o botão de conectar, sem nunca
+ * dizer nada. Do lado de quem está olhando, "o botão não funciona" e "o Google
+ * recusou" são indistinguíveis — e essa era a situação reportada: duas pessoas
+ * vendo `unknownerror_view` no Google e nenhuma pista de onde o fluxo parou.
+ *
+ * O que dá para provar é o suficiente, e é o que importa: nós emitimos o
+ * `/start` no instante X, o servidor respondeu, o callback não voltou, e a conta
+ * continua desconectada. Isso é um motivo verificável. **Por que** o Google não
+ * voltou fica fora do nosso alcance — a tela é do Google e a falha acontece
+ * antes de qualquer chamada ao nosso servidor — então a mensagem diz o que
+ * sabemos e aponta a checagem, em vez de inventar uma causa.
+ *
+ * ## Por que `sessionStorage` e não um `useState`
+ *
+ * A página é descarregada no meio do fluxo: o `connect` chama
+ * `location.assign` e o documento morre. Um `useState` se perde junto, e com ele
+ * a prova de que o login tinha partido. `sessionStorage` é por aba e sobrevive à
+ * navegação, então a volta ao app ainda encontra o carimbo. `localStorage`
+ * sobreviveria também, mas por aba é o certo: o vigia precisa ser do login que
+ * saiu daqui, não de um que começou numa aba anterior.
+ *
+ * ## Por que 90 segundos
+ *
+ * O Google mostra a tela de conta rápido, mas ler o consentimento leva tempo. 90
+ * s é folgado o bastante para não acusar uma pessoa que está lendo os escopos, e
+ * curto o bastante para não virar espera. Passado o prazo, a mensagem é mostrada
+ * uma vez e o carimbo é limpo — a partir daí ela vira estado normal, senão um
+ * login abandonado de horas atrás continuaria acusando.
+ */
+const CHAVE_ESPERA = 'juntos.drive.loginIniciadoEm';
+const ESPERA_MS = 90_000;
+
+function marcarEspera(): void {
+  try {
+    window.sessionStorage.setItem(CHAVE_ESPERA, String(Date.now()));
+  } catch {
+    /*
+     * Modo privado ou `sessionStorage` bloqueado. Perder a marca aqui só custa o
+     * vigia, e falhar o login por causa disso seria pior que não tê-lo.
+     */
+  }
+}
+
+function lerEspera(): number | null {
+  try {
+    const bruto = window.sessionStorage.getItem(CHAVE_ESPERA);
+    if (!bruto) return null;
+    const quando = Number(bruto);
+    return Number.isFinite(quando) ? quando : null;
+  } catch {
+    return null;
+  }
+}
+
+function limparEspera(): void {
+  try {
+    window.sessionStorage.removeItem(CHAVE_ESPERA);
+  } catch {
+    /* mesma razão de `marcarEspera`: sem storage não há vigia, e tudo o mais segue */
+  }
+}
+
+const LOGIN_NAO_VOLTOU =
+  'O Google não voltou do login. A tela de escolha de conta não completou, então a conta segue desconectada. Costuma ser o navegador bloqueando o seletor de contas do Google: tente em uma janela anônima, ou em outro navegador, antes de tentar de novo.';
+
 /** As mesmas quatro mensagens do YouTube, adaptadas ao que a pessoa fez. */
 const MENSAGENS: Record<string, string> = {
   connected: 'Conta do Drive conectada.',
@@ -94,10 +166,28 @@ export function DriveAccountProvider({ children }: { children: ReactNode }) {
       setStatus(novo);
       if (novo.connected) {
         setMessage((atual) => (atual && atual.startsWith('Conta do Drive conectada') ? null : atual));
+        // Conectou: a espera acabou da forma boa, e o carimbo não pode sobrar
+        // para acusar o próximo login.
+        limparEspera();
       } else {
         // Conectado e depois desconectado sem passar por aqui: o estado manda,
-        // e a confirmação antiga é information falsa.
+        // e a confirmação antiga vira informação falsa.
         setMessage((atual) => (atual === 'Conta do Drive conectada.' ? null : atual));
+        /*
+         * O vigia. Só aqui que ele pode rodar: `refresh` é quem sabe que a
+         * conta continua fora, e é ele que roda no foco de volta da janela do
+         * Google — exatamente o instante em que a pessoa descobre que o login
+         * não voltou.
+         *
+         * A ordem importa: a mensagem do vigia é escrita **depois** da limpeza
+         * da confirmação, senão a regra de "o estado vence" apagaria a única
+         * frase que explica a tela.
+         */
+        const quando = lerEspera();
+        if (quando !== null && Date.now() - quando > ESPERA_MS) {
+          limparEspera();
+          setMessage(LOGIN_NAO_VOLTOU);
+        }
       }
     } catch {
       setStatus(idle);
@@ -135,9 +225,21 @@ export function DriveAccountProvider({ children }: { children: ReactNode }) {
      * A confirmação é mostrada **antes** do `refresh` terminar, para não haver um
      * instante em que a tela não diz nada. O `refresh` decide se ela fica: se o
      * servidor responder que a conta não está conectada, o aviso de sucesso é
-     * information falsa e sai junto.
+     * informação falsa e sai junto.
+     *
+     * A passagem por aqui também encerra a espera do vigia de `connect`: ter
+     * qualquer `?drive=` na URL significa que o Google voltou, mesmo que com
+     * `denied` ou `error`. A espera sem callback é bem pior que um erro
+     * reportado, porque não deixa a pessoa distinguir "o Google recusou" de "o
+     * botão não fez nada".
      */
     setMessage(aviso);
+    /*
+     * O Google voltou, mesmo que com recusa. O vigia não tem mais o que dizer,
+     * e a mensagem de `denied`/`error` é mais específica que a de "não voltou" —
+     * então aqui a espera é encerrada antes do `refresh` escrever por cima.
+     */
+    limparEspera();
     if (query === 'connected' || query === 'denied' || query === 'error') void refresh();
     const resto = { ...router.query };
     delete resto.drive;
@@ -148,6 +250,14 @@ export function DriveAccountProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(() => {
     const returnTo = typeof window !== 'undefined' ? window.location.href : '/';
     if (!isDesktop()) {
+      /*
+       * O carimbo vai antes da navegação, e isso é o ponto: a partir de
+       * `location.assign` esta página deixa de existir, e sem o carimbo escrito
+       * agora não sobraria nenhuma prova de que o login chegou a partir. Sem
+       * ele, um Google que morre na tela de conta e um botão quebrado continuam
+       * parecendo a mesma coisa.
+       */
+      marcarEspera();
       window.location.assign(driveConnectUrl(returnTo));
       return;
     }
@@ -157,6 +267,9 @@ export function DriveAccountProvider({ children }: { children: ReactNode }) {
       try {
         const resposta = await driveStartUrl(returnTo, 'pagina');
         if ('error' in resposta) {
+          // O servidor recusou de saída: o login nem partiu, e não há espera
+          // para vigiar.
+          limparEspera();
           setError(
             resposta.error === 'not_configured'
               ? MENSAGENS.not_configured
@@ -164,6 +277,14 @@ export function DriveAccountProvider({ children }: { children: ReactNode }) {
           );
           return;
         }
+        /*
+         * Só agora a URL existe, e é agora que o login pode mesmo ter partido.
+         * No desktop a página **não** é descarregada — o app fica aberto atrás
+         * do navegador do sistema —, então o carimbo do `sessionStorage` seria
+         * de outra aba. Ele ainda serve: o `refresh` do foco roda no app, e é
+         * nele que a espera é avaliada.
+         */
+        marcarEspera();
         const abriu = await window.juntosDesktop?.openInSystemBrowser(resposta.url);
         if (abriu === false) setError('Não consegui abrir o navegador para o login do Drive.');
       } catch {
