@@ -43,6 +43,12 @@ const api: DesktopApi = {
 
   isCapturing: () => ipcRenderer.invoke('desktop:esta-capturando') as Promise<boolean>,
 
+  prepareLogin: async (url: string): Promise<boolean> => {
+    const valor = soTexto(url);
+    if (!valor) return false;
+    return (await ipcRenderer.invoke('desktop:preparar-login', valor)) === true;
+  },
+
   copyText: async (text: string): Promise<boolean> => {
     const valor = soTexto(text);
     if (!valor) return false;

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/router';
+import { comecarLogin } from '@/lib/desktop';
 import {
   disconnectYoutube,
   fetchYoutubeStatus,
@@ -89,7 +90,18 @@ export function YoutubeAccountProvider({ children }: { children: ReactNode }) {
 
   const connect = useCallback(() => {
     const returnTo = typeof window !== 'undefined' ? window.location.href : '/';
-    window.location.assign(youtubeConnectUrl(returnTo));
+    /*
+     * `comecarLogin`, e não `location.assign` direto: no app desktop a
+     * navegação para fora é bloqueada e mandada para o navegador do sistema,
+     * que não tem o cookie de sessão. O callback voltaria sem ele, a conta seria
+     * gravada e rejeitada, e a pessoa voltaria para um app vazio depois de ter
+     * autorizado tudo. No navegador as duas são o mesmo `assign`.
+     *
+     * O `returnTo` é a URL atual, que no desktop é `http://localhost:3210`:
+     * é exatamente para onde o fluxo tem de voltar, porque é de onde a sessão
+     * foi criada.
+     */
+    void comecarLogin(youtubeConnectUrl(returnTo));
   }, []);
 
   const disconnect = useCallback(async () => {
