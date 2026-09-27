@@ -23,9 +23,20 @@
 const SW_URL = '/drive-media-sw.js';
 const MEDIA_PREFIX = '/__drive_media/';
 
-let registro: Promise<ServiceWorkerRegistration | null> | null = null;
+/**
+ * O mesmo banco e a mesma loja que o worker usa.
+ *
+ * A página e o worker compartilham a origem, então compartilham o IndexedDB.
+ * É essa identidade que permite gravar o token sem passar pelo worker, e o
+ * motivo de a página escrever diretamente: ser **ativa** é mais fácil que estar
+ * **controlando** a página, e depender só da segunda ponta transformava uma
+ * espera em um beco sem saída.
+ */
+const BANCO = 'juntos-drive';
+const LOJA = 'credenciais';
+const CHAVE_TOKEN = 'token';
 
-/** Só pode ser resumido por aqui: `postMessage` sem porta não tem resposta. */
+/** Só pode ser resumido por aqui: esperar sem limite é pior do que falhar. */
 const TIMEOUT_TOKEN_MS = 5000;
 
 function temSuporte(): boolean {
@@ -33,22 +44,111 @@ function temSuporte(): boolean {
 }
 
 /**
- * Registra o worker, uma vez por sessão da página.
+ * Grava o token no IndexedDB, direto da página.
+ *
+ * Antes o token ia por `postMessage` e voltava por `MessagePort`, esperando
+ * confirmação. Isso exigia que o worker estivesse **ativo** para a publicação
+ * existir, e "não chegou a controlar a página" derrubava tudo junto — mesmo
+ * quando o token podia ter sido gravado sem dificuldade nenhuma.
+ *
+ * A gravação é local e não depende de nada estar ativo. O worker continua lendo
+ * do mesmo lugar, então o caminho de leitura fica idêntico.
+ */
+export async function guardarToken(accessToken: string | null): Promise<boolean> {
+  try {
+    await comLoja((loja) =>
+      accessToken === null ? loja.delete(CHAVE_TOKEN) : loja.put(accessToken, CHAVE_TOKEN),
+    );
+    return true;
+  } catch (erro) {
+    console.warn('[drive] não foi possível gravar o token no IndexedDB', erro);
+    return false;
+  }
+}
+
+/** Uma transação por vez: abrir, agir, fechar. */
+function comLoja(acao: (loja: IDBObjectStore) => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const pedido = indexedDB.open(BANCO, 1);
+    pedido.onupgradeneeded = () => {
+      if (!pedido.result.objectStoreNames.contains(LOJA)) pedido.result.createObjectStore(LOJA);
+    };
+    pedido.onsuccess = () => {
+      const banco = pedido.result;
+      const transacao = banco.transaction(LOJA, 'readwrite');
+      try {
+        acao(transacao.objectStore(LOJA));
+      } catch (erro) {
+        banco.close();
+        reject(erro);
+        return;
+      }
+      transacao.oncomplete = () => {
+        banco.close();
+        resolve();
+      };
+      transacao.onerror = () => {
+        banco.close();
+        reject(transacao.error);
+      };
+      transacao.onabort = () => {
+        banco.close();
+        reject(transacao.error);
+      };
+    };
+    pedido.onerror = () => reject(pedido.error);
+    pedido.onblocked = () => reject(new Error('banco bloqueado por outra aba'));
+  });
+}
+
+/**
+ * Registra o worker do Drive.
  *
  * O `localhost:3210` do app desktop conta como contexto seguro, então o worker
  * funciona igual na web. Devolve `null` onde service worker não existe, e o
  * player cai no aviso de "não disponível neste navegador".
+ *
+ * O estado da registration vai para o console de propósito. "Não assumiu esta
+ * página" tem muitas causas — worker em `installing`, install falhado, escopo
+ * recusado, o navegador decidindo não ativar — e sem ver o estado nenhuma delas
+ * se distingue das outras. Foi o que aconteceu: `register()` resolvia, o script
+ * era válido, e nenhuma dessas diferenças aparecia em lugar nenhum.
  */
 export function registrarMediaWorker(): Promise<ServiceWorkerRegistration | null> {
   if (!temSuporte()) return Promise.resolve(null);
-  if (!registro) {
-    registro = navigator.serviceWorker.register(SW_URL, { scope: '/' }).catch((e) => {
-      registro = null;
+  /*
+   * Sem cache de promise, e o cache era um bug esperando.
+   *
+   * `register()` para o mesmo escopo já devolve a registration existente — é o
+   * que a especificação manda, e o navegador trata a chamada como no-op depois
+   * da primeira. Guardar a promise em módulo não economiza trabalho nenhum, e
+   * cobra caro: a primeira falha fica grudada pelo resto da sessão da página. No
+   * navegador isso significa que um registro recusado por um motivo passageiro
+   * — rede, por exemplo — só volta a ser tentado com um recarregamento. Em
+   * teste, era pior ainda: o cache sobrevivia ao `beforeEach` e o teste seguinte
+   * recebia um motivo que não era o seu, o que é pior do que um teste que não
+   * roda.
+   */
+  return navigator.serviceWorker
+    .register(SW_URL, { scope: '/' })
+    .then((r) => {
+      const estado = () => ({
+        installing: r.installing?.state ?? null,
+        waiting: r.waiting?.state ?? null,
+        active: r.active?.state ?? null,
+        controller: navigator.serviceWorker.controller?.scriptURL ?? null,
+      });
+      console.info('[drive] registration criada', estado());
+      r.addEventListener('updatefound', () => console.info('[drive] updatefound', estado()));
+      for (const w of [r.installing, r.waiting, r.active]) {
+        w?.addEventListener('statechange', () => console.info(`[drive] worker ${w.state}`, estado()));
+      }
+      return r;
+    })
+    .catch((e) => {
       console.warn('[drive] service worker não registrado', e);
       return null;
     });
-  }
-  return registro;
 }
 
 /**
@@ -109,50 +209,40 @@ function esperarControle(): Promise<boolean> {
 export type MotivoPublicacao =
   | 'sem_suporte'
   | 'registro_falhou'
-  | 'sem_controle'
-  | 'sem_confirmacao';
+  | 'grava_falhou'
+  | 'sem_controle';
 
+/**
+ * Publica o token e garante que a página está controlada.
+ *
+ * A ordem importa e é o ponto do conserto. O token é gravado **pela página**,
+ * direto no IndexedDB, e só depois é que se espera o controle. Antes as duas
+ * coisas dependiam do worker estar ativo, e a espera pelo controle derrubava a
+ * publicação junto — mesmo quando gravar o token não tinha nada de difícil.
+ *
+ * Controlar a página continua sendo obrigatório: sem `controller` não há
+ * ninguém para interceptar `/__drive_media/`, e o `<video>` levaria 404 da
+ * hospedagem. Mas agora o token está gravado de qualquer forma, então um
+ * controle que chega depois funciona sem refazer nada.
+ */
 export async function publicarToken(
   accessToken: string | null,
 ): Promise<{ ok: true } | { ok: false; motivo: MotivoPublicacao }> {
   if (!temSuporte()) return { ok: false, motivo: 'sem_suporte' };
+  if (!(await guardarToken(accessToken))) return { ok: false, motivo: 'grava_falhou' };
   if (!(await registrarMediaWorker())) return { ok: false, motivo: 'registro_falhou' };
   if (!(await esperarControle())) return { ok: false, motivo: 'sem_controle' };
-  const worker = navigator.serviceWorker.controller;
-  if (!worker) return { ok: false, motivo: 'sem_controle' };
-
-  const ok = await new Promise<boolean>((resolve) => {
-    const porta = new MessageChannel();
-    const fechar = (resposta: boolean) => {
-      clearTimeout(timer);
-      /*
-       * Fechar as duas portas não é detalhe: um `MessagePort` aberto segura o
-       * event loop do Node, e em teste isso vira processo que não termina. No
-       * navegador o custo é zero, então a mesma linha serve aos dois.
-       */
-      porta.port1.close();
-      porta.port2.close();
-      resolve(resposta);
-    };
-    const timer = setTimeout(() => fechar(false), TIMEOUT_TOKEN_MS);
-    porta.port1.onmessage = (evento) => fechar((evento.data as { ok?: boolean } | null)?.ok === true);
-    worker.postMessage(
-      accessToken
-        ? { type: 'juntos:drive-token', token: accessToken }
-        : { type: 'juntos:drive-clear' },
-      [porta.port2],
-    );
-  });
-  return ok ? { ok: true } : { ok: false, motivo: 'sem_confirmacao' };
+  return { ok: true };
 }
 
 /**
  * A frase que a pessoa lê, por motivo.
  *
  * `sem_suporte` e `registro_falhou` são de configuração — o navegador não tem
- * service worker, ou o arquivo não pôde ser registrado. `sem_controle` é a
- * hipótese mais comum depois de um deploy: um worker antigo, com a versão
- * anterior, ainda controla a página, e só troca depois de um recarregamento.
+ * service worker, ou o arquivo não pôde ser registrado. `grava_falhou` é o
+ * navegador recusando o IndexedDB, o que costuma ser modo privado restrito.
+ * `sem_controle` é o worker existindo e registrado sem assumir a página, e o
+ * estado dele está no console.
  */
 export function explicarPublicacao(motivo: MotivoPublicacao): string {
   switch (motivo) {
@@ -160,10 +250,10 @@ export function explicarPublicacao(motivo: MotivoPublicacao): string {
       return 'Este navegador não tem service worker, que é o que lê o vídeo do Google sem passar pelo nosso servidor.';
     case 'registro_falhou':
       return 'O navegador recusou registrar o leitor de vídeo do Google. Verifique se o site não está em modo privado restrito e recarregue a página.';
+    case 'grava_falhou':
+      return 'O navegador não deixou guardar a credencial do Google neste dispositivo, o que costuma acontecer em navegação privada restrita. Tente fora da janela privada.';
     case 'sem_controle':
-      return 'O leitor de vídeo ainda não assumiu esta página. Isso costuma acontecer logo após um deploy: recarregue a página com Ctrl+Shift+R para trocar a versão antiga.';
-    case 'sem_confirmacao':
-      return 'O leitor de vídeo não confirmou que guardou a credencial. Recarregue a página e tente de novo.';
+      return 'O leitor de vídeo registrou mas não assumiu esta página. O estado dele está no console do navegador ( procure por "[drive]" ).';
   }
 }
 

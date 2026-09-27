@@ -9,27 +9,104 @@ import {
 } from '@/lib/driveMedia';
 
 /*
- * O worker do Drive é JavaScript puro em `public/`, e este módulo é a única
- * ponte entre ele e a página. O que importa aqui não é o fetch ao Google — isso
- * roda dentro do worker, fora do alcance de um teste de renderer — e sim o
- * **acordo** entre os dois: o token tem que estar gravado antes de o `<video>`
- * pedir o primeiro intervalo.
+ * O worker do Drive é JavaScript puro em `public/`, e este módulo é a ponte entre
+ * ele e a página. O que importa aqui não é o fetch ao Google — isso roda dentro
+ * do worker, fora do alcance de um teste de renderer — e sim o **acordo** entre
+ * os dois: o token tem que estar gravado antes de o `<video>` pedir o primeiro
+ * intervalo, e a página tem que estar controlada para alguém interceptar a
+ * requisição.
  *
  * Sem esse acordo, o sintoma é um player preto com a barra em 0:00 e nenhuma
  * mensagem. Foi exatamente o que aconteceu, e é o tipo de falha em que a pessoa
  * não tem nada contra o que reclamar.
  */
 
-type Porta = { postMessage: (dados: unknown) => void; close: () => void };
-type Controle = { postMessage: (msg: unknown, ports?: Porta[]) => void };
+/** O que o IndexedDB falso guarda, para o teste conferir o que foi gravado. */
+let guardado = new Map<string, unknown>();
+/** Segura o `oncomplete` da transação, para simular gravação lenta de verdade. */
+let reterTransacao = false;
+let transacaoPendente: { oncomplete: (() => void) | null } | null = null;
+let bancoFalha = false;
 
-let controlador: Controle | null = null;
-/** `null` simula o primeiro carregamento, em que o `claim()` ainda não rodou. */
+function concluirTransacao(): void {
+  const t = transacaoPendente;
+  transacaoPendente = null;
+  t?.oncomplete?.();
+}
+
+function falharBanco(): void {
+  bancoFalha = true;
+}
+
+/**
+ * Um IndexedDB mínimo, com o suficiente para o caminho real.
+ *
+ * O `oncomplete` manual é o que permite testar a corrida que existia: se a
+ * publicação resolvesse antes da transação fechar, o `<video>` pediria o
+ * primeiro intervalo com o token ainda não gravado.
+ */
+function instalarIndexedDb(): void {
+  (globalThis as { indexedDB?: unknown }).indexedDB = {
+    open() {
+      const pedido: Record<string, unknown> = {
+        result: {
+          objectStoreNames: { contains: () => true },
+          createObjectStore: () => ({}),
+          transaction: () => {
+            const transacao: Record<string, unknown> = {
+              oncomplete: null,
+              onerror: null,
+              onabort: null,
+              error: null,
+              objectStore: () => ({
+                put: (valor: unknown, chave: string) => guardado.set(chave, valor),
+                delete: (chave: string) => guardado.delete(chave),
+              }),
+            };
+            transacaoPendente = transacao as unknown as { oncomplete: (() => void) | null };
+            // Sem reter, a transação fecha no próximo tique, como no navegador.
+            if (!reterTransacao) setTimeout(() => concluirTransacao(), 0);
+            return transacao;
+          },
+          close: () => {},
+        },
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        onblocked: null,
+        error: null,
+      };
+      setTimeout(() => {
+        if (bancoFalha) (pedido.onerror as (() => void) | null)?.();
+        else (pedido.onsuccess as (() => void) | null)?.();
+      }, 0);
+      return pedido;
+    },
+  };
+}
+
+let controlador: { scriptURL: string } | null = null;
+/** `false` simula o primeiro carregamento, em que o `claim()` ainda não rodou. */
 let controllerAntes: boolean = true;
-let responder: (porta: Porta) => void = () => {};
-let fired = 0;
+/** Quantas vezes `register()` foi chamado: prova de que o caminho é real. */
+let chamadasDeRegistro = 0;
 
-const registroFalso = { scope: '/' } as unknown as ServiceWorkerRegistration;
+/**
+ * O `navigator` precisa ser manipulado com cuidado, e isso não é detalhe.
+ *
+ * `delete navigator.serviceWorker` não funciona aqui: `navigator` é uma
+ * propriedade read-only do `globalThis` no Node, e o `delete` não faz nada. E
+ * um `defineProperty` com valor `undefined` também não serve, porque o código
+ * decide o suporte com `'serviceWorker' in navigator` e o `in` continua
+ * verdadeiro. Só substituindo o objeto inteiro o `in` deixa de ver a chave — e é
+ * por isso que `semServiceWorker` existe e devolve o `navigator` original.
+ *
+ * Um teste que passa sem exercitar o caminho é pior do que um teste que não
+ * roda: o `sem_suporte` "passava" medindo outra coisa, e nada denunciava.
+ */
+
+/** A registration devolvida por `register()` neste teste. */
+let registroDoTeste: Record<string, unknown>;
 
 function instalarServiceWorker(): void {
   /*
@@ -39,9 +116,32 @@ function instalarServiceWorker(): void {
    * deixaria o teste passar sem exercitar o caminho.
    */
   const alvos = new Map<string, Set<(e: Event) => void>>();
+  const Ouvinte = () => ({
+    addEventListener: (nome: string, fn: (e: Event) => void) => {
+      const set = alvos.get(nome) ?? new Set();
+      set.add(fn);
+      alvos.set(nome, set);
+    },
+    removeEventListener: (nome: string, fn: (e: Event) => void) => {
+      alvos.get(nome)?.delete(fn);
+    },
+  });
+  registroDoTeste = {
+    installing: undefined,
+    waiting: undefined,
+    // O `active` também é um `ServiceWorker`, e o código registra `statechange`
+    // nele. Um objeto sem `addEventListener` fazia a exceção cair dentro do
+    // `catch` de `register()`, e o teste via `registro_falhou` — um motivo
+    // inventado pelo fake, não pelo código.
+    active: { state: 'activated', scriptURL: '/drive-media-sw.js', ...(Ouvinte() as object) },
+    ...(Ouvinte() as object),
+  };
   const registro = {
-    register: async () => registroFalso,
-    controller: null as unknown as Controle | null,
+    register: async () => {
+      chamadasDeRegistro += 1;
+      return registroDoTeste;
+    },
+    controller: null as unknown,
     addEventListener: (nome: string, fn: (e: Event) => void) => {
       const set = alvos.get(nome) ?? new Set();
       set.add(fn);
@@ -54,9 +154,34 @@ function instalarServiceWorker(): void {
       for (const fn of alvos.get(e.type) ?? []) fn(e);
       return true;
     },
-    ready: Promise.resolve(registroFalso),
+    ready: Promise.resolve(registroDoTeste),
   };
   (navigator as unknown as { serviceWorker: unknown }).serviceWorker = registro;
+}
+
+/**
+ * Tira o `serviceWorker` do `navigator`, de verdade.
+ *
+ * O `delete navigator.serviceWorker` não funciona aqui: `navigator` é uma
+ * propriedade read-only do `globalThis` no Node, e o `delete` silenciosamente
+ * não faz nada. Pior, o código de produção decide o suporte com
+ * `'serviceWorker' in navigator`, e um `defineProperty` com valor `undefined`
+ * deixa o `in` verdadeiro — o teste passava, `sem_suporte` nunca era exercitado,
+ * e o motivo errado era o que se via.
+ *
+ * Só substituindo o objeto inteiro o `in` deixa de ver a chave. E o `navigator`
+ * original é restaurado no fim, senão os testes seguintes rodariam contra um
+ * navegador sem service worker e mediriam a coisa errada.
+ */
+const NAVIGADOR_REAL = globalThis.navigator;
+
+function semServiceWorker<T>(acao: () => T): T {
+  Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true });
+  try {
+    return acao();
+  } finally {
+    Object.defineProperty(globalThis, 'navigator', { value: NAVIGADOR_REAL, configurable: true, writable: true });
+  }
 }
 
 function serviceWorkerDoTeste(): {
@@ -70,146 +195,108 @@ function serviceWorkerDoTeste(): {
 }
 
 beforeEach(() => {
-  fired = 0;
-  responder = () => {};
-  controlador = {
-    postMessage: (msg: unknown, ports?: Porta[]) => {
-      fired += 1;
-      const dados = msg as { type: string; token?: string };
-      assert.equal(dados.type, 'juntos:drive-token', 'o worker só entende o token');
-      assert.ok(dados.token, 'o token precisa ir na mensagem');
-      // O worker responde pela porta só depois de gravar no IndexedDB.
-      if (ports?.[0]) responder(ports[0]);
-    },
-  };
+  chamadasDeRegistro = 0;
+  guardado = new Map();
+  reterTransacao = false;
+  transacaoPendente = null;
+  bancoFalha = false;
+  controlador = { scriptURL: '/drive-media-sw.js' };
   controllerAntes = true;
+  instalarIndexedDb();
   instalarServiceWorker();
   serviceWorkerDoTeste().controller = controllerAntes ? controlador : null;
 });
 
-test('o token só é considerado publicado depois que o worker confirma a gravação', async () => {
+test('o token é gravado no IndexedDB pela página, sem depender do worker', async () => {
   /*
-   * O worker grava devagar, como acontece de verdade: só responde quando o
-   * IndexedDB terminou. Se `publicarToken` resolvesse no `postMessage`, o
-   * `<video>` pediria o primeiro intervalo antes de o token existir.
-   *
-   * A porta fica num objeto porque o TypeScript entende `liberou` como `null`
-   * para sempre quando a atribuição está dentro de um callback — e um `?.()` em
-   * cima disso vira `never`, que é o tipo errado para a falha que o teste quer
-   * medir.
+   * Este é o ponto do conserto. A gravação é local: a página e o worker
+   * compartilham a origem, logo compartilham o IndexedDB. Antes o token ia por
+   * `postMessage` e dependia do worker estar **ativo** — e "não assumiu a
+   * página" derrubava a publicação junto, mesmo quando gravar não tinha nada de
+   * difícil.
    */
-  const espera: { liberou: (() => void) | null } = { liberou: null };
-  responder = (porta) => {
-    espera.liberou = () => porta.postMessage({ ok: true });
-  };
+  serviceWorkerDoTeste().controller = controlador;
+  assert.deepEqual(await publicarToken('token-de-teste'), { ok: true });
+  assert.equal(guardado.get('token'), 'token-de-teste', 'o token precisa estar no banco');
+  // A gravação acontece com a página já controlada, ou seja, sem depender do
+  // worker para nada. Se passasse pelo `postMessage`, precisaria estar ativo.
+  assert.equal(chamadasDeRegistro, 1, 'registra uma vez, sem passar o token pelo worker');
+});
 
+test('o token só é considerado publicado depois que a gravação termina', async () => {
+  /*
+   * Se a publicação resolvesse antes da transação fechar, o `<video>` pediria o
+   * primeiro intervalo antes de o token existir — o player preto em 0:00. O
+   * `indexedDB` falso segura o `oncomplete` até o teste mandar.
+   */
+  serviceWorkerDoTeste().controller = controlador;
+  reterTransacao = true;
   let resolvido = false;
-  const pending = publicarToken('token-de-teste').then((ok) => {
+  const pending = publicarToken('token-de-teste').then((r) => {
     resolvido = true;
-    return ok;
+    return r;
   });
 
   await new Promise((r) => setTimeout(r, 10));
-  assert.equal(resolvido, false, 'não pode resolver antes da confirmação do worker');
+  assert.equal(resolvido, false, 'não pode resolver antes de a transação fechar');
 
-  assert.ok(espera.liberou, 'o worker deve ter recebido a porta para responder');
-  espera.liberou();
-  assert.deepEqual(await pending, { ok: true }, 'confirmação do worker é o que fecha a publicação');
+  reterTransacao = false;
+  concluirTransacao();
+  assert.deepEqual(await pending, { ok: true });
 });
 
-test('o worker que não confirma derruba a publicação em vez de deixá-la pendurada', async () => {
-  // Se o worker engole a mensagem e nunca responde, esperar para sempre seria
-  // o pior resultado: o player ficaria em "conferindo" sem explicação e sem
-  // chance de tentar de novo.
-  responder = () => {};
-
-  const inicio = Date.now();
-  assert.deepEqual(await publicarToken('token-de-teste'), { ok: false, motivo: 'sem_confirmacao' });
-  const passou = Date.now() - inicio;
-  assert.ok(passou >= 4900, `deve esperar o limite antes de desistir, esperou ${passou}ms`);
-  assert.ok(passou < 8000, `não deve passar muito do limite, esperou ${passou}ms`);
-});
-
-test('sem service worker a publicação falha com o motivo, em vez de passar calada', async () => {
-  delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker;
-  /*
-   * Retorna um motivo, e não um booleano nem uma exceção. Um booleano obrigava a
-   * inventar uma frase que não era verdadeira em nenhum caso, e era a mesma
-   * armadilha do `MediaError` do `<video>`.
-   */
-  assert.deepEqual(await publicarToken('token-de-teste'), { ok: false, motivo: 'sem_suporte' });
+test('um IndexedDB que recusa a gravação diz isso, em vez de virar 401 depois', async () => {
+  // Modo privado restrito recusa o IndexedDB. Sem este motivo, o player montava
+  // com um token que nunca existiu e o worker respondia 401 a cada pedaço.
+  serviceWorkerDoTeste().controller = controlador;
+  falharBanco();
+  assert.deepEqual(await publicarToken('token-de-teste'), { ok: false, motivo: 'grava_falhou' });
 });
 
 test('cada motivo da publicação vira uma frase que diz o que fazer', () => {
-  // Recarregar resolve `sem_controle` e não resolve `sem_suporte`. Uma frase
-  // única para os dois manda a pessoa fazer a coisa errada.
-  const semControle = explicarPublicacao('sem_controle');
-  assert.match(semControle, /Ctrl\+Shift\+R|recarregue/i);
-  assert.ok(!explicarPublicacao('sem_suporte').match(/recarregue/i), 'sem service worker não se resolve recarregando');
+  // Modo privado resolve `grava_falhou` e não resolve `sem_controle`. Uma frase
+  // única para os dois manda a pessoa tentar a coisa errada.
+  assert.match(explicarPublicacao('grava_falhou'), /privada/i);
+  assert.match(explicarPublicacao('sem_controle'), /console/i);
   assert.match(explicarPublicacao('sem_suporte'), /service worker/i);
   assert.match(explicarPublicacao('registro_falhou'), /registrar/i);
-  assert.match(explicarPublicacao('sem_confirmacao'), /confirmou/i);
 });
 
-test('a página só publica depois de estar controlada pelo worker', async () => {
+test('a publicação espera o controle, e o token fica gravado enquanto espera', async () => {
   /*
-   * Este é o caso do primeiro carregamento, e o que produzia o player preto.
    * `register()` resolve antes do `activate` e do `clients.claim()`, então
-   * `controller` é `null` e um `postMessage` imediato vai para o vazio: o
-   * token nunca é gravado e o vídeo recebe 401 do worker.
+   * `controller` é `null` no primeiro carregamento. Sem controle não há quem
+   * intercepte `/__drive_media/`, então a publicação precisa esperar — mas o
+   * token já está gravado, e é isso que faz o controle que chega depois
+   * funcionar sem refazer nada.
    */
-  controllerAntes = false;
   serviceWorkerDoTeste().controller = null;
-
-  let pedido: Porta | undefined;
-  controlador = {
-    postMessage: (_msg: unknown, ports?: Porta[]) => {
-      fired += 1;
-      pedido = ports?.[0];
-    },
-  };
+  const sw = serviceWorkerDoTeste();
 
   const pending = publicarToken('token-de-teste');
-
-  // O `claim()` acontece logo depois: é o `controllerchange` que destrava.
   await new Promise((r) => setTimeout(r, 10));
-  assert.equal(fired, 0, 'não pode publicar antes de haver controller');
-  assert.equal(pedido, undefined);
+  assert.equal(guardado.get('token'), 'token-de-teste', 'o token é gravado antes de esperar o controle');
 
-  // O worker só responde depois de gravar. Aqui ele grava na hora, e a porta
-  // precisa estar em `responder` **antes** do `postMessage` — foi por deixar
-  // para depois que a confirmação nunca chegou e o teste mediu o timeout, em vez
-  // do caminho que pretendia exercitar.
-  responder = (porta) => porta.postMessage({ ok: true });
-  const sw = serviceWorkerDoTeste();
-  controlador = {
-    postMessage: (_msg: unknown, ports?: Porta[]) => {
-      fired += 1;
-      pedido = ports?.[0];
-      if (ports?.[0]) responder(ports[0]);
-    },
-  };
-  sw.controller = controlador;
   /*
-   * O evento é disparado num tique seguinte, e não na mesma linha: o
+   * O `controllerchange` num tique seguinte, e não na mesma linha: o
    * `publicarToken` é assíncrono e ainda está dentro do `await
-   * registrarMediaWorker()` quando o `dispatchEvent` síncrono aconteceria. O
-   * navegador não tem essa corrida — o `claim()` leva alguns milissegundos de
-   * verdade — então o tique é o que reproduz a condição real.
+   * guardarToken()` quando um `dispatchEvent` síncrono aconteceria. O navegador
+   * não tem essa corrida — o `claim()` leva alguns milissegundos de verdade.
    */
   await new Promise((r) => setTimeout(r, 10));
+  sw.controller = controlador;
   sw.dispatchEvent(new Event('controllerchange'));
 
   assert.deepEqual(await pending, { ok: true });
-  assert.equal(fired, 1, 'publica uma vez só, depois do claim');
+  assert.equal(guardado.get('token'), 'token-de-teste', 'o token não pode ser apagado pela espera');
 });
 
 test('uma página que nunca é controlada diz isso, em vez de esperar em silêncio', async () => {
   /*
-   * `sem_controle` é o caso mais provável depois de um deploy: o worker antigo
-   * continua controlando a página e o novo não assume até haver recarregamento.
-   * A pessoa precisa ler "recarregue" na tela, e não uma frase genérica que não
-   * diz o que fazer.
+   * `sem_controle` é o caso que apareceu: o worker registra, mas a página não
+   * fica sob controle dele. A pessoa precisa de uma frase que aponte o console,
+   * onde o estado da registration é registrado — e não de um "recarregue" que
+   * já foi tentado e não resolveu.
    */
   serviceWorkerDoTeste().controller = null;
   const inicio = Date.now();
@@ -217,6 +304,28 @@ test('uma página que nunca é controlada diz isso, em vez de esperar em silênc
   const passou = Date.now() - inicio;
   assert.ok(passou >= 4900, `deve esperar o limite antes de desistir, esperou ${passou}ms`);
   assert.ok(passou < 8000, `não deve passar muito do limite, esperou ${passou}ms`);
+});
+
+/*
+ * Este é o último de propósito.
+ *
+ * Tirar o `serviceWorker` do `navigator` deixa o cache de `register()` do módulo
+ * intacto — e isso é o que se quer: a ordem não precisa mais importar, porque o
+ * `navigator` é restaurado ao final. O teste continua no fim por clareza: ele é o
+ * único que muda o ambiente global.
+ */
+test('sem service worker a publicação falha com o motivo, em vez de passar calada', async () => {
+  /*
+   * Retorna um motivo, e não um booleano nem uma exceção. Um booleano obrigava a
+   * inventar uma frase que não era verdadeira em nenhum caso, e era a mesma
+   * armadilha do `MediaError` do `<video>`.
+   */
+  const resultado = await semServiceWorker(() => publicarToken('token-de-teste'));
+  assert.deepEqual(resultado, { ok: false, motivo: 'sem_suporte' });
+  // A prova de que o caminho é real: sem `serviceWorker` no `navigator`, o
+  // `register` nem é chamado. Sem esta afirmação, um atalho que devolvesse
+  // `sem_suporte` por outro caminho passaria igual.
+  assert.equal(chamadasDeRegistro, 0, 'não pode tentar registrar sem suporte');
 });
 
 /*
