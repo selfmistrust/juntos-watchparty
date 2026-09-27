@@ -329,17 +329,28 @@ export async function completeOAuth(params: {
   if (token.error || !token.access_token) {
     const err = token.error ?? 'token_error';
     if (err === 'access_denied') return { ok: false, reason: 'denied' };
+    /*
+     * O corpo bruto entra no log quando existe. O `error` sozinho quase nunca
+     * diz o bastante: `invalid_grant` numa troca de código vem quase sempre com
+     * um `error_description` que aponta qual dos dois está errado — o código
+     * expirado, ou a redirect_uri que não bate. Sem isso, os dois parecem o
+     * mesmo problema.
+     */
+    const detalhe = token._body ? ` (${token._body.slice(0, 300)})` : '';
     if (isTemporaryError(err, token._httpStatus)) {
-      console.error('[drive-oauth] erro temporário na troca de código:', err);
+      console.error(`[drive-oauth] erro temporário na troca de código: ${err}${detalhe}`);
       return { ok: false, reason: 'api_error' };
     }
-    console.error('[drive-oauth] troca de código recusada:', err);
+    console.error(`[drive-oauth] troca de código recusada: ${err}${detalhe}`);
     return { ok: false, reason: 'api_error' };
   }
 
   const grantedScope = token.scope ?? SCOPE;
   if (!hasLimitedDriveScope(grantedScope)) {
-    console.error('[drive-oauth] token retornado com escopo além de drive.file');
+    // O log traz o escopo porque o motivo importa: um escopo amplo demais
+    // significa pedido nosso errado, e nenhum escopo nenhum significa que o
+    // Google recusou o pedido. São correções opostas.
+    console.error('[drive-oauth] escopo devolvido fora do permitido:', grantedScope);
     await revokeGoogleToken(token.refresh_token || token.access_token);
     return { ok: false, reason: 'api_error' };
   }

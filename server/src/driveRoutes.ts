@@ -180,7 +180,18 @@ export function registerDriveRoutes(app: Express): void {
       if (errorParam === 'access_denied') {
         return await concluir(pickerId ? 'cancelled' : 'denied', { status: 'cancelled' });
       }
-      if (errorParam || !code) return await concluir('error', { status: 'error' });
+      if (errorParam || !code) {
+        /*
+         * O `error` que o Google manda é a única pista quando a falha é na
+         * autorização, e antes disto ele não era registrado em lugar nenhum: a
+         * pessoa recebia "tente de novo" e o servidor não guardava o motivo.
+         * Escopo indevido, redirect divergente e recusa do consentimento
+         * chegam todos por aqui, e são coisas completamente diferentes para
+         * corrigir.
+         */
+        console.error(`[drive-oauth] o Google recusou a autorização: ${errorParam || 'sem código'}`);
+        return await concluir('error', { status: 'error' });
+      }
 
       const fileId = typeof req.query.picked_file_ids === 'string' ? req.query.picked_file_ids : '';
       if (pickerId) {
