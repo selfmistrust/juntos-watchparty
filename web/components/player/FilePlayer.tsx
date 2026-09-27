@@ -15,10 +15,42 @@ interface Props {
   stream?: MediaStream | null;
   onReady: () => void;
   onEnded: () => void;
+  /**
+   * O elemento não conseguiu carregar a mídia.
+   *
+   * Sem isto, uma src que responde erro produz o pior resultado possível: um
+   * player preto com a barra em 0:00, indistinguível de "carregando" e de
+   * "quebrou". Quem assiste não tem como saber se falta permissão, se é um
+   * arquivo inválido ou se a rede caiu.
+   */
+  onError?: (message: string) => void;
+}
+
+/**
+ * O que o erro diz, na ordem em que costuma ajudar mais.
+ *
+ * O código do `MediaError` sozinho não distingue "sem permissão" de "formato
+ * inválido", e o texto do Google às vezes ajuda. Por isso os dois são repassados
+ * à mão em vez de confiar em `error.message`, que o navegador deixa vazio na
+ * maioria dos casos.
+ */
+function descreverErro(video: HTMLVideoElement): string {
+  switch (video.error?.code) {
+    case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+      return 'O navegador não conseguiu reproduzir este arquivo. O formato pode não ser suportado, ou o servidor recusou o pedido.';
+    case MediaError.MEDIA_ERR_NETWORK:
+      return 'A leitura do arquivo falhou no meio do caminho. Pode ser a conexão ou o servidor de origem.';
+    case MediaError.MEDIA_ERR_DECODE:
+      return 'O navegador não conseguiu decodificar este arquivo.';
+    case MediaError.MEDIA_ERR_ABORTED:
+      return 'A leitura do arquivo foi interrompida.';
+    default:
+      return 'Não foi possível reproduzir este arquivo.';
+  }
 }
 
 export const FilePlayer = forwardRef<PlayerHandle, Props>(function FilePlayer(
-  { src, stream, onReady, onEnded },
+  { src, stream, onReady, onEnded, onError },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -89,6 +121,9 @@ export const FilePlayer = forwardRef<PlayerHandle, Props>(function FilePlayer(
       src={stream ? undefined : src}
       playsInline
       onLoadedMetadata={onReady}
+      onError={() => {
+        if (videoRef.current) onError?.(descreverErro(videoRef.current));
+      }}
       // Uma transmissão não "termina": o `MediaStream` segue até o dono
       // parar, e o fim real chega pelo evento `stream:stopped`. Ouvir `ended`
       // aqui dispararia a próxima faixa num close repentino da conexão.

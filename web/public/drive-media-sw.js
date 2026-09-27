@@ -89,13 +89,33 @@ async function limparToken() {
   await comLoja({ tipo: 'limpar' }).catch(() => {});
 }
 
+/**
+ * Grava ou apaga o token e responde pela porta.
+ *
+ * A resposta importa porque a página precisa saber que o token está no
+ * IndexedDB antes de montar o `<video>`. Sem ela, o vídeo pede o primeiro
+ * intervalo antes da gravação e recebe 401 — o player preto em 0:00, sem
+ * mensagem. A porta é o que transforma "enviei" em "está gravado".
+ */
 self.addEventListener('message', (evento) => {
   const dados = evento.data;
   if (!dados || typeof dados !== 'object') return;
+  const porta = evento.ports && evento.ports[0];
+  const responder = (ok) => {
+    if (porta) porta.postMessage({ ok });
+  };
+
   if (dados.type === 'juntos:drive-token' && typeof dados.token === 'string') {
-    evento.waitUntil(guardarToken(dados.token));
+    evento.waitUntil(
+      guardarToken(dados.token)
+        .then(() => responder(true))
+        .catch((erro) => {
+          console.error('[drive-sw] não foi possível gravar o token', erro);
+          responder(false);
+        }),
+    );
   } else if (dados.type === 'juntos:drive-clear') {
-    evento.waitUntil(limparToken());
+    evento.waitUntil(limparToken().then(() => responder(true)));
   }
 });
 

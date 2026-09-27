@@ -12,7 +12,14 @@ import { useRouter } from 'next/router';
 import type { PlayerHandle } from '@/types';
 import { FilePlayer } from './FilePlayer';
 
-type Estado = 'conferindo' | 'autorizar' | 'pronto' | 'indisponivel';
+/**
+ * `falhou` é separado de `indisponivel` de propósito: `indisponivel` é uma
+ * impossibilidade conhecida antes de tentar (sem service worker, o Picker não
+ * configurado), e `falhou` é o `<video>` recusando a leitura depois que tudo
+ * parecia estar certo. A pessoa precisa poder tentar de novo em um, e entender o
+ * que houve no outro.
+ */
+type Estado = 'conferindo' | 'autorizar' | 'pronto' | 'falhou' | 'indisponivel';
 
 interface Props {
   fileId: string;
@@ -75,9 +82,18 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
         return;
       }
       const token = await fetchDrivePickerToken(controller.signal);
-      // O worker precisa do token **antes** do `<video>` pedir o primeiro
-      // intervalo; publicar depois deixaria a primeira requisição em 401.
-      await publicarToken(token);
+      /*
+       * O token precisa estar gravado no worker **antes** do `<video>` pedir o
+       * primeiro intervalo, e a gravação é assíncrona. Sem esperar a
+       * confirmação, o vídeo pede o primeiro bloco antes de o token existir e
+       * leva 401 — que aparece como player preto em 0:00, sem mensagem.
+       */
+      const publicado = await publicarToken(token);
+      if (!publicado) {
+        setErro('Não foi possível preparar a leitura do Google neste navegador.');
+        setEstado('indisponivel');
+        return;
+      }
       const temAcesso = await temAcessoAoArquivo(fileId, token, controller.signal);
       setEstado(temAcesso ? 'pronto' : 'autorizar');
     } catch (e) {
@@ -126,7 +142,24 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
   }, [autorizando, fileId, conferir]);
 
   if (estado === 'pronto') {
-    return <FilePlayer ref={ref} src={urlDeMidia(fileId)} onReady={onReady} onEnded={onEnded} />;
+    return (
+      <FilePlayer
+        ref={ref}
+        src={urlDeMidia(fileId)}
+        onReady={onReady}
+        onEnded={onEnded}
+        /*
+         * O erro do `<video>` é o único sinal de que algo deu errado depois da
+         * checagem de acesso — que só prova que a *conta* pode ler o arquivo,
+         * não que o worker conseguiu entregá-lo. Converter o erro em estado é o
+         * que troca "player preto em 0:00" por algo que a pessoa entende.
+         */
+        onError={(motivo) => {
+          setErro(motivo);
+          setEstado('falhou');
+        }}
+      />
+    );
   }
 
   return (
@@ -137,6 +170,14 @@ export const DriveVideo = forwardRef<PlayerHandle, Props>(function DriveVideo(
 
       {estado === 'conferindo' ? (
         <p role="status" className="text-2xs text-ink-faint">Conferindo seu acesso ao vídeo…</p>
+      ) : estado === 'falhou' ? (
+        <>
+          <p className="max-w-sm text-sm text-ink">A leitura deste vídeo falhou.</p>
+          {erro && <p className="max-w-sm text-2xs text-ink-faint">{erro}</p>}
+          <Button size="sm" onClick={() => void conferir()}>
+            Tentar de novo
+          </Button>
+        </>
       ) : estado === 'indisponivel' ? (
         <>
           <p className="max-w-sm text-sm text-ink">Não foi possível reproduzir este vídeo do Drive.</p>
