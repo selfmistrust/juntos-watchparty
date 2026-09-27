@@ -5,7 +5,6 @@ import {
   Pause,
   Play,
   SkipForward,
-  GearSix,
   SpeakerHigh,
   SpeakerSimpleX,
   SidebarSimple,
@@ -37,12 +36,6 @@ interface Props {
    * progresso, que num `MediaStream` não tem para onde apontar.
    */
   live?: boolean;
-  /**
-   * Só existe no player do YouTube. Passar os controles para o YouTube é a
-   * única forma de alcançar o botão de CC nativo, que é o único jeito de
-   * *desligar* legenda (a API não tem esse comando).
-   */
-  onHandOverToNative?: () => void;
   onTogglePlay: () => void;
   onSeek: (seconds: number) => void;
   onNext: () => void;
@@ -66,7 +59,6 @@ export function PlayerControls({
   sidebarOpen,
   captionsOn,
   live,
-  onHandOverToNative,
   onTogglePlay,
   onSeek,
   onNext,
@@ -240,20 +232,6 @@ export function PlayerControls({
             ter `shrink-0`, ele não é comprimido quando a linha aperta: em vez
             de sumir, os botões da esquerda é que descem na quebra. */}
         <div className="ml-auto flex shrink-0 items-center gap-1">
-          {/*
-            * Entrega os controles ao YouTube e some. As duas barras não podem
-            * coexistir: as duas ocupam os mesmos ~48px do rodapé, e empilhar
-            * uma sobre a outra cobria até 98% do vídeo num celular de 320px.
-            * Então elas se revezam, e este botão é a chave da vez.
-            *
-            * Só existe quando o item é do YouTube, que é onde a barra nativa
-            * existe. Sem ele, não há como chegar ao botão de CC.
-            */}
-          {onHandOverToNative && (
-            <IconButton label="Usar os controles do YouTube" onClick={onHandOverToNative}>
-              <GearSix size={18} />
-            </IconButton>
-          )}
           <IconButton
             label={sidebarOpen ? 'Ocultar painel lateral' : 'Mostrar painel lateral'}
             onClick={onToggleSidebar}

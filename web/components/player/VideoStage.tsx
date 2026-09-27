@@ -16,15 +16,6 @@ const HARD_SYNC_THRESHOLD = 1.5;
 /** Abaixo disto a diferença é imperceptível; entre os dois, ajustamos a velocidade. */
 const SOFT_SYNC_THRESHOLD = 0.35;
 const CONTROLS_TIMEOUT = 2800;
-/**
- * Altura da barra de controles nativa do YouTube, no rodapé do vídeo.
- *
- * As duas barras não podem coexistir — as duas ocupam esta mesma faixa. Então
- * elas se revezam, e este valor é o que faz o click-catcher de play/pause parar
- * acima dela enquanto a barra nativa está no ar, para o botão de CC receber o
- * clique.
- */
-const NATIVE_BAR = 48;
 
 interface Props {
   state: RoomSnapshot | null;
@@ -98,14 +89,10 @@ export function VideoStage({
    */
   const [captionsOn, setCaptionsOn] = useState(false);
   /*
-   * As duas barras de controle se revezam. A nativa do YouTube só existe para
-   * dar acesso ao botão de CC — que é o único jeito de *desligar* legenda, já
-   * que a API não tem esse comando. Empilhá-las não funciona: as duas ocupam os
-   * mesmos 48px do rodapé, e a de cima chegava a cobrir 98% do vídeo num
-   * celular de 320px.
+   * Só o YouTube tem legenda, e o `PlayerControls` esconde o botão sem legenda
+   * quando recebe `undefined` — a distinção é a do item da fila, não a do player
+   * montado: o Drive e o arquivo local não têm faixa para carregar.
    */
-  const [nativeControls, setNativeControls] = useState(false);
-  const isYoutube = currentItem?.kind === 'youtube';
   /**
    * Faixa ao vivo: a sincronização por posição não se aplica.
    *
@@ -320,27 +307,7 @@ export function VideoStage({
   /** Reações não exigem controle da sala — qualquer participante pode mandar. */
   const handleReaction = useCallback((emoji: ReactionEmoji) => actions.sendReaction(emoji), [actions]);
 
-  /**
-   * Entrega os controles ao YouTube, ou os traz de volta.
-   *
-   * Ao voltar para a nossa barra, esconde a nativa na hora: o `YT.Player`
-   * reconstrói a UI a cada comando nosso, e sem isso a barra do YouTube
-   * reapareceria por cima assim que a correção de deriva fizesse o próximo
-   * `seek`.
-   */
-  const toggleNativeControls = useCallback(() => {
-    setNativeControls((prev) => {
-      if (prev) playerRef.current?.hideNativeControls?.();
-      return !prev;
-    });
-  }, []);
-
-  // A nativa é do player do YouTube: trocar de item tem que devolver a nossa.
-  useEffect(() => {
-    setNativeControls(false);
-  }, [currentItem?.id]);
-
-  /** Atalhos de teclado clássicos de player. */
+  /** Atalhos de teclado clásicos de player. */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -469,11 +436,24 @@ export function VideoStage({
            * tocando e navega por teclado precisa ver o foco em algum lugar, e o
            * catcher é o único elemento focável do palco.
            */
-          className="absolute inset-x-0 top-0 z-10 cursor-default outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70 disabled:cursor-not-allowed"
-          /* Sempre com `bottom`: sem ele o elemento colapsa para altura zero,
-             já que o `top-0` está fixo. Só o valor muda — 0 no normal, a altura
-             da barra nativa quando ela está no ar. */
-          style={{ bottom: nativeControls ? NATIVE_BAR : 0 }}
+          className="absolute inset-0 z-10 cursor-default outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/70 disabled:cursor-not-allowed"
+          /*
+           * Cobre o palco inteiro, rodapé incluído.
+           *
+           * Antes o `bottom` era 48px para deixar a faixa da barra nativa livre,
+           * e o `PlayerControls` sentava acima dela. Com `controls: 0` não há
+           * mais nada embaixo: a nossa barra é a única, e ela é `z-20` contra o
+           * `z-10` deste catcher — então ela continua clicável por cima e o resto
+           * do palco continua pertencendo ao play/pausa.
+           *
+           * A faixa de baixo deixou de ser zona morta por acidente: clicar nela
+           * dá play, como em qualquer player. Antes, clicar embaixo não fazia
+           * nada, e o lugar onde a barra estava era justamente onde o polegar
+           * já estava.
+           *
+           * `inset-0` substitui `inset-x-0 top-0` mais o `style`: com `top-0`
+           * fixo e sem `bottom`, o elemento colapsa para altura zero.
+           */
         />
       )}
 
@@ -532,21 +512,12 @@ export function VideoStage({
       )}
 
       {/*
-        * Com a barra nativa no ar, a nossa dá lugar. E, no canto, um botão
-        * pequeno traz a nossa de volta — sem ele não haveria caminho para
-        * partir dos controles do YouTube.
+        * A nossa barra é a única, e o `z-20` a põe acima do click-catcher, que é
+        * `z-10`. Antes havia um modo em que a nossa dava lugar à nativa do
+        * YouTube, com um botão no canto para voltar; com `controls: 0` esse
+        * caminho não existe mais e o botão junto com ele.
         */}
-      {currentItem && nativeControls && (
-        <button
-          type="button"
-          onClick={toggleNativeControls}
-          className="animate-fade-up absolute bottom-3 right-3 z-20 rounded-lg bg-black/70 px-2.5 py-1.5 text-2xs text-white/80 backdrop-blur-sm transition-colors duration-150 hover:bg-black/85 hover:text-white"
-        >
-          Voltar aos controles juntos
-        </button>
-      )}
-
-      {currentItem && !nativeControls && (
+      {currentItem && (
         <PlayerControls
           visible={controlsVisible || !isPlaying}
           isPlaying={isPlaying}
@@ -566,7 +537,6 @@ export function VideoStage({
           onVolume={handleVolume}
           onToggleMute={toggleMute}
           onToggleCaptions={toggleCaptions}
-          onHandOverToNative={isYoutube ? toggleNativeControls : undefined}
           onToggleFullscreen={toggleFullscreen}
           onToggleSidebar={onToggleSidebar}
         />

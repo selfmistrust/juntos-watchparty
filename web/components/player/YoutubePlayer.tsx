@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { loadYoutubeApi } from '@/lib/youtubeApi';
 import type { PlayerHandle } from '@/types';
 
@@ -14,18 +14,30 @@ interface Props {
 /**
  * Params de legenda para o playerVar.
  *
- * Só o "ligado" existe de verdade. A IFrame Player API não tem como desligar
- * legenda, e isso foi conferido com a legenda visível na tela, não só lendo
- * estado: sem param nenhum ela aparece, com `cc_load_policy=0` também, com
- * `cc_lang_pref` inválido também, no domínio `youtube-nocookie.com` também, e
- * `setOption('captions', 'track', …)` só aceita faixa válida. Em
- * `getOptions('captions')` não existe verbo de "esconder legenda" — só
+ * A IFrame Player API não tem verbo de "esconder legenda". Isso foi conferido
+ * com a legenda visível na tela, não só lendo estado: sem param nenhum ela
+ * aparece, com `cc_load_policy=0` também, com `cc_lang_pref` inválido também, no
+ * domínio `youtube-nocookie.com` também, e `setOption('captions', 'track', …)`
+ * só aceita faixa válida. Em `getOptions('captions')` não existe "esconder" — só
  * `reload`, `fontSize`, `track`, `tracklist`, `translationLanguages` e
  * `sampleSubtitle`.
  *
- * A única alavanca que funciona é `cc_load_policy: 1`, lida na construção do
- * player. Por isso o botão da watchparty liga (recriando o player) e o botão de
- * CC do próprio YouTube é quem desliga.
+ * A única alavanca é `cc_load_policy`, e ela só é lida na **construção** do
+ * player. Por isso o botão de legenda da watchparty recria o player nos dois
+ * sentidos: ligado pede `cc_load_policy: 1`, desligado não pede nada e o
+ * padrão do YouTube é não carregar.
+ *
+ * ## O que mudou quando a barra nativa saiu
+ *
+ * Antes, o botão de CC do próprio YouTube era a rede de segurança do desligar:
+ * `cc_load_policy` falhando ainda deixava quem ligou legenda desligá-la. Com
+ * `controls: 0` essa rede não existe mais, e o recriar passou a ser a única via.
+ *
+ * A consequência honesta: se o YouTube devolver as legendas ligadas por conta
+ * própria — ele guarda a preferência de legenda por vídeo na conta, e isso tem
+ * precedência sobre o param — o botão da watchparty não tem como vencer, porque
+ * não existe comando de API para isso. Essa é a fraqueza conhecida de usar só a
+ * API, e é o preço de não ter duas barras competindo na tela.
  *
  * Português porque é o idioma de quase todo mundo na sala. O YouTube respeita a
  * ordem: se não houver faixa em português, ele cai para outra.
@@ -36,31 +48,49 @@ function legendaParams(captionsOn: boolean): Record<string, string> {
 }
 
 /**
- * Player do YouTube.
+ * Player do YouTube, com a barra nativa **desligada**.
  *
- * ## A barra nativa fica ligada, de propósito
+ * ## Por que `controls: 0`
  *
- * Ela ficava desligada (`controls: 0`) para nenhum clique escapar da
- * sincronização do servidor, e o efeito colateral foi o botão de CC sumir junto.
- * Como a API não tem como desligar legenda, quem dependia dela ficava preso sem
- * nenhum jeito de desligá-la. Com a barra nativa de volta, o botão de CC volta
- * junto, e é ele quem resolve.
+ * A barra nativa do YouTube ocupava a mesma faixa de ~48px no rodapé que a nossa
+ * e, pior, tinha vida própria. Três problemas, todos de sincronização:
  *
- * A divisão ficou: o botão da nossa barra **liga**, o do YouTube **desliga**.
+ * - o play e a pausa dela mandavam direto no player, sem passar pela sala, e
+ *   desincronizavam todo mundo. O efeito que reage a `isPlaying` corrigia em um
+ *   ciclo, mas era uma correção e não uma prevenção — e ninguém corrigindo é
+ *   melhor que ninguém errando;
+ * - o volume e o mudo dela eram estado local do iframe. Quem ajustava no YouTube
+ *   não mudava nada na sala, e o `setVolume` do `VideoStage` sobrescrevia no
+ *   snapshot seguinte;
+ * - `fs: 0` já tirava o botão de tela cheia, mas a barra continuava sendo a
+ *   superfície onde esse botão morava.
  *
- * ## O que continua sendo nosso
+ * Com `controls: 0` nada disso compete. A única interface é a nossa, e ela
+ * fala com o player pelos verbos da API — `playVideo`, `pauseVideo`, `seekTo`,
+ * `setVolume`, `mute`, `unMute`, `getCurrentTime`, `getDuration`, todos no
+ * `useImperativeHandle` abaixo.
  *
- * `disablekb` continua ligado: play, pausa e busca por teclado têm de passar
- * pela sala, senão uma pessoa desincroniza a sala inteira. O botão de CC
- * continua alcançável por Tab e Enter, que não é atalho de teclado do player.
+ * `disablekb: 1` era a condição para a barra sumir sem quebrar o alcance por
+ * teclado: os atalhos do player (espaço, setas, `k`, `j`, `f`) iam direto no
+ * vídeo e ignoravam a sala. Desligados eles, o teclado pertence à nossa barra,
+ * que é alcançável por Tab e Enter.
  *
- * Usar o play ou a pausa da barra nativa desincroniza na hora, mas o efeito
- * que reage a `isPlaying` roda a cada snapshot do servidor e re-imprime o
- * estado — então o ruim dura no máximo um ciclo.
+ * ## Nada é escondido por CSS
  *
- * A sobreposição das duas barras é resolvida no `VideoStage`: o click-catcher
- * de play/pause deixa livre a faixa de baixo, e a nossa barra senta acima da
- * nativa em vez de por cima.
+ * O iframe é cross-origin: não há como alcançar o interior dele, e nem seria
+ * certo tentar. A única forma legítima de tirar a barra é não a pedir, que é o
+ * que `controls: 0` faz. Também não há overlay sobre o logo do YouTube para
+ * disfarçar marca de terceiro: o que o YouTube decide mostrar, continua
+ * mostrando, e a legibilidade dos nossos controles vem do gradiente da nossa
+ * barra, não de paint por cima do player.
+ *
+ * ## O que se perde
+ *
+ * O botão de CC nativo. Era ele que desligava a legenda, porque a API não tem
+ * esse comando — o desligar passou a depender do recriar o player, e a fraqueza
+ * disso está escrita em `legendaParams`. A troca foi deliberada: uma barra
+ * inteira que desincroniza a sala para alcançar um botão é mais cara que um
+ * botão, e o `PlayerControls` expõe legenda nos dois sentidos.
  *
  * ## A recriação do player
  *
@@ -79,24 +109,18 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
   const callbacks = useRef({ onReady, onEnded });
   callbacks.current = { onReady, onEnded };
 
-  /**
-   * Esconde a barra nativa do YouTube.
+  /*
+   * Não existe mais `hideControls`.
    *
-   * As duas barras não podem coexistir — as duas ocupam os mesmos ~48px do
-   * rodapé. Então, enquanto a nossa está no ar, a do YouTube fica escondida, e
-   * o inverso acontece quando a pessoa pede os controles nativos.
-   *
-   * Chamado depois de cada comando nosso (`seek`, `play`, volume): cada um
-   * acorda a UI nativa, e sem repetir aqui a barra do YouTube apareceria por
-   * cima da nossa a cada ciclo de correção de deriva, que roda a cada 1,2s.
+   * Ele existia para rebater a barra nativa depois de cada comando nosso, porque
+   * o `YT.Player` reconstrói a UI a cada `play`/`pause`/`seek`/`setVolume` — e a
+   * correção de deriva dispara a cada ~1,2s, então a barra voltava a cada ciclo
+   * se ninguém a escondesse. Com `controls: 0` a UI não é construída, e a
+   * a necessidade de escondê-la desaparece junto. Teria sido deixado como chamada inócua
+   * a cada comando, mas isso custa uma ida ao iframe por ciclo de correção para
+   * não fazer nada, e é o tipo de no-op que sobrevive anos sem ninguém saber por
+   * que existe.
    */
-  const hideChrome = useCallback(() => {
-    try {
-      playerRef.current?.hideControls?.();
-    } catch {
-      // Player ainda não pronto, ou já destruído.
-    }
-  }, []);
 
   useEffect(() => {
     // O wrapper é capturado aqui para o cleanup usar o mesmo nó: ele já está
@@ -128,18 +152,55 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
       playerRef.current = new YT.Player(host, {
         videoId,
         playerVars: {
-          // Barra nativa ligada: é o que traz o botão de CC de volta.
-          controls: 1,
-          // Atalhos de teclado do player desligados — play/pausa/busca têm de
-          // passar pela sala. O botão de CC continua usável por Tab e Enter.
-          disablekb: 1,
-          modestbranding: 1,
-          rel: 0,
-          playsinline: 1,
-          iv_load_policy: 3,
+          /*
+           * A barra nativa não é pedida, e é o que tira de uma vez a barra de
+           * progresso, o play/pausa, o volume e o botão de tela cheia do
+           * YouTube — os quatro ocupavam a mesma faixa do rodapé que a nossa e
+           * competiam com ela.
+           *
+           * `controls: 0` é a única forma de pedir isso. Não há como esconder por
+           * CSS: o iframe é cross-origin, e mascarar o interior dele com um
+           * overlay seria fingir que o elemento não existe, além de cobrir o
+           * vídeo.
+           */
+          controls: 0,
+          // A IFrame API liga isso sozinha, mas fica explícito porque é o que
+          // habilita os verbos usados no `useImperativeHandle` abaixo.
+          enablejsapi: 1,
           // Sem o botão de tela cheia do próprio YouTube: quem manda é o
           // controle da watchparty, e os dois se sobrepunham.
           fs: 0,
+          /*
+           * Atalhos de teclado do player desligados. Espaço, setas, `k`, `j` e
+           * `f` iam direto no vídeo e ignoravam a sala, que é exatamente o que
+           * esta barra existe para evitar. Com eles fora, o teclado pertence à
+           * nossa barra, alcançável por Tab.
+           */
+          disablekb: 1,
+          // Reprodução no lugar, sem saltar para o app de vídeo do sistema.
+          playsinline: 1,
+          /*
+           * Pedido ao YouTube, e não um disfarce: o param oficial para a marca
+           * d'água. Na prática o YouTube atual já ignora quase tudo aqui.
+           *
+           * O que sobrar da marca é decisão do YouTube, e não foi tapado: um
+           * retângulo por cima do player cobriria o vídeo para esconder um logo,
+           * que é o oposto de integrar. O que garante a legibilidade dos
+           * controles é o gradiente da nossa barra, que chega a 85% de preto na
+           * base — a marca é desenhada nas pontas do vídeo, dentro dessa faixa
+           * escura.
+           *
+           * Verificado no navegador com o player real: com `controls: 0` e o
+           * ponteiro sobre o vídeo, não aparece barra, nem progresso, nem play,
+           * nem volume, nem tela cheia. Ao lado, `controls: 1` no mesmo instante
+           * mostra a barra nativa inteira. E `seekTo`, `setVolume`, `mute` e
+           * `getDuration` continuam respondendo depois de `controls: 0`.
+           */
+          modestbranding: 1,
+          // Sem o cartão de "vídeos relacionados" ao terminar.
+          rel: 0,
+          // Sem anotações sobre o vídeo, que entravam por cima do palco.
+          iv_load_policy: 3,
           ...legendaParams(captionsOn),
         },
         events: {
@@ -167,35 +228,37 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
     };
   }, [videoId, captionsOn]);
 
+  /*
+   * Os verbos da IFrame Player API, e a superfície inteira de comando sobre o
+   * player do YouTube. Nada mais escreve nele: a barra nativa está desligada, e
+   * o que sobra é esta lista.
+   *
+   * `PlayerHandle` é compartilhado com o `FilePlayer` e o player de tela, e é por
+   * isso que os verbos são uniformes — é o `VideoStage` que fala com os três sem
+   * saber de onde veio o vídeo.
+   */
   useImperativeHandle(ref, (): PlayerHandle => ({
     play: () => {
       playerRef.current?.playVideo?.();
-      hideChrome();
     },
     pause: () => {
       playerRef.current?.pauseVideo?.();
-      hideChrome();
     },
     seek: (s) => {
       playerRef.current?.seekTo?.(s, true);
-      hideChrome();
     },
     getCurrentTime: () => playerRef.current?.getCurrentTime?.() ?? 0,
     getDuration: () => playerRef.current?.getDuration?.() ?? 0,
     setVolume: (v) => {
       playerRef.current?.setVolume?.(Math.round(v * 100));
-      hideChrome();
     },
     setMuted: (m) => {
       if (m) playerRef.current?.mute?.();
       else playerRef.current?.unMute?.();
-      hideChrome();
     },
     setPlaybackRate: (r) => {
       playerRef.current?.setPlaybackRate?.(r);
-      hideChrome();
     },
-    hideNativeControls: hideChrome,
   }));
 
   return (
@@ -209,10 +272,13 @@ export const YoutubePlayer = forwardRef<PlayerHandle, Props>(function YoutubePla
         * só enxerga o wrapper, que é estável, quem limpa é o efeito, via
         * `innerHTML = ''`.
         *
-        * Sem `pointer-events-none`: o mouse precisa chegar na barra nativa do
-        * YouTube, que é onde está o botão de CC.
+        * Este era o motivo de o wrapper **não** ser `pointer-events-none`: o
+        * mouse precisava chegar na barra nativa, onde estava o botão de CC. Com
+        * `controls: 0` não há mais nada clicável dentro do iframe, e o wrapper
+        * capturando o clique só criaria um alvo morto no meio do palco — quem
+        * trata o play/pausa é o click-catcher do `VideoStage`, em `z-10`.
         */}
-      <div ref={wrapRef} className="h-full w-full" />
+      <div ref={wrapRef} className="pointer-events-none h-full w-full" />
     </div>
   );
 });
