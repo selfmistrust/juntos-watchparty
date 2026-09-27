@@ -3,6 +3,7 @@
   "productName": "Juntos",
   "version": "1.0.1",
   "private": true,
+  "author": "Juntos",
   "description": "Juntos Watch Party em desktop — o mesmo app web, num runtime Electron.",
   "main": "dist/main/index.js",
   "scripts": {

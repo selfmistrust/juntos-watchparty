@@ -67,6 +67,36 @@ test('o canal da versao existe dos dois lados', () => {
   );
 });
 
+test('o instalador nao se apresenta como o GitHub', () => {
+  /*
+   * Este apareceu no build de verdade, e o log já avisava: "author is missed in
+   * the package.json". Sem `author`, o `electron-builder` preenche o
+   * `CompanyName` do recurso de versão do Windows com o dono do repositório — e
+   * o instalador saía como "GitHub, Inc." nas propriedades do arquivo, num
+   * produto que se chama Juntos.
+   *
+   * É o mesmo tipo de defeito da versão duplicada: metadado que ninguém vê no
+   * código, que só aparece no artefato, e que ninguém conferiu porque o build
+   * terminou com sucesso. A diferença é que este apareceu antes de o build
+   * terminar, em uma linha de log, e passou.
+   *
+   * `LegalCopyright` vinha certo, porque o `electron-builder.yml` define
+   * `copyright: Juntos` — o que mostra que os dois campos têm fontes diferentes
+   * e que só uma delas estava preenchida.
+   */
+  const manifest = JSON.parse(pkg) as { author?: string; productName?: string };
+  assert.equal(
+    manifest.author,
+    'Juntos',
+    'sem author o CompanyName do Windows sai como o dono do repositorio, nao como o produto',
+  );
+  assert.equal(
+    manifest.productName,
+    'Juntos',
+    'e o productName precisa concordar com o do electron-builder.yml',
+  );
+});
+
 test('o package.json e a unica versao escrita', () => {
   const versao = JSON.parse(pkg) as { version: string };
   assert.match(versao.version, /^\d+\.\d+\.\d+$/, 'a versao do app precisa ser semver simples');
