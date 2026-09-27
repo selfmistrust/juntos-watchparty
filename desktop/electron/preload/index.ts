@@ -43,6 +43,12 @@ const api: DesktopApi = {
 
   isCapturing: () => ipcRenderer.invoke('desktop:esta-capturando') as Promise<boolean>,
 
+  copyText: async (text: string): Promise<boolean> => {
+    const valor = soTexto(text);
+    if (!valor) return false;
+    return (await ipcRenderer.invoke('desktop:copiar-texto', valor)) === true;
+  },
+
   openPermissionSettings: async () => {
     // Não existe equivalente no Electron: no Windows a permissão de captura é
     // pedida pelo sistema na hora, e não há um painel para abrir. A função

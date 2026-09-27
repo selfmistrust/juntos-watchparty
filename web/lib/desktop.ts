@@ -34,6 +34,7 @@ export interface DesktopApi {
   selectCaptureSource(sourceId: string): Promise<CaptureResult>;
   stopCapture(): Promise<void>;
   isCapturing(): Promise<boolean>;
+  copyText(text: string): Promise<boolean>;
   openPermissionSettings(): Promise<void>;
 }
 
@@ -50,3 +51,25 @@ export function desktop(): DesktopApi | null {
 }
 
 export const isDesktop = (): boolean => desktop() !== null;
+
+/**
+ * Copia texto para a área de transferência, e diz se conseguiu.
+ *
+ * No desktop vai pela ponte, para o processo principal escrever. No navegador
+ * usa a API da web, que funciona — mas pode recusar, e o `catch` transforma a
+ * recusa em `false` em vez de uma rejeição que o botão não trata.
+ *
+ * Devolver o booleano é o ponto: um "Link copiado" sobre um link que não foi
+ * copiado é pior do que nenhuma mensagem.
+ */
+export async function copiarTexto(texto: string): Promise<boolean> {
+  const api = desktop();
+  if (api) return api.copyText(texto);
+  if (typeof navigator === 'undefined' || !navigator.clipboard) return false;
+  try {
+    await navigator.clipboard.writeText(texto);
+    return true;
+  } catch {
+    return false;
+  }
+}

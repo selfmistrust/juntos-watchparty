@@ -72,6 +72,21 @@ export interface DesktopApi {
   /** A captura está ativa agora? */
   isCapturing(): Promise<boolean>;
 
+  /**
+   * Copia texto para a área de transferência do sistema.
+   *
+   * Existe porque `navigator.clipboard.writeText` não funciona de forma
+   * confiável aqui: a API da web exige que o documento esteja com foco, e uma
+   * janela de app que não está em primeiro plano — ou que acabou de recuperar
+   * foco depois de o usuário voltar do navegador do sistema, que é exatamente o
+   * que acontece logo após o OAuth do YouTube — não tem. O processo principal
+   * não tem essa exigência.
+   *
+   * Devolve `false` quando não copiou, para a UI poder avisar em vez de mostrar
+   * "copiado" sobre um link que não foi para lugar nenhum.
+   */
+  copyText(text: string): Promise<boolean>;
+
   /** Abre as configurações de permissões do app no sistema operacional. */
   openPermissionSettings(): Promise<void>;
 }

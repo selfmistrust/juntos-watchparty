@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, session } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, shell, session } from 'electron';
 import path from 'node:path';
 import { APP_ORIGIN, startLocalServer, type LocalServer } from './localServer';
 import { iniciarLog, log } from './log';
@@ -118,6 +118,24 @@ function registrarIpc(): void {
 
   ipcMain.handle('desktop:parar-captura', () => {
     marcarParada();
+    return true;
+  });
+
+  /**
+   * Copia para a área de transferência do sistema.
+   *
+   * O renderer não escreve direto: `navigator.clipboard.writeText` exige
+   * documento com foco, e a janela do app não tem foco depois que a pessoa
+   * volta do navegador do sistema. Aqui não há exigência nenhuma.
+   *
+   * O teto existe porque o renderer é a parte não confiável: sem limite, ele
+   * usaria a área de transferência como armazenamento, e ela é visível para
+   * qualquer outro app. Um link de convite cabe folgado em 2048.
+   */
+  ipcMain.handle('desktop:copiar-texto', (_e, texto: unknown) => {
+    if (typeof texto !== 'string' || texto.length === 0) return false;
+    if (texto.length > 2048) return false;
+    clipboard.writeText(texto);
     return true;
   });
 

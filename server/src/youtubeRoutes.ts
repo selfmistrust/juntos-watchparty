@@ -71,10 +71,31 @@ export function registerYoutubeRoutes(app: Express): void {
       return res.redirect(withYoutubeQuery(returnTo, 'error'));
     }
 
+    /*
+     * A sessão vem do registro `pending`, e não do cookie deste request.
+     *
+     * Quem autentica o callback é o `state`: 32 caracteres de alfabeto próprio,
+     * guardados no Redis, de uso único e com prazo. Quem chega com um `state`
+     * válido está continuando o fluxo que aquela mesma sessão começou — o
+     * `code_verifier` do PKCE está no mesmo registro, e o Google só emite código
+     * para o `client_id` cadastrado. É o que impede o CSRF clássico, em que
+     * alguém tenta pendurar a conta dele na sessão da vítima.
+     *
+     * Antes o callback exigia que o cookie batesse com o `pending`, e isso
+     * quebrava o app desktop. A autorização acontece no navegador do sistema,
+     * que não tem o cookie jar do Electron: a conexão era guardada e logo em
+     * seguida rejeitada, e a pessoa voltava para o app sem conta nenhuma. No
+     * navegador funciona, porque lá o cookie viaja na mesma navegação — o bug
+     * só aparecia no desktop, que é justamente onde o fluxo sai da janela.
+     *
+     * O cookie continua sendo gravado quando é o mesmo, para o navegador que
+     * fez o fluxo ficar logado. Quando é outro — o caso do desktop — isso não
+     * tem como ser coincidência de outra pessoa, e a sessão do `state` é a
+     * certaina.
+     */
     const cookieSession = readSessionId(req);
-    if (!cookieSession || cookieSession !== pending.sessionId) {
-      console.error('[youtube-oauth] sessão do callback inválida ou ausente');
-      return res.redirect(withYoutubeQuery(returnTo, 'error'));
+    if (cookieSession !== pending.sessionId) {
+      console.log('[youtube-oauth] callback sem o cookie da sessão; seguindo a do state');
     }
 
     setSessionCookie(res, pending.sessionId);

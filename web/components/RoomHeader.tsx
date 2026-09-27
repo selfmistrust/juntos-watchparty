@@ -1,10 +1,12 @@
-import { Check, Link as LinkIcon, LockSimple, SidebarSimple } from '@phosphor-icons/react';
+import { Check, Link as LinkIcon, LockSimple, SidebarSimple, Warning } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import Link from 'next/link';
 import { useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
 import { IconButton } from '@/components/ui/Button';
 import { TruncatedText } from '@/components/ui/TruncatedText';
+import { copiarTexto, isDesktop } from '@/lib/desktop';
+import { SITE_URL } from '@/lib/site';
 import type { RoomSnapshot } from '@/types';
 
 interface Props {
@@ -14,13 +16,40 @@ interface Props {
   onToggleSidebar: () => void;
 }
 
+/**
+ * O link que a pessoa manda para o amigo.
+ *
+ * No navegador é a URL em que ela está. No app desktop **não pode ser**: a
+ * janela roda em `http://localhost:3210`, que só existe na máquina de quem
+ * está com o app aberto. Copiar isso produz um link que não abre para ninguém —
+ * o botão funcionava e o convite não valia nada.
+ *
+ * O desktop troca a origem pelo site público e mantém o caminho, que é o mesmo
+ * em ambos. `SITE_URL` vem de `NEXT_PUBLIC_SITE_URL` e, se não estiver
+ * definida, o código cai na URL atual: no navegador isso é exatamente o
+ * comportamento de sempre, e no desktop é um link localhost — defeituoso, mas
+ * visível, em vez de silenciosamente errado.
+ */
+function linkDeConvite(): string {
+  if (!isDesktop()) return window.location.href;
+  const caminho = `${window.location.pathname}${window.location.search}`;
+  return `${SITE_URL}${caminho}`;
+}
+
 export function RoomHeader({ state, connected, sidebarOpen, onToggleSidebar }: Props) {
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const copyInvite = async () => {
-    await navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
+    const ok = await copiarTexto(linkDeConvite());
+    // Só o sucesso troca o rótulo. Um "Link copiado" sobre um link que não foi
+    // copiado é pior do que avisar que não deu.
+    setCopied(ok);
+    setCopyFailed(!ok);
+    setTimeout(() => {
+      setCopied(false);
+      setCopyFailed(false);
+    }, 1800);
   };
 
   const visible = state.users.slice(0, 4);
@@ -83,8 +112,16 @@ export function RoomHeader({ state, connected, sidebarOpen, onToggleSidebar }: P
           onClick={copyInvite}
           className="flex h-9 min-w-0 items-center gap-2 whitespace-nowrap rounded-xl border border-hairline bg-raised px-3 text-sm text-ink-muted transition-colors duration-150 hover:border-white/20 hover:text-ink [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11 [@media(pointer:coarse)]:justify-center [@media(pointer:coarse)]:px-0"
         >
-          {copied ? <Check size={15} weight="bold" className="text-accent" /> : <LinkIcon size={15} />}
-          <span className="hidden sm:inline">{copied ? 'Link copiado' : 'Convidar'}</span>
+          {copied ? (
+            <Check size={15} weight="bold" className="text-accent" />
+          ) : copyFailed ? (
+            <Warning size={15} weight="bold" className="text-live" />
+          ) : (
+            <LinkIcon size={15} />
+          )}
+          <span className="hidden sm:inline">
+            {copied ? 'Link copiado' : copyFailed ? 'Não consegui copiar' : 'Convidar'}
+          </span>
         </button>
 
         <IconButton

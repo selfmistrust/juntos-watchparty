@@ -109,9 +109,30 @@ if (prod && (!servidor || apontandoParaLocal)) {
   );
 }
 
+/*
+ * NEXT_PUBLIC_SITE_URL é o site público, e é o que o app desktop usa para montar
+ * o link de convite. A janela dele roda em `http://localhost:3210`, que só
+ * existe na máquina de quem tem o app aberto: sem esta variável, "Convidar"
+ * copiaria um link que não abre para mais ninguém — o botão funcionaria e o
+ * convite não valeria nada.
+ *
+ * O mesmo tratamento do servidor: em `--prod` o valor local é descartado. No
+ * navegador a variável não é consultada, então deixá-la de fora do build da
+ * Vercel não muda nada lá.
+ */
+const SITE_PROD = 'https://juntoswatchparty.vercel.app';
+let site = (process.env.NEXT_PUBLIC_SITE_URL ?? '').trim();
+if (prod && (!site || apontandoParaLocal.test(site))) {
+  if (site) {
+    console.log(`\nNEXT_PUBLIC_SITE_URL está como ${site}; vou usar ${SITE_PROD} para o link de convite.\n`);
+  }
+  site = SITE_PROD;
+}
+
 rodar(['run', 'build'], web, {
   NEXT_STANDALONE: '1',
   ...(servidor ? { NEXT_PUBLIC_SERVER_URL: servidor } : {}),
+  ...(site ? { NEXT_PUBLIC_SITE_URL: site } : {}),
 });
 
 // O build precisa ter saído com o output certo; sem esta checagem a falha
@@ -181,8 +202,9 @@ if (faltando.length > 0) {
 // não sobre a intenção: ou o host esperado está no bundle, ou o build está
 // errado e o `electron-builder` não deve nem começar a empacotar 94 MB em
 // volta disso.
-if (servidor) {
-  const host = servidor.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+const hostDe = (url) => url.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+
+if (servidor || site) {
   const pedacos = [];
   const colecionar = (dir) => {
     for (const entrada of fs.readdirSync(dir, { withFileTypes: true, recursive: true })) {
@@ -192,17 +214,28 @@ if (servidor) {
   colecionar(path.join(destino, '.next', 'static'));
   colecionar(path.join(destino, 'pages'));
 
-  const achou = pedacos.some((p) => fs.readFileSync(p, 'utf8').includes(host));
-  if (!achou) {
-    console.error(
-      `\nO bundle não referencia ${host}.\n` +
-        `Varre ${pedacos.length} arquivo(s) em .next/static e pages e nada contém esse host.\n` +
-        'O Next provavelmente leu web/.env.local e venceu a variável do ambiente.\n' +
-        'Confira web/.env.local e rode de novo.',
-    );
-    process.exit(1);
+  // Os dois endereços são conferidos pelo mesmo motivo, e o do site é o mais
+  // fácil de esquecer: ele só aparece no bundle do modo prod, e a consequência
+  // de faltá-lo não é o app quebrado — é o "Convidar" copiando um link localhost
+  // que só existe na máquina de quem tem o app aberto.
+  for (const [rotulo, url] of [
+    ['servidor de salas', servidor],
+    ['site público', site],
+  ]) {
+    if (!url) continue;
+    const host = hostDe(url);
+    const achou = pedacos.some((p) => fs.readFileSync(p, 'utf8').includes(host));
+    if (!achou) {
+      console.error(
+        `\nO bundle não referencia ${host} (${rotulo}).\n` +
+          `Varre ${pedacos.length} arquivo(s) em .next/static e pages e nada contém esse host.\n` +
+          'O Next provavelmente leu web/.env.local e venceu a variável do ambiente.\n' +
+          'Confira web/.env.local e rode de novo.',
+      );
+      process.exit(1);
+    }
+    console.log(`  bundle: ${rotulo} -> ${host} ( conferido em ${pedacos.length} arquivo(s) )`);
   }
-  console.log(`  bundle aponta para ${host} ( conferido em ${pedacos.length} arquivo(s) )`);
 }
 
 const tamanho = fs

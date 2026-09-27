@@ -46,6 +46,31 @@ export function YoutubeAccountProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
+  /*
+   * Reconsulta quando a janela volta a ficar em foco.
+   *
+   * No app desktop a autorização sai para o navegador do sistema: a pessoa
+   * autoriza lá, a janela do app perde o foco, e o callback do servidor
+   * acontece fora dela. Sem esta reconsulta, o app continuaria mostrando
+   * "sem conta" até recarregar — que é o que a pessoa não vai fazer, porque
+   * para ela o fluxo já acabou.
+   *
+   * `visibilitychange` cobre o mesmo caso no navegador, em aba de fundo. Os dois
+   * escutam juntos porque alternam entre si conforme o sistema decide o que
+   * focar, e a reconsulta é barata: um GET de status, sem escrita.
+   */
+  useEffect(() => {
+    const aoVoltar = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    window.addEventListener('focus', aoVoltar);
+    document.addEventListener('visibilitychange', aoVoltar);
+    return () => {
+      window.removeEventListener('focus', aoVoltar);
+      document.removeEventListener('visibilitychange', aoVoltar);
+    };
+  }, [refresh]);
+
   const youtubeQuery = router.query.youtube;
 
   useEffect(() => {
