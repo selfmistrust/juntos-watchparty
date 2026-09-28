@@ -3,25 +3,53 @@ import type { MediaSourceProvider } from './types';
 /**
  * Marca do Spotify.
  *
- * O caminho é o glifo oficial da marca (o círculo com as três curvas), usado
- * como o Google Drive e a Globoplay são usados nos outros cards: o card precisa
- * ser reconhecível, e um ícone genérico de "música" não cumpre isso.
+ * Fonte: "Spotify icon", Wikimedia Commons — o ícone de brands do Font Awesome 5
+ * recolorido, autoria Font Awesome/Spotify. O arquivo está marcado como domínio
+ * público **e** com a flag `trademarked`, e é usado aqui só para identificar a
+ * integração, que é uso nominativo de marca. Não é endosso.
  *
- * Duas escolhas sobre o arquivo original:
+ * https://commons.wikimedia.org/wiki/File:Spotify_icon.svg
  *
- * 1. `fill="currentColor"`, e não as cores fixas. A marca é verde, mas o card
- *    pinta o ícone com `source.accent`; fixar a cor aqui faria o verde ignorar o
- *    estado do card. O verde vem do `accent` abaixo, o que é o mesmo arranjo do
- *    YouTube.
- * 2. Nenhum `id` para renomear. Os outros SVGs da marca trazem `mask` e
- *    `linearGradient`, e `id` é global no documento — um id de uma letra colide
- *    com o de qualquer outro SVG inline da página. Este não tem nenhum, então não
- *    há o que renomear.
+ * Duas coisas no arquivo original precisam de ajuste, e as duas seriam bug:
+ *
+ * 1. **`viewBox` é `0 0 496 512`, e não um quadrado.** A largura e a altura do
+ *    viewBox são diferentes, então o glifo é mais alto que largo. Num card o
+ *    ícone ocupa uma caixa de tamanho fixo, e `width={size} height={size}`
+ *    achataria o círculo em elipse. A altura sai da proporção, como o Drive faz
+ *    com os 800×741 dele.
+ * 2. **Os dois caminhos têm cores diferentes e ambas são necessárias.** O
+ *    círculo é `fill="#1ed760"` e as três curvas não têm `fill` — o arquivo
+ *    original depende do preto padrão do SVG. Aqui as curvas ganharam
+ *    `fill="#000000"` explícito, e o `<svg>` **não** leva `fill="none"`.
+ *
+ *    Isso não é preciosismo: a primeira versão deste componente copiou o
+ *    `fill="none"` que o Drive usa, e o efeito foi o glifo virar só o círculo
+ *    verde, sem as curvas. Como o `fill` é herdado, `none` na raiz cascateia
+ *    para o caminho que não declara cor — e nada avisa. Medido em canvas: 7136
+ *    pixels verdes e **0** escuros. Com o `fill` explícito no caminho, a marca
+ *    não depende mais de um padrão herdado para existir.
+ *
+ *    Converter para `currentColor` — o que os outros ícones fazem — continua
+ *    fora de questão: pintaria círculo e curvas da mesma cor, e o glifo
+ *    sumiria. As cores ficam como no original, pelo mesmo motivo pelo qual o
+ *    Drive mantém o gradiente: uma marca que perde a cor perde o que a faz
+ *    reconhecível.
+ *
+ * Não há `id`, `mask` nem `linearGradient` neste arquivo, então não existe o
+ * risco de colisão de id que obrigou a renomear o `a`/`b`/`c`/`d` do Drive e o
+ * `clipPath` da Globoplay.
  */
 function SpotifyMark({ size = 24 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 168 168" fill="currentColor" role="img" aria-label="Spotify">
-      <path d="M158.51 142.801a12.252 12.252 0 0 1-16.77 4.932C97.335 129.882 50.916 127.326 3.77 135.48a12.252 12.252 0 0 1-3.9-24.053c48.774-8.369 96.383-5.2 140.72 12.428a12.252 12.252 0 0 1 4.92 18.946Zm16.766-34.215a15.315 15.315 0 0 1-20.967 6.801c-34.324-20.859-86.401-27.125-126.916-14.851a15.315 15.315 0 1 1-8.85-28.815c46.46-13.953 104.221-6.888 143.817 17.535a15.315 15.315 0 0 1 6.996 19.33Zm1.763-35.203a18.374 18.374 0 0 1-25.18 8.164C113.93 60.09 60.652 54.17 22.216 65.915a18.374 18.374 0 1 1-10.51-34.975c43.495-13.324 102.628-6.843 150.972 15.588a18.374 18.374 0 0 1 8.352 25.845Z" />
+    <svg width={size} height={size * (512 / 496)} viewBox="0 0 496 512" role="img" aria-label="Spotify">
+      <path
+        fill="#1ed760"
+        d="M248 8C111.1 8 0 119.1 0 256s111.1 248 248 248 248-111.1 248-248S384.9 8 248 8Z"
+      />
+      <path
+        fill="#000000"
+        d="M406.6 231.1c-5.2 0-8.4-1.3-12.9-3.9-71.2-42.5-198.5-52.7-280.9-29.7-3.6 1-8.1 2.6-12.9 2.6-13.2 0-23.3-10.3-23.3-23.6 0-13.6 8.4-21.3 17.4-23.9 35.2-10.3 74.6-15.2 117.5-15.2 73 0 149.5 15.2 205.4 47.8 7.8 4.5 12.9 10.7 12.9 22.6 0 13.6-11 23.3-23.2 23.3zm-31 76.2c-5.2 0-8.7-2.3-12.3-4.2-62.5-37-155.7-51.9-238.6-29.4-4.8 1.3-7.4 2.6-11.9 2.6-10.7 0-19.4-8.7-19.4-19.4s5.2-17.8 15.5-20.7c27.8-7.8 56.2-13.6 97.8-13.6 64.9 0 127.6 16.1 177 45.5 8.1 4.8 11.3 11 11.3 19.7-.1 10.8-8.5 19.5-19.4 19.5zm-26.9 65.6c-4.2 0-6.8-1.3-10.7-3.6-62.4-37.6-135-39.2-206.7-24.5-3.9 1-9 2.6-11.9 2.6-9.7 0-15.8-7.7-15.8-15.8 0-10.3 6.1-15.2 13.6-16.8 81.9-18.1 165.6-16.5 237 26.2 6.1 3.9 9.7 7.4 9.7 16.5s-7.1 15.4-15.2 15.4z"
+      />
     </svg>
   );
 }

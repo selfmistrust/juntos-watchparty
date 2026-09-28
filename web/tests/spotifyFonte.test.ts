@@ -53,6 +53,69 @@ test('o card do Spotify e o mesmo card dos outros', () => {
   assert.ok(!/className/.test(c), 'e nenhuma classe: quem estiliza e o SourceCard');
 });
 
+test('o icone do Spotify desenha o circulo e as tres curvas', () => {
+  /*
+   * Este teste existe por causa de um bug que só a medição de pixels pegou.
+   *
+   * O SVG de origem tem dois caminhos: o círculo com `fill="#1ed760"` e as três
+   * curvas **sem `fill`**, o que as faz herdar o preto padrão do SVG. A primeira
+   * versão deste componente copiou do Drive o `fill="none"` que o Drive usa no
+   * `<svg>`, e como `fill` é herdado, `none` na raiz cascateou para o caminho
+   * que não declara cor: o glifo virou só o círculo verde, sem as curvas.
+   *
+   * Nada disso quebra build, typecheck, lint ou teste. É o tipo de defeito que
+   * passa inteiro e só aparece olhando a tela — e olhando a tela em cima de uma
+   * faixa verde de 24px, o contorno some sem ninguém notar.
+   *
+   * Medido em canvas, antes e depois:
+   *
+   *   com fill="none" na raiz:   7136 verdes,    0 escuros
+   *   com fill explicito no path: 5756 verdes, 1294 escuros
+   *
+   * A soma caiu porque as curvas agora cobrem parte do verde, que é o esperado.
+   */
+  const c = semComentario(provider);
+  const svg = c.slice(c.indexOf('<svg'), c.indexOf('</svg>'));
+
+  assert.ok(
+    !/fill="none"/.test(svg.slice(0, svg.indexOf('>'))),
+    'o <svg> nao pode ter fill="none": cascateia para os caminhos que nao declaram cor',
+  );
+  const caminhos = [...svg.matchAll(/<path\s+([^/>]*)\/>/g)].map((m) => m[1]);
+  assert.equal(caminhos.length, 2, 'o glifo tem dois caminhos: o circulo e as curvas');
+  for (const [i, attrs] of caminhos.entries()) {
+    assert.match(
+      attrs,
+      /fill="#[0-9a-fA-F]{3,8}"/,
+      `o caminho ${i} declara a propria cor, para nao depender do valor herdado`,
+    );
+  }
+  assert.match(svg, /fill="#1ed760"/, 'o circulo e o verde da marca');
+});
+
+test('o icone do Spotify nao e achatado', () => {
+  /*
+   * O `viewBox` de origem e `0 0 496 512`: **nao e quadrado**. Num card o icone
+   * ocupa uma caixa de tamanho fixo, e `width={size} height={size}` transformaria
+   * o circulo em elipse. A altura sai da proporcao do viewBox, como o Drive faz
+   * com os 800x741 dele.
+   *
+   * Medido com os atributos exatos do componente: 24 x 24.77, razao 0.969, contra
+   * os 496/512 = 0.96875 do arquivo.
+   */
+  const c = semComentario(provider);
+  const svg = c.slice(c.indexOf('<svg'), c.indexOf('</svg>'));
+  const vb = svg.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
+  assert.ok(vb, 'o viewBox precisa vir do arquivo, para a proporcao nao ser adivinhada');
+  const [, w, h] = vb.map(Number);
+  assert.notEqual(w, h, `o viewBox ${vb[1]}x${vb[2]} nao e quadrado: a altura precisa sair da proporcao`);
+  assert.match(
+    svg,
+    /height=\{size \* \(512 \/ 496\)\}/,
+    'e a altura vem da proporcao do viewBox, e nao de um numero solto',
+  );
+});
+
 test('o Spotify entra no fim da grade, sem mexer na ordem dos outros', () => {
   /*
    * A grade é de duas colunas e tinha cinco cards — um ímpar deixava a última
