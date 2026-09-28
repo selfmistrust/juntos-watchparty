@@ -183,3 +183,58 @@ test('a mensagem enviada continua com a mencao em destaque', () => {
     'e a mensagem renderizada usa ele',
   );
 });
+
+/*
+ * A posicao da lista de sugestoes.
+ *
+ * Existe aqui por causa de um defeito que nao parecia defeito: a lista nao
+ * aparecia, com o campo funcionando perfeitamente.
+ *
+ * A condicao era `setVirado(caixa.top < espaco.top)`, com `espaco` sendo o
+ * campo. O campo fica no rodape do painel, entao a lista acima dele tem
+ * `caixa.top` menor que `espaco.top` SEMPRE - e a condicao disparava justamente
+ * no caso que funcionava, movendo a lista para baixo do campo, para fora do
+ * painel.
+ *
+ * E por isso ninguem olhou no autocomplete quando o sintoma foi "digito @Beni e
+ * nada aparece": o campo funcionava, entao a suspeita caia no filtro de nomes,
+ * que estava certo, e no WebSocket, que tambem estava certo.
+ *
+ * A referencia tem que ser a viewport, e nao o campo.
+ */
+test('a lista nao e virada para fora da tela', () => {
+  /*
+   * A varredura e feita **depois** de tirar os comentarios, e a primeira versao
+   * nao fazia isso. O resultado foi o teste acusando o proprio comentario que
+   * explica a condicao antiga: `espaco.top` aparecia na prosa, nao no codigo.
+   *
+   * A afirmação e sobre codigo. Um comentario que cita a linha errada para
+   * explicar por que ela estava errada é o que deve sobrar.
+   */
+  const codigo = autocomplete
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+
+  assert.match(
+    codigo,
+    /setVirado\(el\.getBoundingClientRect\(\)\.top < 0\)/,
+    'a virada compara com o topo da tela, e nao com o campo',
+  );
+  assert.ok(
+    !/espaco\.top/.test(codigo),
+    'comparar com o campo inverte a condicao: o campo esta sempre abaixo da lista',
+  );
+  assert.ok(
+    !/parentElement/.test(codigo),
+    'e o campo nao serve de referencia para a posicao da lista',
+  );
+});
+
+test('a lista nasce acima do campo', () => {
+  assert.match(
+    autocomplete,
+    /virado \? 'bottom-full mb-2' : 'top-full mt-2'/,
+    'o padrao e acima: o campo esta no rodape e o espaco util e o das mensagens',
+  );
+  assert.match(autocomplete, /useState\(false\)/, 'e ela comeca nao virada');
+});

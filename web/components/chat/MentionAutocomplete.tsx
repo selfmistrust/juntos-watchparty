@@ -107,20 +107,38 @@ export function MentionAutocomplete({
   const [virado, setVirado] = useState(false);
 
   /*
-   * Abre para cima até não sair do painel, e para baixo se ainda couber.
+   * Vira a lista para baixo **so** quando ela nao cabe na tela.
    *
-   * Medir depois do desenho é o que evita o flash: com a lista já posicionada
-   * no DOM, o `getBoundingClientRect` dá o tamanho real, e a virada acontece
-   * antes do navegador pintar.
+   * ## A condicao estava invertida, e a lista sumia
+   *
+   * Era `setVirado(caixa.top < espaco.top)`, com `espaco` sendo o **campo**. O
+   * campo fica no rodape do painel, entao `caixa.top` e menor que `espaco.top`
+   * sempre que a lista esta acima dele -- ou seja, **sempre**, porque o padrao ja
+   * e `bottom-full`. A condicao disparava justamente no caso que funcionava, e
+   * movia a lista para `top-full`, que e para baixo do campo, para fora do
+   * painel.
+   *
+   * O sintoma era a lista de sugestoes nao aparecer com o campo funcionando
+   * perfeitamente -- que e a assinatura de "a lista esta sendo posicionada fora da
+   * tela", e nao de "a lista nao existe". E por isso ninguem olha no autocomplete
+   * quando o sintoma e "nao aparece nada": o campo funciona, entao a suspeita cai
+   * no filtro de nomes, que estava certo.
+   *
+   * A referencia nao pode ser o campo: o campo e o que a lista acompanha, e ele
+   * esta sempre embaixo. A pergunta real e "a lista saiu da tela?", e a tela e a
+   * viewport -- dai `top < 0`, que so e verdade quando a lista subiu para fora
+   * do topo da janela.
+   *
+   * ## Por que medir depois do desenho
+   *
+   * Com a lista ja no DOM e posicionada, o `getBoundingClientRect` da tamanho e
+   * posicao reais. Medir antes exigiria adivinhar a altura, e a decisão viria
+   * errada justamente quando a lista e mais alta do que o previsto.
    */
   useIsoLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const alvo = el.parentElement;
-    if (!alvo) return;
-    const espaco = alvo.getBoundingClientRect();
-    const caixa = el.getBoundingClientRect();
-    setVirado(caixa.top < espaco.top);
+    setVirado(el.getBoundingClientRect().top < 0);
   }, [sugestoes.length]);
 
   if (sugestoes.length === 0) return null;
