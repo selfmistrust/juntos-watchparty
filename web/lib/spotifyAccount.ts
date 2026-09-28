@@ -14,11 +14,40 @@
  * Longer-lived à conta.
  */
 
-/** Endereço do servidor de salas. Mesma regra do resto do app. */
-function base(): string {
-  const bruto =
-    (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_SERVER_URL) || 'http://localhost:4000';
-  return bruto.replace(/\/+$/, '');
+import { SERVER_URL } from '@/lib/socket';
+
+/**
+ * Endereço do servidor de salas.
+ *
+ * Vem de `SERVER_URL` e não de uma cópia da regra: o Spotify mora no Render e o
+ * site na Vercel, e `location.assign` com caminho relativo ia procurar a rota do
+ * servidor **no site**, que não existe. A primeira versão desta integração fez
+ * exatamente isso e o botão de conectar respondeu 404 — que é a mesma assinatura
+ * de um link quebrado e de um caminho no host errado.
+ */
+
+/** Pede a URL de login por fetch, que leva o cookie de sessão. Só o desktop usa. */
+export async function spotifyStartUrl(returnTo: string): Promise<{ url: string } | { error: string }> {
+  const r = await fetch(`${SERVER_URL}/api/spotify/oauth/start`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ returnTo }),
+  });
+  if (!r.ok) return { error: r.status === 503 ? 'not_configured' : 'start_failed' };
+  return (await r.json()) as { url: string };
+}
+
+/**
+ * URL que começa o login no navegador, e que a pessoa segue na mesma aba.
+ *
+ * `returnTo` viaja na query porque o fluxo é uma navegação: a pessoa sai do
+ * site, autoriza no Spotify e volta. O servidor valida esse destino contra as
+ * origens permitidas antes de guardá-lo no `state`, então a query não abre
+ * brecha.
+ */
+export function spotifyConnectUrl(returnTo: string): string {
+  return `${SERVER_URL}/api/spotify/oauth/start?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
 export interface SpotifyStatus {
@@ -51,7 +80,7 @@ export interface SpotifyItem {
 }
 
 async function get<T>(caminho: string, params?: Record<string, string>): Promise<T> {
-  const url = new URL(`${base()}${caminho}`);
+  const url = new URL(`${SERVER_URL}${caminho}`);
   for (const [k, v] of Object.entries(params ?? {})) url.searchParams.set(k, v);
   const r = await fetch(url, { credentials: 'include' });
   if (!r.ok) throw new Error(`spotify_${r.status}`);
@@ -66,20 +95,9 @@ export async function fetchSpotifyStatus(): Promise<SpotifyStatus> {
   }
 }
 
-/** Pede a URL de login. `POST` porque é ela que leva o cookie de sessão. */
-export async function spotifyStartUrl(returnTo: string): Promise<{ url: string } | { error: string }> {
-  const r = await fetch(`${base()}/api/spotify/oauth/start`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ returnTo }),
-  });
-  if (!r.ok) return { error: r.status === 503 ? 'not_configured' : 'start_failed' };
-  return (await r.json()) as { url: string };
-}
 
 export async function disconnectSpotify(): Promise<void> {
-  const r = await fetch(`${base()}/api/spotify/oauth/disconnect`, {
+  const r = await fetch(`${SERVER_URL}/api/spotify/oauth/disconnect`, {
     method: 'POST',
     credentials: 'include',
   });

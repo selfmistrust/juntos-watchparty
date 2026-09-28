@@ -3,8 +3,8 @@ import { isDesktop } from '@/lib/desktop';
 import {
   disconnectSpotify,
   fetchSpotifyStatus,
+  spotifyConnectUrl,
   spotifyStartUrl,
-  spotifyReproduzAqui,
   type SpotifyStatus,
 } from '@/lib/spotifyAccount';
 
@@ -97,14 +97,14 @@ export function SpotifyAccountProvider({ children }: { children: ReactNode }) {
      * Navegador: seguir o `/start` na mesma aba leva o cookie junto e o callback
      * volta para o app.
      *
-     * Desktop: o mesmo caminho do YouTube e pelo mesmo motivo. O navegador do
-     * sistema não tem o cookie de sessão, então navegar para o `/start` de lá
-     * criaria uma sessão nova — a conta ficaria ligada a ela, e o app continuaria
-     * sem conta nenhuma. Por isso o desktop pede a URL por `POST`, que leva o
-     * cookie, e entrega só a URL ao navegador.
+     * A URL é **absoluta**, com o host do Render. A primeira versão usava
+     * `'/api/spotify/oauth/start'`, que é relativo — e o web está na Vercel,
+     * então o navegador pedia a rota do servidor no site, que não existe lá. O
+     * botão respondia 404, que é a assinatura de um link quebrado e a razão de
+     * ninguém conseguir distinguir "OAuth falhou" de "endereço errado".
      */
     if (!desktop) {
-      window.location.assign('/api/spotify/oauth/start');
+      window.location.assign(spotifyConnectUrl(returnTo));
       return;
     }
 
@@ -158,5 +158,3 @@ export function useSpotifyAccount(): SpotifyAccountValue {
   if (!ctx) throw new Error('useSpotifyAccount precisa do SpotifyAccountProvider');
   return ctx;
 }
-
-export { spotifyReproduzAqui };

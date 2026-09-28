@@ -116,6 +116,54 @@ test('o icone do Spotify nao e achatado', () => {
   );
 });
 
+test('o login do Spotify vai para o host do servidor, e nao para o site', () => {
+  /*
+   * Este teste existe por causa de um 404 real na primeira versão.
+   *
+   * O botão de conectar fazia `location.assign('/api/spotify/oauth/start')` — um
+   * caminho **relativo**. O web está na Vercel e a API no Render, então o
+   * navegador pedia a rota do servidor no site, que não existe lá. O botão
+   * respondia 404, e a assinatura é idêntica à de um link quebrado: quem vê
+   * aquilo não tem como saber que é o host errado em vez de OAuth falhando.
+   *
+   * A regra do projeto é uma só: `SERVER_URL`, de `@/lib/socket`. A primeira
+   * versão do Spotify fez uma cópia da regra num `base()` local — que é
+   * exatamente como os dois sites deixam de concordar em silêncio.
+   */
+  const conta = readFileSync(resolve(process.cwd(), '../web/hooks/useSpotifyAccount.tsx'), 'utf8');
+  const cliente = readFileSync(resolve(process.cwd(), '../web/lib/spotifyAccount.ts'), 'utf8');
+
+  const c = semComentario(conta);
+  assert.match(
+    c,
+    /window\.location\.assign\(spotifyConnectUrl\(returnTo\)\)/,
+    'o navegador segue a URL montada, e nao um caminho relativo',
+  );
+  assert.ok(
+    !/location\.assign\('\/api\//.test(c),
+    'nenhuma rota da API pode ser chamada com caminho relativo',
+  );
+  assert.ok(
+    !/location\.(assign|href)\s*=\s*['"]\/api\//.test(c),
+    'e nenhum location.href relativo para a API',
+  );
+
+  const cc = semComentario(cliente);
+  assert.match(
+    cc,
+    /`\$\{SERVER_URL\}\/api\/spotify\/oauth\/start\?returnTo=\$\{encodeURIComponent\(returnTo\)\}`/,
+    'a URL de login carrega o host do servidor e o destino de volta codificado',
+  );
+  assert.ok(
+    !/function base\(\)/.test(cc),
+    'e nao existe uma copia local da regra do host: SERVER_URL e a fonte unica',
+  );
+  assert.ok(
+    !/NEXT_PUBLIC_SERVER_URL/.test(cc),
+    'ler a variavel de novo aqui seria a segunda fonte, e a que divergiria',
+  );
+});
+
 test('o Spotify entra no fim da grade, sem mexer na ordem dos outros', () => {
   /*
    * A grade é de duas colunas e tinha cinco cards — um ímpar deixava a última
