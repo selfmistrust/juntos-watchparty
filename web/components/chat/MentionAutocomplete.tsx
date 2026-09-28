@@ -3,11 +3,14 @@
 import { UserCircle } from '@phosphor-icons/react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
+import { normalizar } from '@/lib/mentionHighlight';
 import type { User } from '@/types';
 
 interface Props {
   /** Participantes que casam com o que está sendo digitado. */
   sugestoes: User[];
+  /** O que a pessoa digitou depois do `@`, para destacar na lista. */
+  consulta: string;
   /** Índice destacado, controlado por quem abre a lista. */
   ativo: number;
   onEscolher: (user: User) => void;
@@ -18,6 +21,55 @@ interface Props {
 }
 
 const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+/**
+ * Divide o nome do participante no que casou com o que foi digitado, e pinta a
+ * parte que casou.
+ *
+ * ## É aqui que o roxo da menção em curso vive
+ *
+ * O destaque de `@Beni` enquanto a pessoa digita **não pode ficar no campo**. Um
+ * `textarea` não sabe colorir parte do próprio texto, e a saída conhecida — o
+ * espelho, desenhando o mesmo texto por trás do campo com o de cima
+ * transparente — resolve isso tirando o campo de verdade do caminho. O
+ * resultado foi um campo com caret invisível, digitação estranha e seleção
+ * instável.
+ *
+ * Aqui o mesmo destaque não custa nada, porque um item de lista é um elemento
+ * normal: cor, peso e recorte funcionam, e o campo fica intocado.
+ *
+ * ## Por que a comparação é normalizada, e o corte é no texto original
+ *
+ * A pessoa digita `@joao` e o nome é `João`. A comparação passa pela forma
+ * normalizada, mas o **corte** é feito sobre o nome como está — e é por isso que
+ * o resultado mostra "João" e não "joao".
+ *
+ * O `@` fica de fora do roxo: é o que a pessoa já digitou antes de qualquer
+ * nome, e pintá-lo junto faria o `@` parecer parte do nome de alguém.
+ */
+function dividir(nome: string, consulta: string) {
+  const alvo = normalizar(consulta);
+  if (!alvo) return <>{nome}</>;
+
+  /*
+   * O tamanho do corte é medido no nome normalizado, e o corte é aplicado no
+   * original. Para nome em português os dois coincidem, porque `NFD` seguido da
+   * remoção de marcas devolve o caractere com o mesmo comprimento — mas isso não
+   * é garantido para toda entrada, e é por isso que o índice é limitado ao
+   * tamanho do nome. Índice fora do alcance faria `slice` devolver vazio, e o
+   * nome desapareceria da lista em vez de aparecer inteiro.
+   */
+  const tamanho = Math.min(normalizar(nome).indexOf(alvo) + alvo.length, nome.length);
+  const casou = nome.slice(0, tamanho);
+  const resto = nome.slice(tamanho);
+
+  return (
+    <>
+      <span className="text-accent">@{casou}</span>
+      {resto}
+    </>
+  );
+}
 
 /**
  * Autocomplete de menções.
@@ -45,6 +97,7 @@ const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : use
  */
 export function MentionAutocomplete({
   sugestoes,
+  consulta,
   ativo,
   onEscolher,
   onVerPerfil,
@@ -140,7 +193,9 @@ export function MentionAutocomplete({
                   avatarUrl={user.avatarUrl}
                   size="sm"
                 />
-                <span className="min-w-0 truncate text-sm">{user.name}</span>
+                <span className="min-w-0 truncate text-sm">
+                  {dividir(user.name, consulta)}
+                </span>
               </button>
               <button
                 type="button"

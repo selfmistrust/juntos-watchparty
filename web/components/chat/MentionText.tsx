@@ -19,10 +19,10 @@ interface Props {
  *
  * A menção é a única parte da mensagem que **faz alguma coisa**: abrir o perfil
  * de quem foi citado. Deixar isso só no hover, ou só discoverível passando o
- * cursor, é
- * transformar a única parte ativa do texto em parte inerte. Então cada menção é
- * um `<button>` — que também é o que dá foco por teclado e o que a leitora de
- * tela anuncia como algo clicável, sem nenhum atributo `aria` inventado.
+ * cursor, é transformar a única parte ativa do texto em parte inerte. Então cada
+ * menção é um `<button>` — que também é o que dá foco por teclado e o que a
+ * leitora de tela anuncia como algo clicável, sem nenhum atributo `aria`
+ * inventado.
  *
  * ## Por que o botão é `inline`, e não um bloco
  *
