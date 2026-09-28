@@ -74,12 +74,69 @@ const EXPIRY_GRACE_SECONDS = numFromEnv('ROOM_EXPIRY_GRACE_SECONDS', 5 * 60);
 /** Intervalo da limpeza de sessões abandonadas. */
 export const CLEANUP_INTERVAL_MS = 10_000;
 
-/** Tempo (ms) sem heartbeat para considerar sessão offline. */
-export const PRESENCE_TIMEOUT_MS = 30_000;
+/**
+ * Quanto tempo alguém continua na sala depois de fechar a aba.
+ *
+ * ## Por que 15 minutos, e não os 30s de antes
+ *
+ * É a janela de **ausência para menção**, e ela precisa existir porque é dela que
+ * sai quem pode ser citado: `extrairMencoes` resolve `@Beni` contra `room.users`.
+ * Com 30s, quem fechava a aba e voltava dez minutos depois já não estava na sala,
+ * e `@Beni` não resolvia contra ninguém — a menção não virava destaque, não virava
+ * evento, e não havia destinatário para um push. Não era "o push não chegava":
+ * a menção não existia.
+ *
+ * 15 minutos cobre um café, e é o que segura o push com o site fechado. Passado
+ * isso a pessoa sai da sala como antes, e a lista de pessoas volta a ser só de
+ * gente presente.
+ *
+ * ## O custo, que é real
+ *
+ * `extrairMencoes` devolve **todos** que casam com o nome. Duas "Maria" na sala —
+ * uma presente, uma ausente — fazem `@Maria` avisar as duas. É mencionar a
+ * pessoa errada, e a pessoa errada nem vê. A janela limita o estrago em vez de
+ * eliminá-lo, e é por isso que ela é de minutos e não a vida inteira da sala.
+ *
+ * Esta janela **não** segura o papel de host: ver `transferirHost`.
+ */
+export const PRESENCE_TIMEOUT_MS = numFromEnv('PRESENCE_TIMEOUT_MS', 15 * 60_000);
 
 function numFromEnv(name: string, fallback: number): number {
   const raw = Number(process.env[name]);
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+/**
+ * Passa o papel de host para alguém conectado, se o host atual não estiver mais.
+ *
+ * ## Por que isto é separado da limpeza de ausentes
+ *
+ * A transferência vivia dentro de `removeUser` e de `cleanupStaleUsers`, ou seja,
+ * só quando a pessoa era **apagada** da sala. Com `PRESENCE_TIMEOUT_MS` em 30s
+ * isso passava quase despercebido; com a janela em 15 minutos, fechar a aba
+ * deixava a sala **15 minutos com o `hostId` apontando para um socket morto**, e
+ * ninguém mais podia dar play, pausar ou trocar de faixa.
+ *
+ * Quem pode controlar a sala e quem pode ser citada são duas perguntas
+ * diferentes, com janelas diferentes: o controle sai no instante em que o socket
+ * morre, a menção dura 15 minutos. Uma pessoa pode estar de volta em dois
+ * minutos e já achar o host transferido — e é isso que a pessoa que assistia
+ * precisa, porque sem host a sala fica parada sem explicar o motivo.
+ *
+ * Não transfere se ainda houver alguém conectado, e zera os dois campos quando
+ * não sobra ninguém — sala sem host é sala parada, não sala sem dono.
+ */
+export function transferirHost(room: Room): boolean {
+  if (room.hostId && room.users[room.hostId]?.connected) return false;
+  const conectado = Object.entries(room.users).find(([, u]) => u.connected);
+  if (conectado) {
+    room.hostId = conectado[0];
+    room.hostUserId = conectado[1].userId;
+    return true;
+  }
+  room.hostId = null;
+  room.hostUserId = null;
+  return true;
 }
 
 /**
@@ -304,21 +361,19 @@ export function markUserDisconnected(room: Room, sessionId: string): User | unde
 export function removeUser(room: Room, sessionId: string): User | undefined {
   const user = room.users[sessionId];
   delete room.users[sessionId];
-  if (room.hostId === sessionId) {
-    // O host sai: procura outro usuário conectado do mesmo hostUserId ou o mais antigo
-    const remaining = Object.entries(room.users).filter(([, u]) => u.connected);
-    if (remaining.length > 0) {
-      room.hostId = remaining[0][0];
-      room.hostUserId = remaining[0][1].userId;
-    } else {
-      room.hostId = null;
-      room.hostUserId = null;
-    }
-  }
+  if (room.hostId === sessionId) transferirHost(room);
   return user;
 }
 
-/** Remove usuários desconectados há mais de PRESENCE_TIMEOUT_MS. */
+/**
+ * Remove usuários desconectados há mais de PRESENCE_TIMEOUT_MS.
+ *
+ * Este é o corte de **ausência para menção**, e ele é generoso de propósito: ver
+ * `PRESENCE_TIMEOUT_MS`. Ele não mexe no papel de host — quem herda o controle
+ * é decidido no `disconnect`, por `transferirHost`, e não aqui. A sala em que
+ * todo mundo caiu de uma vez chega aqui já sem host, e o `transferirHost` do
+ * laço abaixo resolve isso da mesma forma que resolve a saída de um host só.
+ */
 export function cleanupStaleUsers(room: Room): User[] {
   const now = Date.now();
   const removed: User[] = [];
@@ -326,16 +381,7 @@ export function cleanupStaleUsers(room: Room): User[] {
     if (!user.connected && now - user.lastSeen > PRESENCE_TIMEOUT_MS) {
       delete room.users[sessionId];
       removed.push(user);
-      if (room.hostId === sessionId) {
-        const remaining = Object.entries(room.users).filter(([, u]) => u.connected);
-        if (remaining.length > 0) {
-          room.hostId = remaining[0][0];
-          room.hostUserId = remaining[0][1].userId;
-        } else {
-          room.hostId = null;
-          room.hostUserId = null;
-        }
-      }
+      if (room.hostId === sessionId) transferirHost(room);
     }
   }
   return removed;

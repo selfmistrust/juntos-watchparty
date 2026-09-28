@@ -12,6 +12,13 @@ interface Props {
   onMudar: (patch: Partial<PreferenciasMencao>) => void;
   /** Pedir permissão é gesto: só acontece quando a pessoa mexe no interruptor. */
   aoPedirPermissao: () => void;
+  /**
+   * Se o endereço de push está registrado no servidor de verdade.
+   *
+   * Disto da preferência: a preferência é o pedido, e isto é a resposta. Ver a
+   * nota da linha de status lá embaixo.
+   */
+  pushAtivo: boolean;
 }
 
 /**
@@ -37,6 +44,7 @@ export function MentionPreferences({
   jaPediu,
   onMudar,
   aoPedirPermissao,
+  pushAtivo,
 }: Props) {
   const [aberto, setAberto] = useState(false);
   const caixaRef = useRef<HTMLDivElement>(null);
@@ -133,6 +141,28 @@ export function MentionPreferences({
               onMudar({ notificacoes: v });
             }}
           />
+
+          {/*
+           * O estado real da camada do site fechado.
+           *
+           * A preferência acima é o que a pessoa **pediu**; isto é o que o
+           * servidor **confirmou**. Os dois divergem em três casos que nenhum
+           * outro lugar do app denuncia: navegador sem `PushManager` (Firefox
+           * desktop), servidor sem chaves VAPID, e permissão concedida mas
+           * inscrição recusada.
+           *
+           * Sem esta linha, "notificações: ligado" continuaria dizendo a verdade
+           * sobre a aba em segundo plano e ficaria calada sobre o site fechado,
+           * que é justamente a camada que a pessoa não tem como testar sozinha —
+           * ela precisa fechar o navegador e esperar alguém mencioná-la.
+           */}
+          {prefs.notificacoes && !prefs.naoPerturbe && (
+            <p className="mt-2 border-t border-hairline pt-2 text-2xs leading-relaxed text-ink-faint">
+              {pushAtivo
+                ? 'Com o site fechado, o aviso chega pelo navegador.'
+                : 'Com o site fechado, o aviso depende do navegador suportar e de o servidor ter as chaves.'}
+            </p>
+          )}
         </div>
       )}
     </div>

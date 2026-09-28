@@ -10,6 +10,7 @@ import { registerSocketHandlers, startPresenceCleanup } from './socket.js';
 import { scheduleUploadCleanup } from './uploadCleanup.js';
 import { registerYoutubeRoutes } from './youtubeRoutes.js';
 import { registerDriveRoutes } from './driveRoutes.js';
+import { registrarRotasPush, pushConfigurado } from './push.js';
 import { logGoogleConfigShape } from './googleOAuth.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -63,6 +64,7 @@ app.get('/api/rooms/:id', async (req, res) => {
 
 registerYoutubeRoutes(app);
 registerDriveRoutes(app);
+registrarRotasPush(app);
 
 /**
  * Proxy de busca de GIFs. Usa Tenor se `TENOR_API_KEY` estiver definida,
@@ -164,6 +166,11 @@ server.listen(PORT, () => {
   // forma no boot transforma isso em uma linha de log, em vez de uma sessão de
   // tentativa e erro. Nunca registra valor de segredo, só a forma.
   logGoogleConfigShape();
+  // Forma, e não valor: é o que muda entre uma instância e outra, e a ausência
+  // dele só apareceria na primeira menção a alguém com o site fechado.
+  console.log(
+    `[push] aviso com o site fechado: ${pushConfigurado ? 'ligado' : 'DESLIGADO (faltam chaves VAPID)'}`,
+  );
 });
 
 // Limpeza periódica de vídeos enviados que não estão mais na fila de

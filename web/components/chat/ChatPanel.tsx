@@ -38,10 +38,17 @@ interface Props {
   /** Mensagem que está sendo respondida (se houver). */
   replyingTo?: ChatMessage | null;
   /** Preferências de menção e seus alteradores. */
-  mentionPrefs?: PreferenciasMencao;
-  onMentionPrefs?: (patch: Partial<PreferenciasMencao>) => void;
+  mentionPrefs?: PreferenciasMencao;  onMentionPrefs?: (patch: Partial<PreferenciasMencao>) => void;
   onPedirPermissaoNotificacao?: () => void;
   jaPediuPermissaoNotificacao?: boolean;
+  /**
+   * Se o endereço de push está registrado no servidor.
+   *
+   * Vem do `useMencoes` e chega aqui por prop porque a linha de status das
+   * preferências precisa mostrar o que o servidor confirmou, e não o que a
+   * pessoa pediu.
+   */
+  pushDeMencaoAtivo?: boolean;
 }
 
 export function ChatPanel({
@@ -63,6 +70,7 @@ export function ChatPanel({
   onMentionPrefs,
   onPedirPermissaoNotificacao,
   jaPediuPermissaoNotificacao,
+  pushDeMencaoAtivo,
 }: Props) {
   const [draft, setDraft] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
@@ -321,6 +329,7 @@ export function ChatPanel({
             jaPediu={Boolean(jaPediuPermissaoNotificacao)}
             onMudar={onMentionPrefs}
             aoPedirPermissao={onPedirPermissaoNotificacao ?? (() => undefined)}
+            pushAtivo={Boolean(pushDeMencaoAtivo)}
           />
         </div>
       )}

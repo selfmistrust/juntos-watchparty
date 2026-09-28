@@ -10,7 +10,8 @@ import {
   PADRAO_MENCAO,
   type PreferenciasMencao,
 } from '@/lib/mentionPreferences';
-import { desktop } from '@/lib/desktop';
+import { desktop, isDesktop } from '@/lib/desktop';
+import { registrarPush, removerPush } from '@/lib/push';
 
 /**
  * Menção recebida: o que o servidor mandou só para esta pessoa.
@@ -34,6 +35,13 @@ export interface EventoMencao {
 interface Opcoes {
   /** `sessionId` de quem está olhando, para não reagir à própria menção. */
   meuSessionId: string | null | undefined;
+  /**
+   * `userId` de quem está olhando, para registrar o endereço de push.
+   *
+   * É o `userId` e não o `sessionId` porque o endereço fica guardado no servidor
+   * por `userId` — ver `pages/room/[id].tsx`.
+   */
+  meuUserId: string | null | undefined;
   /** Chamado a cada menção aceita, para o chat poder piscar. */
   aoChamarAtencao?: (evento: EventoMencao) => void;
   /** Chamado quando o clique na notificação do sistema acontece. */
@@ -48,8 +56,19 @@ interface Opcoes {
  * perturbe" corta as três. Nenhuma delas é obrigatória para a menção fazer o
  * que importa — o `@nome` no texto já está lá para quem lê.
  */
-export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoes) {
+export function useMencoes({ meuSessionId, meuUserId, aoChamarAtencao, aoAbrirChat }: Opcoes) {
   const [prefs, setPrefs] = useState<PreferenciasMencao>(PADRAO_MENCAO);
+  /**
+   * Se este navegador tem endereço de push registrado.
+   *
+   * Não é o mesmo que a preferência estar ligada: a preferência é o que a pessoa
+   * pediu, e isto é o que o servidor confirmou. Servidor sem chaves VAPID
+   * responde 503 e a inscrição não acontece, e a diferença entre os dois é
+   * justamente o que impede o botão de prometer um aviso que ninguém envia.
+   */
+  const [pushAtivo, setPushAtivo] = useState(false);
+  /** As preferências já vieram do `localStorage`, e não são mais o padrão. */
+  const [pronto, setPronto] = useState(false);
   /**
    * Menções que chegaram e ainda não foram vistas, e a última delas.
    *
@@ -73,9 +92,17 @@ export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoe
    * `localStorage` não existe durante o SSR do Next, e ler no inicial daria
    * "só no servidor" e apagaria a escolha da pessoa no primeiro render no
    * navegador.
+   *
+   * O `pronto` é o que impede a inscrição de push de rodar com a preferência
+   * padrão. `PADRAO_MENCAO` tem `notificacoes: true`, e sem esta trava quem
+   * desligou as notificações veria o site **registrar e cancelar** o endereço a
+   * cada carregamento: primeiro o efeito-age com o padrão ligado, e só depois o
+   * `lerPreferencias` traria a escolha real e o efeito desligaria. Duas chamadas
+   * ao servidor em toda abertura de sala, para terminar exatamente onde começou.
    */
   useEffect(() => {
     setPrefs(lerPreferencias());
+    setPronto(true);
   }, []);
 
   const atualizarPrefs = useCallback((nova: Partial<PreferenciasMencao>) => {
@@ -122,7 +149,49 @@ export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoe
     }
   }, [atualizarPrefs]);
 
-  /**
+  /*
+   * A inscrição em push acompanha a preferência de notificação.
+   *
+   * ## Por que o efeito e não o botão
+   *
+   * Registrar no clique do botão funciona na primeira vez e quebra na segunda:
+   * quem já tinha permitido notificações no passado nunca mais passa pelo botão,
+   * e ficaria sem a única camada que alcança quem está com o site fechado.
+   *
+   * Ligar e desligar a preferência é o que a pessoa controla de verdade, então é
+   * aí que a inscrição acompanha. O efeito só age quando o valor **muda** — sem
+   * essa guarda, ele reinscreveria a cada render e o `subscribe` do navegador
+   * devolveria o mesmo endereço sem parar.
+   *
+   * A inscrição **não** pode acontecer no Electron: lá quem notifica é o processo
+   * principal, e o `Notification` do Chromium não sobrevive ao app fechado. Um
+   * endereço de push registrado aqui nunca receberia nada, e o servidor pagaria
+   * uma chamada que falha em toda menção.
+   */
+  useEffect(() => {
+    if (!pronto) return;
+    if (!meuUserId) return;
+    if (isDesktop()) return;
+
+    let cancelado = false;
+
+    if (prefs.notificacoes) {
+      if (Notification.permission !== 'granted') return;
+      void registrarPush(meuUserId).then((ok) => {
+        if (ok && !cancelado) setPushAtivo(true);
+      });
+    } else {
+      void removerPush(meuUserId).then(() => {
+        if (!cancelado) setPushAtivo(false);
+      });
+    }
+
+    return () => {
+      cancelado = true;
+    };
+  }, [pronto, prefs.notificacoes, meuUserId]);
+
+  /*
    * Processa uma menção recebida.
    *
    * Separada do efeito de propósito: é o que permite ao socket ligar direto
@@ -184,13 +253,23 @@ export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoe
        * O `tag` é o id da mensagem: duas menções da mesma mensagem não
        * empilham dois avisos, e a segunda substitui a primeira em vez de
        * empurrar a anterior para fora da tela.
+       *
+       * ## Sem `silent: true`
+       *
+       * A notificação do sistema era muda, e com a aba em segundo plano a
+       * menção não fazia barulho nenhum. Quem está vendo o vídeo em tela cheia
+       * numa aba de fundo não vê o aviso, não vê o número na aba e não ouve o
+       * som: era o pior dos casos, onde a menção existe e não chega a ninguém.
+       *
+       * O som continua sendo do app quando a aba está em foco, porque ali o
+       * `tocarSomDeMencao` é o que dá a identidade da menção. Aqui a notificação
+       * assume o som do navegador, e é isso que a pessoa ouve longe do teclado.
        */
       const n = new Notification(titulo, {
         body: corpo,
         tag: `mencao-${evento.messageId}`,
         icon: '/mention-48x48.png',
         badge: '/favicon.ico',
-        silent: true,
       });
       n.onclick = () => {
         window.focus();
@@ -213,5 +292,13 @@ export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoe
     ultimaMencao: naoLidas.ultima,
     limparNaoLidas: useCallback(() => setNaoLidas({ total: 0, ultima: null }), []),
     jaPediuPermissao: typeof window !== 'undefined' && jaPediuPermissaoDeNotificacao(),
+    /**
+     * Se o aviso com o site fechado está de fato registrado.
+     *
+     * A UI usa isto para não prometer o que não está ligado: num servidor sem
+     * chaves VAPID a inscrição falha, e um rótulo dizendo "notifica mesmo com o
+     * site fechado" seria mentira.
+     */
+    pushAtivo,
   };
 }

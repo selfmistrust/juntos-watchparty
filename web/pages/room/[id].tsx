@@ -154,6 +154,14 @@ export default function RoomPage() {
 
   const mencoes = useMencoes({
     meuSessionId: me?.sessionId,
+    /*
+     * `userId`, e não `sessionId`: o `sessionId` é o socket e muda a cada
+     * reconexão, enquanto o endereço de push fica no servidor por `userId`. Se a
+     * inscrição fosse pela sessão, cada recarga de página deixaria para trás um
+     * endereço de push que nunca mais receberia nada — e a lista cresceria a cada
+     * F5 até o envio de uma menção custar uma dezena de chamadas que falham.
+     */
+    meuUserId: me?.userId,
     aoAbrirChat: abrirChat,
   });
   mencaoRef.current = mencoes.tratar;
@@ -345,6 +353,7 @@ export default function RoomPage() {
           onMentionPrefs={mencoes.atualizarPrefs}
           onPedirPermissaoNotificacao={() => void mencoes.pedirPermissao()}
           jaPediuPermissaoNotificacao={mencoes.jaPediuPermissao}
+          pushDeMencaoAtivo={mencoes.pushAtivo}
         />
       </div>
 

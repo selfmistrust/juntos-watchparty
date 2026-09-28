@@ -37,6 +37,8 @@ interface Props {
   onMentionPrefs?: (patch: Partial<PreferenciasMencao>) => void;
   onPedirPermissaoNotificacao?: () => void;
   jaPediuPermissaoNotificacao?: boolean;
+  /** Se o endereço de push está registrado no servidor. Repassado ao ChatPanel. */
+  pushDeMencaoAtivo?: boolean;
 }
 
 export function Sidebar({
@@ -55,6 +57,7 @@ export function Sidebar({
   onMentionPrefs,
   onPedirPermissaoNotificacao,
   jaPediuPermissaoNotificacao,
+  pushDeMencaoAtivo,
 }: Props) {
   const [tab, setTab] = useState<TabId>('chat');
   const [unread, setUnread] = useState(0);
@@ -120,6 +123,7 @@ export function Sidebar({
             onMentionPrefs={onMentionPrefs}
             onPedirPermissaoNotificacao={onPedirPermissaoNotificacao}
             jaPediuPermissaoNotificacao={jaPediuPermissaoNotificacao}
+            pushDeMencaoAtivo={pushDeMencaoAtivo}
           />
         )}
         {tab === 'queue' && (

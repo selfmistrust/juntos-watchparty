@@ -14,6 +14,7 @@ import {
 } from './chatGuard.js';
 import { extrairMencoes } from './mentions.js';
 import { editarSala } from './roomLock.js';
+import * as push from './push.js';
 import {
   addUser,
   canControl,
@@ -35,6 +36,7 @@ import {
   setUserAvatar,
   setUserColor,
   setUserName,
+  transferirHost,
   snapshot,
   startStream,
   stopStream,
@@ -627,7 +629,9 @@ export function registerSocketHandlers(io: Server) {
         const naSala = Object.entries(room.users).map(([socketId, u]) => ({
           socketId,
           sessionId: u.sessionId,
+          userId: u.userId,
           name: u.name,
+          conectado: u.connected,
         }));
         const citadas = extrairMencoes(
           text,
@@ -658,7 +662,8 @@ export function registerSocketHandlers(io: Server) {
           const destino = naSala.find((u) => u.sessionId === citada.sessionId);
           if (!destino) continue;
           if (!podeTocarMencao(socket.id, destino.socketId)) continue;
-          io.to(destino.socketId).emit('chat:mention', {
+
+          const aviso = {
             messageId,
             fromName: user.name,
             fromColor: user.color,
@@ -666,7 +671,35 @@ export function registerSocketHandlers(io: Server) {
             texto: citada.texto,
             preview: kind === 'text' ? text.slice(0, 140) : kind === 'gif' ? '[GIF]' : '[Imagem]',
             at: now,
-          });
+          };
+
+          if (destino.conectado) {
+            io.to(destino.socketId).emit('chat:mention', aviso);
+            continue;
+          }
+
+          /*
+           * Sem socket vivo: o site está fechado.
+           *
+           * Quem ainda tem aba aberta — mesmo em segundo plano — já recebeu o
+           * evento e escolhe sozinho entre o aviso no app e a Notification API.
+           * Aqui não há cliente nenhum para escolher, e o `io.to` com um socket
+           * morto seria um envio para o nada: o `chat:mention` é o que acende o
+           * som, e ele não pode continuar sendo a única forma de avisar.
+           *
+           * Não se manda push **além** do socket de quem tem socket. Isso daria
+           * dois avisos para a mesma pessoa, um deles provavelmente no aparelho
+           * que estava aberto. O caminho é alternativo, não complementar.
+           */
+          push
+            .enviarPara(destino.userId, {
+              messageId: aviso.messageId,
+              fromName: aviso.fromName,
+              texto: aviso.texto,
+              preview: aviso.preview,
+              roomId: room.id,
+            })
+            .catch((err) => console.error('[push] mencao falhou', err));
         }
       });
     });
@@ -927,6 +960,20 @@ export function registerSocketHandlers(io: Server) {
           // porque o cliente já não está mais lá pra disparar nada.
           socket.to(room.id).emit('chat:typing', { id: user.sessionId, name: user.name, isTyping: false });
           saiuUserId = user.userId;
+        }
+
+        /*
+         * O host passa para a mão agora, e não quando a limpeza apagar o ausente.
+         *
+         * A pessoa continua na sala por `PRESENCE_TIMEOUT_MS` para poder ser
+         * citada, mas quem segura o controle não pode ser alguém cujo socket já
+         * morreu: sem esta linha, fechar a aba do host deixaria a sala parada por
+         * 15 minutos, com o `hostId` apontando para um socket morto e ninguém
+         * able de dar play.
+         */
+        const trocouHost = transferirHost(room);
+        if (trocouHost && room.hostId) {
+          system(room.id, 'info', `${room.users[room.hostId]?.name ?? 'Alguém'} agora controla a sala`);
         }
         // Se não há usuários conectados, congela o tempo
         const connectedUsers = Object.values(room.users).filter(u => u.connected);

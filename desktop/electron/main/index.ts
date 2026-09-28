@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Notification, shell, session } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Notification, screen, shell, session } from 'electron';
 import path from 'node:path';
 import { APP_ORIGIN, startLocalServer, type LocalServer } from './localServer';
 import { iniciarLog, log } from './log';
@@ -30,6 +30,142 @@ const USER_AGENT =
 
 let janela: BrowserWindow | null = null;
 let servidor: LocalServer | null = null;
+
+/**
+ * Janela de aviso de menção, e a janela principal.
+ *
+ * Só a principal é única — o resto reaproveita, e é o que evita duas janelas de
+ * aviso empilhadas quando duas menções chegam com um segundo de diferença.
+ */
+let janelaDeAviso: BrowserWindow | null = null;
+let timerDeAviso: NodeJS.Timeout | null = null;
+
+/** Quanto tempo o aviso fica na tela antes de sumir sozinho. */
+const AVISO_POR_MS = 8000;
+
+/**
+ * Fecha a janela de aviso, se existir.
+ *
+ * Chamada antes de abrir outra e no `fechar` do app: deixar a janela de aviso
+ * viva depois que a principal fechou deixa um retângulo flutuando no desktop, sem
+ * dono, e o `alwaysOnTop` faz com que ele fique sobre o próximo programa que a
+ * pessoa abrir.
+ */
+function fecharJanelaDeAviso(): void {
+  if (timerDeAviso) {
+    clearTimeout(timerDeAviso);
+    timerDeAviso = null;
+  }
+  if (janelaDeAviso && !janelaDeAviso.isDestroyed()) janelaDeAviso.close();
+  janelaDeAviso = null;
+}
+
+/**
+ * Abre a janela de aviso, sempre acima de tudo.
+ *
+ * ## Por que uma janela, e não só a notificação do sistema
+ *
+ * A notificação do Windows é a camada mais frágil das quatro: o sistema
+ * agrupa, some sozinha depois de alguns segundos, some inteiro quando está em
+ * "não perturbe", e não aparece se a pessoa está em tela cheia. Quem foi citado
+ * durante o filme não vê nada disso.
+ *
+ * Uma janela com `alwaysOnTop` não depende do sistema: ela aparece sobre o vídeo,
+ * sobre o navegador, sobre o que quer que esteja em primeiro plano, e some
+ * sozinha depois de oito segundos.
+ *
+ * ## Onde ela fica
+ *
+ * Canto inferior direito da tela de trabalho, acima da barra de tarefas. O canto
+ * inferior direito é onde o olho já está em watch party — a barra de controle do
+ * player — e é o único lugar onde um retângulo novo não cobre o vídeo.
+ *
+ * `screen.getPrimaryDisplay().workArea` e não `workAreaSize`: o segundo ignora a
+ * barra de tarefas e a janela nasceria embaixo dela, que é o jeito mais rápido de
+ * fazer um aviso passar despercebido.
+ */
+function abrirJanelaDeAviso(titulo: string, corpo: string): void {
+  try {
+    fecharJanelaDeAviso();
+
+    const { workArea } = screen.getPrimaryDisplay();
+    const largura = 340;
+    const altura = 96;
+
+    janelaDeAviso = new BrowserWindow({
+      width: largura,
+      height: altura,
+      x: workArea.x + workArea.width - largura - 16,
+      y: workArea.y + workArea.height - altura - 16,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      show: false,
+      focusable: false,
+      /*
+       * `screen-saver` é o nível mais alto de `alwaysOnTop`: ele fica acima de
+       * janelas maximizadas e acima do modo de tela cheia do player — que é
+       * exatamente o caso que a notificação do sistema não cobre.
+       */
+      alwaysOnTop: true,
+      backgroundColor: '#00000000',
+      webPreferences: {
+        // O aviso é HTML puro, sem preload e sem Node: ele não fala com ninguém,
+        // e um `nodeIntegration` ligado aqui seria uma janela remota esperando
+        // por conteúdo.
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+
+    const escapar = (s: string) =>
+      s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    /*
+     * `loadURL` com `data:` em vez de um arquivo em disco.
+     *
+     * O aviso é uma frase e um nome. Levar isso para dentro do bundle exigiria
+     * empacotar um HTML que é reescrito a cada menção, e o `data:` resolve sem
+     * tocar no `electron-builder.yml`. O texto passa por `escapar` porque vem da
+     * mensagem de outra pessoa: o `innerHTML` sem escape seria uma pessoa
+     * escrever `<img onerror=...>` e o outro Electron executar.
+     */
+    janelaDeAviso.loadURL(
+      'data:text/html;charset=utf-8,' +
+        encodeURIComponent(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<style>
+  html,body{margin:0;height:100%;background:transparent;font-family:system-ui,sans-serif}
+  .c{height:100%;box-sizing:border-box;padding:12px 14px;border-radius:14px;
+     background:#17171C;border:1px solid rgba(255,255,255,0.07);
+     box-shadow:0 18px 40px -22px rgba(0,0,0,0.9);display:flex;gap:10px;align-items:center}
+  .d{width:8px;height:8px;border-radius:999px;background:#7C5CFF;flex:none}
+  .t{color:#ECECEF;font-size:13px;font-weight:600;line-height:1.25}
+  .b{color:#8C8C99;font-size:12px;line-height:1.3;margin-top:2px;
+     overflow:hidden;text-overflow:ellipsis;display:-webkit-box;
+     -webkit-line-clamp:2;-webkit-box-orient:vertical}
+</style></head><body><div class="c"><div class="d"></div><div>
+<div class="t">${escapar(titulo)}</div><div class="b">${escapar(corpo)}</div>
+</div></div></body></html>`),
+    );
+
+    janelaDeAviso.once('ready-to-show', () => {
+      if (janelaDeAviso && !janelaDeAviso.isDestroyed()) janelaDeAviso.showInactive();
+      timerDeAviso = setTimeout(fecharJanelaDeAviso, AVISO_POR_MS);
+    });
+  } catch (err) {
+    console.error('[aviso] falha ao abrir a janela', err);
+  }
+}
 
 /**
  * Caminho do `.ico` multirresolução, idêntico em desenvolvimento e empacotado.
@@ -213,10 +349,16 @@ function registrarIpc(): void {
   /*
    * Menção: piscar a janela e notificar o sistema.
    *
-   * As duas coisas, e não uma, porque elas atendem momentos diferentes. A
-   * notificação é o que chega quando a pessoa está em outro programa; o piscar é
-   * o que chega quando ela está no app mas em outra aba do Windows — onde a
-   * notificação pode estar agrupada e o piscar não.
+   * As três coisas, e não uma, porque elas atendem momentos diferentes:
+   *
+   *   - a janela `alwaysOnTop` é o que chega sobre o vídeo, em tela cheia, ou
+   *     com o Windows em "não perturbe". A notificação do sistema não aparece em
+   *     nenhum desses três casos, e é a menção que mais importa é a que chega
+   *     durante o filme.
+   *   - a notificação do sistema é o que chega quando a pessoa está em outro
+   *     programa e ele não está em tela cheia nem em "não perturbe".
+   *   - o piscar é o que chega quando ela está no app mas em outra aba do
+   *     Windows, onde as duas acima podem estar agrupadas e escondidas.
    *
    * `flashFrame` só age com a janela em segundo plano, e é isso que se quer:
    * com a janela à frente, a pessoa já está vendo o chat, e piscar a barra de
@@ -235,15 +377,20 @@ function registrarIpc(): void {
     try {
       if (janela && !janela.isFocused()) janela.flashFrame(true);
     } catch {
-      // Janela já destruída. A notificação abaixo ainda vale.
+      // Janela já destruída. As outras camadas ainda valem.
     }
 
+    abrirJanelaDeAviso(t, c);
+
     try {
-      if (!Notification.isSupported()) return false;
+      if (!Notification.isSupported()) return true;
       new Notification({ title: t, body: c }).show();
       return true;
     } catch {
-      return false;
+      // A janela de aviso já apareceu, então perder a notificação do sistema aqui
+      // não é perder o aviso. E devolver `false` faria o chamador concluir que
+      // nada foi mostrado, quando na verdade uma camada já estava na tela.
+      return true;
     }
   });
 }
@@ -356,6 +503,13 @@ if (!unica) {
   });
 
   app.on('window-all-closed', () => {
+    /*
+     * A janela de aviso é `skipTaskbar` e não impede o quit, então ela sobrevive
+     * à principal por padrão. Sem esta linha, fechar o Juntos deixaria um
+     * retângulo `alwaysOnTop` flutuando no desktop sem dono — e por ser
+     * sempre-no-topo, ele ficaria sobre o próximo programa que a pessoa abrir.
+     */
+    fecharJanelaDeAviso();
     void servidor?.stop();
     app.quit();
   });
