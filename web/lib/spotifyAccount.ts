@@ -83,7 +83,24 @@ async function get<T>(caminho: string, params?: Record<string, string>): Promise
   const url = new URL(`${SERVER_URL}${caminho}`);
   for (const [k, v] of Object.entries(params ?? {})) url.searchParams.set(k, v);
   const r = await fetch(url, { credentials: 'include' });
-  if (!r.ok) throw new Error(`spotify_${r.status}`);
+  if (!r.ok) {
+    /*
+     * O corpo do erro é a mensagem que a pessoa lê, e o servidor já a escreve
+     * como frase em português com o status do Spotify em mãos.
+     *
+     * O fallback para `spotify_<status>` existe para quando o corpo não é JSON —
+     * uma indisponibilidade do Render chega como HTML, e perder o status ali
+     * seria perder a única pista.
+     */
+    let texto = `spotify_${r.status}`;
+    try {
+      const corpo = (await r.json()) as { error?: unknown };
+      if (typeof corpo?.error === 'string' && corpo.error) texto = corpo.error;
+    } catch {
+      // Corpo não-JSON: fica o código, que o painel converte em texto genérico.
+    }
+    throw new Error(texto);
+  }
   return (await r.json()) as T;
 }
 

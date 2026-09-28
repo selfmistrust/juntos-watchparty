@@ -25,6 +25,22 @@ function jsonError(res: Response, http: number, error: string) {
 }
 
 /**
+ * Envia o motivo que a pessoa precisa ler.
+ *
+ * A rota devolvia `{ error: "spotify_403" }` e o painel mostrava essa string na
+ * tela. O número é o mesmo que o servidor já registrou, e não diz nada: um 403
+ * do Spotify pode ser app em modo de desenvolvimento, scope insuficiente, ou API
+ * não habilitada — e cada um tem uma correção diferente no painel da Spotify.
+ *
+ * O `reason` que a busca e a listagem devolvem já é uma frase em português, feita
+ * com o status em mãos. O corpo da resposta é esse texto, e o cliente mostra
+ * direto.
+ */
+function erroDeSpotify(res: Response, reason: string) {
+  res.status(403).json({ error: reason });
+}
+
+/**
  * Página de erro do OAuth, e não um JSON cru.
  *
  * A pessoa autorizou no Spotify e voltou para cá. Um `{"error":"..."}` na tela
@@ -245,7 +261,7 @@ export function registerSpotifyRoutes(app: Express): void {
       const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);
       if (!sessionId) return jsonError(res, 400, 'session_required');
       const result = await search(sessionId, term);
-      if (!result.ok) return jsonError(res, 403, result.reason);
+      if (!result.ok) return erroDeSpotify(res, result.reason);
       res.json({ items: result.items });
     } catch (err) {
       console.error('[spotify] search falhou', err);
@@ -264,7 +280,7 @@ export function registerSpotifyRoutes(app: Express): void {
       const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);
       if (!sessionId) return jsonError(res, 400, 'session_required');
       const result = await listTracks(sessionId, uri);
-      if (!result.ok) return jsonError(res, 403, result.reason);
+      if (!result.ok) return erroDeSpotify(res, result.reason);
       res.json({ items: result.items });
     } catch (err) {
       console.error('[spotify] tracks falhou', err);

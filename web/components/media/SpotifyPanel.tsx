@@ -66,7 +66,17 @@ export function SpotifyPanel({ open, onClose, context, account, motivo }: Props)
     try {
       setResults(await searchSpotify(value));
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'A busca não respondeu. Tente de novo.');
+      /*
+       * A mensagem do servidor já é uma frase em português, escrita com o status
+       * do Spotify em mãos. A primeira versão mostrava `spotify_403` na tela, que
+       * é o mesmo número do log e não ajuda a pessoa a saber o que fazer — e o
+       * 403 do Spotify tem três causas com três correções diferentes no painel.
+       *
+       * O `spotify_` ainda cai para o caso de a resposta não ser do Spotify
+       * (rede, servidor fora), onde o texto técnico é a única pista.
+       */
+      const bruto = e instanceof Error ? e.message : 'A busca não respondeu. Tente de novo.';
+      setError(bruto.startsWith('spotify_') ? 'A busca não respondeu. Tente de novo.' : bruto);
     } finally {
       setLoading(false);
     }

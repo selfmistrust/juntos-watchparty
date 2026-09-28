@@ -409,6 +409,73 @@ export interface SpotifySearchItem {
   durationMs?: number;
 }
 
+/**
+ * Lê o corpo de erro do Spotify e escreve no log.
+ *
+ * ## Por que o corpo importa e o status não
+ *
+ * A busca responded `403`, e `403` sozinho não diz nada: no Spotify ele é ao
+ * mesmo tempo "app em modo de desenvolvimento e você não está na lista" e
+ * "scopes insuficientes" e "este app não pediu a Web API". Os três têm correção
+ * diferente, e um código de status é o mesmo para os três.
+ *
+ * O corpo carrega o que importa: `error.status` vem com um valor legível
+ * (`INSUFFICIENT_CLIENT_SCOPE`, `PREMIUM_REQUIRED`, ...) e a `message` diz o
+ * motivo em texto.
+ *
+ * ## O que não é registrado
+ *
+ * O corpo de erro do Spotify não tem token nem credencial. O que **não** é
+ * registrado aqui é a URL com a query, que em alguns endpoints carrega o
+ * `market` e o `authorization` — e aí o log passaria a carregar segredo.
+ */
+/**
+ * Converte o status do Spotify em algo que a interface consiga mostrar.
+ *
+ * Sem isto, o painel mostrava `spotify_403` para a pessoa — que é o mesmo
+ * número que o servidor registrou, e que não diz nada. A correção real de um
+ * 403 é quase sempre配置 no dashboard do Spotify, e é exatamente o que a pessoa
+ * precisa ler na tela para saber o que fazer.
+ */
+function motivoDeErro(status: number): string {
+  switch (status) {
+    case 401:
+      return 'A autorização do Spotify expirou. Conecte a conta de novo.';
+    case 403:
+      return (
+        'O Spotify recusou o acesso a este app. Confira no painel do Spotify se a ' +
+        'API Web está marcada nas APIs usadas e se o seu e-mail está na lista de ' +
+        'usuários do app.'
+      );
+    case 404:
+      return 'O Spotify não encontrou esse recurso.';
+    case 429:
+      return 'O Spotify está limitando pedidos. Tente de novo em alguns minutos.';
+    default:
+      return `O Spotify respondeu ${status}. Tente de novo.`;
+  }
+}
+
+async function registrarErroSpotify(rotulo: string, r: Response): Promise<string> {
+  let detalhe = '';
+  try {
+    const corpo = (await r.json()) as { error?: { status?: unknown; message?: unknown } };
+    const status = typeof corpo.error?.status === 'string' ? corpo.error.status : null;
+    const mensagem = typeof corpo.error?.message === 'string' ? corpo.error.message : null;
+    /*
+     * Os dois juntos, e na ordem `status: mensagem`. O `status` é o que a
+     * documentação do Spotify usa paraearch, e a mensagem é o que a pessoa
+     * entende. Escolher um e descartar o outro era o erro da primeira versão
+     * deste trecho: `status ?? mensagem` nunca chega na mensagem.
+     */
+    detalhe = [status, mensagem].filter(Boolean).join(': ');
+  } catch {
+    // O Spotify devolveu algo que não é JSON. O status sozinho já está no log.
+  }
+  console.warn(`[spotify] ${rotulo} -> ${r.status}${detalhe ? ` (${detalhe})` : ''}`);
+  return detalhe;
+}
+
 interface SearchResponse {
   tracks?: {
     items?: Array<{
@@ -460,7 +527,10 @@ export async function search(
   url.searchParams.set('limit', '12');
 
   const r = await fetch(url, { headers: { authorization: `Bearer ${auth.token}` } });
-  if (!r.ok) return { ok: false, reason: `spotify_${r.status}` };
+  if (!r.ok) {
+    await registrarErroSpotify('busca', r);
+    return { ok: false, reason: motivoDeErro(r.status) };
+  }
   const data = (await r.json()) as SearchResponse;
 
   const items: SpotifySearchItem[] = [];
@@ -514,7 +584,10 @@ export async function listTracks(
   const r = await fetch(`${API}/${uri.replace(/^spotify:/, '')}/tracks?limit=50`, {
     headers: { authorization: `Bearer ${auth.token}` },
   });
-  if (!r.ok) return { ok: false, reason: `spotify_${r.status}` };
+  if (!r.ok) {
+    await registrarErroSpotify('faixas de um album/playlist', r);
+    return { ok: false, reason: motivoDeErro(r.status) };
+  }
   const data = (await r.json()) as {
     items?: Array<{
       track?: {
