@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { X } from '@phosphor-icons/react';
 import { Avatar } from '@/components/ui/Avatar';
-import { Button, IconButton } from '@/components/ui/Button';
+import { IconButton } from '@/components/ui/Button';
 import { formatClock } from '@/lib/media';
 import type { User } from '@/types';
 
@@ -29,6 +29,28 @@ interface Props {
  * Só o que já é público na sala: nome, avatar, desde quando está presente, e o
  * papel (host/DJ). Nada de dado que a sala não mostra — o perfil não vira uma
  * ficha de onde a pessoa não está.
+ *
+ * ## Um botão de fechar só, e é o X
+ *
+ * Havia um `Fechar` largo embaixo e um `X` no canto, e os dois chamavam a mesma
+ * coisa. O botão embaixo foi removido.
+ *
+ * A razão não é só "os dois são iguais". O cartão **não tem nenhuma outra
+ * ação**: ele não menciona, não copia link, não muda nada. Um botão de largura
+ * inteira é o elemento mais pesado do cartão, e ele está anunciando uma
+ * decisão que o cartão não oferece — a pessoa lê "Fechar" no rodapé e conclui
+ * que tem algo a fazer ali. Além disso ele empurrava o cartão para baixo sem
+ * acrescentar nada.
+ *
+ * O X é onde o olho já está: canto superior direito de um overlay é a convenção
+ * que toda pessoa espera, e é o mesmo `X` que o resto do app usa.
+ *
+ * Fechar continua disponível por três caminhos além do X: `Escape`, o clique no
+ * fundo, e o toque em qualquer lugar do cartão. O botão não era o único jeito,
+ * era só o mais visível — e visível demais para uma ação sem nada atrás.
+ *
+ * E sem o botão largo, o X deixa de ser um dos dois e vira o alvo de toque, o
+ * que devolve o `dense` para 44px.
  */
 export function UserProfile({ user, isMe, isHost, onFechar }: Props) {
   useEffect(() => {
@@ -65,7 +87,15 @@ export function UserProfile({ user, isMe, isHost, onFechar }: Props) {
             avatarUrl={user.avatarUrl}
             size="lg"
           />
-          <IconButton dense label="Fechar" onClick={onFechar}>
+          {/*
+           * Sem `dense`: o `dense` existe para fileiras de botões na largura toda
+           * do celular, onde quatro alvos de 44px comem a largura e sobram pouco
+           * para o campo de texto ao lado. Aqui não há fileira nenhuma — o cartão
+           * é um overlay com um botão só, e ficar sem o botão largo significa
+           * que o X passa a ser o alvo de toque. Ele tem que ser o alvo de
+           * verdade: 44px, que é o padrão do resto do app.
+           */}
+          <IconButton label="Fechar" onClick={onFechar}>
             <X size={15} />
           </IconButton>
         </div>
@@ -95,12 +125,6 @@ export function UserProfile({ user, isMe, isHost, onFechar }: Props) {
             Na sala desde {formatClock(desde.getTime())}
           </p>
         )}
-
-        <div className="mt-4">
-          <Button onClick={onFechar} className="w-full" variant="outline">
-            Fechar
-          </Button>
-        </div>
       </div>
     </div>
   );
