@@ -6,6 +6,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { IconButton } from '@/components/ui/Button';
 import { compressImageFile, formatClock } from '@/lib/media';
 import { MentionAutocomplete } from './MentionAutocomplete';
+import { MentionMirror, CLASSE_METRICA, GUTTER_ESTAVEL } from './MentionMirror';
 import { MentionPreferences } from './MentionPreferences';
 import { MentionText } from './MentionText';
 import { UserProfile } from './UserProfile';
@@ -609,6 +610,35 @@ export function ChatPanel({
               <Smiley size={17} />
             </IconButton>
 
+            {/*
+              * O espelho do texto, por baixo do campo.
+              *
+              * É ele quem mostra o roxo da menção em curso: um `textarea` não
+              * aceita marcação, então a única forma de colorir parte do valor é
+              * desenhar o mesmo texto num `div` atrás dele. O `textarea` fica por
+              * cima com o texto transparente e o cursor visível, e continua sendo
+              * o campo de verdade — quem digita está digitando nele.
+              *
+              * As classes de métrica são as mesmas dos dois, por
+              * `CLASSE_METRICA`: se divergirem, o roxo cai na palavra errada.
+            */}
+            {/*
+              * `relative` é o que ancora o espelho do texto atrás do campo. Sem
+              * ele, o `absolute inset-0` do espelho se resolveria contra o
+              * painel inteiro, e o texto apareceria deslocado logo na primeira
+              * linha.
+              */}
+            <div className="relative min-w-0 flex-1">
+            <MentionMirror
+              texto={draft}
+              inicio={mencaoAberta?.inicio}
+              fim={
+                mencaoAberta
+                  ? mencaoAberta.inicio + 1 + mencaoAberta.consulta.length
+                  : undefined
+              }
+              campoRef={draftRef}
+            />
             <textarea
               ref={draftRef}
               rows={1}
@@ -686,8 +716,21 @@ export function ChatPanel({
                * de canto diferentes. A borda da barra continua sendo o
                * indicador, então a acessibilidade não perde nada.
                */
-              className="scroll-thin max-h-28 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
+              className={`scroll-thin max-h-28 min-w-0 flex-1 resize-none bg-transparent text-sm placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none ${CLASSE_METRICA} ${GUTTER_ESTAVEL} relative z-10 caret-[var(--ink)] text-transparent selection:bg-accent/30`}
+              /*
+               * `text-transparent` com `caret-[var(--ink)]`: o texto some e o
+               * cursor não. Quem lê o que digitou lê o espelho; quem sabe onde
+               * está lendo vê o cursor.
+               *
+               * O `selection:bg-accent/30` é o que impede o texto selecionado de
+               * sumir junto com a transparência — sem o fundo da seleção, apagar
+               * uma frase inteira pareceria não ter funcionado, porque o texto
+               * selecionado ficaria invisível até o `Backspace` agir. O
+               * espelho não sabe da seleção, e é por isso que o fundo tem de vir
+               * do próprio navegador.
+               */
             />
+            </div>
             <IconButton dense label="Enviar mensagem" onClick={send} disabled={!draft.trim()}>
               <PaperPlaneRight size={17} weight="fill" />
             </IconButton>
@@ -705,6 +748,8 @@ export function ChatPanel({
               sugestoes={mencaoAberta.lista}
               ativo={indiceAtivo}
               onEscolher={aceitarMencao}
+              onVerPerfil={(user) => setPerfilAberto(user.sessionId)}
+              onPassarOMouse={setIndiceAtivo}
             />
           )}
         </div>
