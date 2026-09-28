@@ -59,6 +59,18 @@ function blocoDoCampo() {
   return painel.slice(i, painel.indexOf('/>', i));
 }
 
+/**
+ * Tira comentários, para a afirmação ser sobre código e não sobre prosa.
+ *
+ * Está no nível do módulo porque vários testes precisam, e porque a duplicata
+ * foi o que deixou este arquivo se enganar duas vezes: um teste acusou
+ * `espaco.top` e outro, agora, `inline-block` — os dois estavam no comentário ao
+ * lado da linha que explicava por que a linha estava errada.
+ */
+function semComentario(fonte: string): string {
+  return fonte.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
 test('o espelho do texto nao volta', () => {
   /*
    * O arquivo inteiro. Existiu, foi medido, e produziu um campo quebrado. Ele
@@ -71,6 +83,83 @@ test('o espelho do texto nao volta', () => {
   assert.ok(
     !/MentionMirror/.test(painel),
     'e o ChatPanel não deve mais importar o espelho',
+  );
+});
+
+test('o campo ocupa a mesma altura dos botoes, sem offset manual', () => {
+  /*
+   * O desalinhamento do campo nunca foi `line-height` nem padding. Foi o
+   * `textarea` ser `inline-block` por padrao: dentro de um wrapper `block` ele
+   * fica na linha de base, e a descida dessa linha sobrava embaixo dele. O
+   * elemento ficava centrado, mas o texto dentro dele nao — que e o defeito que
+   * nenhuma media de altura de caixa denuncia.
+   *
+   * Medido antes, com a barra real:
+   *
+   *   wrapper  block, 38px: 0px acima do campo, 6px abaixo
+   *   campo    inline-block, 32px
+   *   texto    centro 843     icones centro 846      -> 3px, e 2 eixos
+   *
+   * Medido depois:
+   *
+   *   1 linha   barra 54   campo 36   texto 847   icones 847   1 eixo
+   *   4 linhas  barra 114  campo 96   texto 817   icones 817   1 eixo
+   *
+   * O `py-2` e o que iguala a altura: 20px de linha + 16 de padding = 36, que e
+   * a altura dos botoes. Como o auto-crescimento escreve `height = scrollHeight`
+   * e `scrollHeight` inclui o padding, isso se mantem em qualquer numero de
+   * linhas sem nenhum ajuste por linha.
+   */
+  const campo = semComentario(blocoDoCampo());
+
+  assert.match(
+    campo,
+    /\bblock\b/,
+    'o campo precisa ser block: sem isso ele fica na linha de base e o texto descentra',
+  );
+  assert.ok(
+    !/inline-block/.test(campo),
+    'e nao inline-block, que e o que produzia a descida embaixo do campo',
+  );
+  assert.match(
+    campo,
+    /\bpy-2\b/,
+    'o padding e py-2: 20px de linha + 16 de padding = 36px, a altura dos botoes',
+  );
+  assert.ok(
+    !/\bpy-1\.5\b|\bpy-1\b|\bpy-3\b/.test(campo),
+    'e nao um padding assimetrico ou fora do passo do resto da barra',
+  );
+});
+
+test('nem o campo nem os icones usam offset manual', () => {
+  /*
+   * Alinhar com `top`, `translateY` ou margem negativa por ícone funciona até
+   * alguém mudar a altura de um deles, e aí quebra sem erro. A centralização
+   * tem que sair do flex.
+   */
+  const semComentario = (fonte: string) =>
+    fonte.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+  const codigo = semComentario(painel);
+  const blocoBarra = codigo.slice(
+    codigo.indexOf('flex items-center gap-0.5 rounded-xl'),
+    codigo.indexOf('Enviar mensagem'),
+  );
+
+  assert.ok(blocoBarra.length > 0, 'o bloco da barra precisa ser encontrado');
+  assert.ok(
+    !/translateY|translate-y/.test(blocoBarra),
+    'nada de translateY para acertar a altura: a correcao tem que sair do flex',
+  );
+  assert.ok(
+    !/\bstyle=\{/.test(blocoBarra),
+    'e nada de style inline na barra, que e a outra forma do mesmo offset',
+  );
+  assert.match(
+    codigo,
+    /<div className="flex min-w-0 flex-1 items-center">\s*<textarea/,
+    'o wrapper do campo e flex com items-center, que e quem tira a linha de base',
   );
 });
 

@@ -563,9 +563,19 @@ export function ChatPanel({
           )}
 
           {/*
-           * `items-center` e não `items-end`: os botões são de 36px e o campo de
-           * 32px, então alinhar pelo fundo deixava os ícones pendurados 4px acima
-           * do campo. Centralizar é o que alinha as duas fileiras.
+           * `items-center` e não `items-end`.
+           *
+           * Não é pela diferença de altura: com o `py-2` do campo, os botões e o
+           * campo têm os mesmos 36px medidos. É porque o campo **cresce**. Com
+           * `items-end` a fileira de ícones encostaria no rodapé da barra e ficaria
+           * pendurada no meio de uma frase de quatro linhas; centralizar mantém
+           * os ícones no eixo do campo inteiro, que é o que se espera de um campo
+           * que cresce.
+           *
+           * Medido, nas duas situações, com a correção aplicada:
+           *
+           *   1 linha   barra 54   campo 36   texto 847   icones 847   1 eixo
+           *   4 linhas  barra 114  campo 96   texto 817   icones 817   1 eixo
            *
            * Não é uma regra global de `.items-end`: o overlay dos modais e o
            * ReactionDock dependem do comportamento de baixo, e sobrescrever
@@ -637,7 +647,7 @@ export function ChatPanel({
               * onde o destaque ajuda sem tocar no campo. E na mensagem enviada,
               * pelo `MentionText`.
               */}
-            <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-1 items-center">
             <textarea
               ref={draftRef}
               rows={1}
@@ -715,7 +725,47 @@ export function ChatPanel({
                * de canto diferentes. A borda da barra continua sendo o
                * indicador, então a acessibilidade não perde nada.
                */
-              className="scroll-thin max-h-28 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
+              /*
+               * `block` e `py-2`, e nenhum dos dois é detalhe de estética.
+               *
+               * ## O `block` é o que alinhava
+               *
+               * Um `textarea` é `inline-block` por padrão, e o preflight do
+               * Tailwind não muda isso. Dentro de um wrapper `block` ele fica
+               * sentado na **linha de base** do wrapper, e o espaço de descida
+               * dessa linha sobrava embaixo dele.
+               *
+               * Medido no navegador, com a barra real:
+               *
+               *   wrapper   display block, 38px, 0px acima do campo, 6px abaixo
+               *   campo     inline-block, 32px
+               *   texto     centro em 843
+               *   icones    centro em 846
+               *
+               * Dois eixos, 3px de diferença — e `items-center` na barra não
+               * corrigia, porque o centro do *elemento* do campo estava
+               * centrada, e o texto dentro dele é que não. Com o wrapper em
+               * `flex items-center` e o campo em `block`, a descida some:
+               *
+               *   texto     centro em 847
+               *   icones    centro em 847
+               *   eixos distintos: 1
+               *
+               * ## O `py-2` é o que iguala as alturas
+               *
+               * `py-1.5` dava 20px de linha + 12px de padding = 32px, contra
+               * 36px dos botões. `py-2` dá 20 + 16 = **36px**, a mesma altura.
+               * Como o auto-crescimento escreve `height = scrollHeight`, e
+               * `scrollHeight` inclui o padding, o campo passa a ter a altura dos
+               * botões sem nenhum ajuste por linha.
+               *
+               * ## Sem `line-height` exagerado
+               *
+               * 20px para 14px de fonte é 1,43 — o mesmo do resto do app. Não
+               * era o `line-height` que descentrava o campo; era o `inline-block`
+               * somando a descida da linha do wrapper por cima dele.
+               */
+              className="scroll-thin block max-h-28 min-w-0 flex-1 resize-none bg-transparent py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
             />
             </div>
             <IconButton dense label="Enviar mensagem" onClick={send} disabled={!draft.trim()}>
