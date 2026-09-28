@@ -1,5 +1,5 @@
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { JoinGate } from '@/components/JoinGate';
 import { PasswordGate } from '@/components/PasswordGate';
 import { RoomHeader } from '@/components/RoomHeader';
@@ -7,7 +7,9 @@ import { RoomExpired } from '@/components/RoomExpired';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoStage } from '@/components/player/VideoStage';
 import { useRoom } from '@/hooks/useRoom';
+import { useMencoes } from '@/hooks/useMencoes';
 import { useStreamBridge } from '@/hooks/useStreamBridge';
+import type { ChatMentionEvent } from '@/types';
 
 const NAME_KEY = 'juntos:name';
 const AVATAR_SEED_KEY = 'juntos:avatarSeed';
@@ -78,6 +80,22 @@ export default function RoomPage() {
     setAvatarUrl(avatar.url);
   };
 
+  /*
+   * Ponte de menção, declarada **antes** do `useRoom`.
+   *
+   * O `useRoom` é quem assina o socket, e o `useMencoes` — que decide som,
+   * notificação e destaque — precisa do `me` que o `useRoom` devolve. A ordem
+   * dos hooks não pode ser invertida, então a ponte é uma ref: o `useRoom`
+   * recebe um callback estável que só olha a ref, e a ref é apontada para o
+   * `useMencoes` assim que ele existir, na linha seguinte.
+   *
+   * A alternativa — passar o handler direto e depender do `me` — remontaria a
+   * conexão do socket cada vez que o `me` mudasse, e menção é justamente o que
+   * não pode se perder.
+   */
+  const mencaoRef = useRef<((evento: ChatMentionEvent) => void) | null>(null);
+  const atender = useCallback((evento: ChatMentionEvent) => mencaoRef.current?.(evento), []);
+
   const {
     connected,
     me,
@@ -95,7 +113,7 @@ export default function RoomPage() {
     reactions,
     actions,
   replyingTo,
-  } = useRoom({ roomId, name, enabled: Boolean(roomId && name), avatarSeed, avatarUrl, color });
+  } = useRoom({ roomId, name, enabled: Boolean(roomId && name), avatarSeed, avatarUrl, color, onMention: atender });
 
   /**
    * Ponte de WebRTC da sala. Fica na página, e não dentro do `useRoom`, porque
@@ -103,6 +121,48 @@ export default function RoomPage() {
    * esse fluxo é mídia local de uma máquina só, não estado da sala.
    */
   const streamBridge = useStreamBridge();
+
+  /** Destaque temporário do painel de chat quando a menção chega. */
+  const [chatPulsando, setChatPulsando] = useState(false);
+  const temporizadorPulso = useRef<ReturnType<typeof setTimeout>>();
+
+  const chamarAtencao = useCallback(() => {
+    if (temporizadorPulso.current) clearTimeout(temporizadorPulso.current);
+    setChatPulsando(true);
+    temporizadorPulso.current = setTimeout(() => setChatPulsando(false), 2600);
+  }, []);
+
+  const mencoes = useMencoes({
+    meuSessionId: me?.sessionId,
+    aoChamarAtencao: chamarAtencao,
+    aoAbrirChat: () => setSidebarOpen(true),
+  });
+  mencaoRef.current = mencoes.tratar;
+
+  /*
+   * O título da aba pisca quando a menção chega com a aba escondida.
+   *
+   * Na web não existe API para focar outra aba — e não deveria, um site que
+   * roubasse o foco seria hostil. O que dá para fazer é marcar o título, que é
+   * o que a pessoa vê na barra de tarefas e no Alt+Tab, e é por isso que ele
+   * volta ao normal sozinho: piscar para sempre seria a mesma coisa que o som
+   * que o cooldown corta.
+   */
+  useEffect(() => {
+    if (chatPulsando) return;
+    if (typeof document === 'undefined') return;
+    const original = document.title;
+    if (!original.includes('•')) document.title = `(${mencoes.carimboNaoLido}) ${original}`;
+    if (mencoes.carimboNaoLido === 0) return;
+    const t = setTimeout(() => {
+      document.title = original;
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [mencoes.carimboNaoLido, chatPulsando]);
+
+  useEffect(() => () => {
+    if (temporizadorPulso.current) clearTimeout(temporizadorPulso.current);
+  }, []);
 
   /**
    * A mídia que o palco toca depende de dois papéis. Quem transmite já tem a
@@ -242,6 +302,10 @@ export default function RoomPage() {
           isHost={isHost}
           replyingTo={replyingTo}
           streamBridge={streamBridge}
+          mentionPrefs={mencoes.prefs}
+          onMentionPrefs={mencoes.atualizarPrefs}
+          onPedirPermissaoNotificacao={() => void mencoes.pedirPermissao()}
+          jaPediuPermissaoNotificacao={mencoes.jaPediuPermissao}
         />
       </div>
 

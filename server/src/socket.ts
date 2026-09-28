@@ -5,11 +5,14 @@ import {
   isReactionRateLimited,
   isTypingRateLimited,
   isUploadRateLimited,
+  limparMencoes,
+  podeTocarMencao,
   sanitizeCaption,
   sanitizeGifUrl,
   sanitizeImageDataUrl,
   sanitizeMessage,
 } from './chatGuard.js';
+import { extrairMencoes } from './mentions.js';
 import { editarSala } from './roomLock.js';
 import {
   addUser,
@@ -43,6 +46,7 @@ import {
 import {
   ALLOWED_REACTIONS,
   CHAT_REACTION_EMOJIS,
+  type ChatMessage,
   type ChatMessageKind,
   type ChatReactionEmoji,
   type LiveStream,
@@ -580,7 +584,14 @@ export function registerSocketHandlers(io: Server) {
         if (!room.messages) room.messages = [];
         const parentMsg = parentMessageId ? room.messages.find((m: any) => m.id === parentMessageId) : undefined;
 
-        const message = {
+        /*
+         * A anotação de tipo não é decoração: `mentions` é acrescentado depois
+         * da construção do objeto, e um literal sem anotação tem o tipo
+         * inferido do que já estava escrito — o TypeScript reclamaria que a
+         * propriedade não existe, em vez de deixar passar uma mensagem com
+         * menções que ninguém consegue ler.
+         */
+        const message: ChatMessage = {
           id: messageId,
           userId: user.sessionId,
           name: user.name,
@@ -598,12 +609,65 @@ export function registerSocketHandlers(io: Server) {
           reactions: {},
         };
 
+        /*
+         * Menções.
+         *
+         * A lista vai **dentro** da mensagem, que é o que permite o destaque
+         * para todo mundo ver na tela — o `@nome` fica marcado para quem lê.
+         *
+         * E a notificação é outra coisa, entregue à parte, e só para a pessoa
+         * citada. As duas não podem ser o mesmo evento: se fossem, todo mundo
+         * ouviria o som de cada menção, que é exatamente o comportamento que
+         * transforma um chat em lugar insuportável.
+         *
+         * A resolução usa quem está na sala **agora**, e nunca menciona a si
+         * mesmo: tocar o próprio som ao se citar é só ruído, e a pessoa já está
+         * lendo a própria mensagem.
+         */
+        const naSala = Object.entries(room.users).map(([socketId, u]) => ({
+          socketId,
+          sessionId: u.sessionId,
+          name: u.name,
+        }));
+        const citadas = extrairMencoes(
+          text,
+          naSala.filter((u) => u.sessionId !== user.sessionId),
+        );
+        message.mentions = citadas.map((m) => m.sessionId);
+
         room.messages.push(message);
         // Mantém apenas últimas 500 mensagens
         if (room.messages.length > 500) room.messages = room.messages.slice(-500);
 
         await persistRoom(room);
         io.to(room.id).emit('chat:message', message);
+
+        /*
+         * Notificação individual, por pessoa citada.
+         *
+         * `io.to(sessionId)` alcança um socket só, e alcança em todas as
+         * instâncias — o mesmo mecanismo de `stream:peer-join`, que precisa
+         * disso porque dono e espectador podem estar em processos diferentes.
+         *
+         * O cooldown é do par remetente→citado: passar dele, a mensagem continua
+         * indo para a sala e o destaque continua aparecendo, o que é correto —
+         * quem está de olho lê. O que é aparado é o **som e a notificação**, que
+         * é o que vira alarme.
+         */
+        for (const citada of citadas) {
+          const destino = naSala.find((u) => u.sessionId === citada.sessionId);
+          if (!destino) continue;
+          if (!podeTocarMencao(socket.id, destino.socketId)) continue;
+          io.to(destino.socketId).emit('chat:mention', {
+            messageId,
+            fromName: user.name,
+            fromColor: user.color,
+            fromSessionId: user.sessionId,
+            texto: citada.texto,
+            preview: kind === 'text' ? text.slice(0, 140) : kind === 'gif' ? '[GIF]' : '[Imagem]',
+            at: now,
+          });
+        }
       });
     });
 
@@ -823,6 +887,10 @@ export function registerSocketHandlers(io: Server) {
 
     socket.on('disconnect', async () => {
       clearRateLimit(socket.id);
+      // Os carimbos de menção também saem: sem isso o `Map` guarda uma entrada
+      // para cada par que se encontrou, e watch party tem gente entrando e
+      // saindo a noite toda.
+      limparMencoes(socket.id);
       // A sala é lida de novo depois do lock, e não capturada de dentro dele:
       // assim o TypeScript não precisa acreditar numa atribuição feita em
       // closure, e o revoke usa o estado já gravado.

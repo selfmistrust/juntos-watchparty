@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, shell, session } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Notification, shell, session } from 'electron';
 import path from 'node:path';
 import { APP_ORIGIN, startLocalServer, type LocalServer } from './localServer';
 import { iniciarLog, log } from './log';
@@ -89,6 +89,23 @@ function criarJanela(): BrowserWindow {
   w.once('ready-to-show', () => w.show());
   w.on('closed', () => {
     janela = null;
+  });
+
+  /*
+   * Apaga o piscar assim que a janela volta a ser a da frente.
+   *
+   * `flashFrame(true)` pisca até alguém parar. Parar não acontece sozinho em
+   * toda plataforma, e deixar ligado vira a barra de tarefas piscando para uma
+   * pessoa que já está lendo a menção — que é o oposto do que a menção deveria
+   * fazer. Uma linha para o pedido não virar incômodo também quando a pessoa
+   * obedece.
+   */
+  w.on('focus', () => {
+    try {
+      w.flashFrame(false);
+    } catch {
+      // Janela em processo de fechar.
+    }
   });
 
   // Navegação para fora do app vai no navegador do sistema, nunca dentro da
@@ -191,6 +208,43 @@ function registrarIpc(): void {
    */
   ipcMain.on('desktop:versao', (evento) => {
     evento.returnValue = app.getVersion();
+  });
+
+  /*
+   * Menção: piscar a janela e notificar o sistema.
+   *
+   * As duas coisas, e não uma, porque elas atendem momentos diferentes. A
+   * notificação é o que chega quando a pessoa está em outro programa; o piscar é
+   * o que chega quando ela está no app mas em outra aba do Windows — onde a
+   * notificação pode estar agrupada e o piscar não.
+   *
+   * `flashFrame` só age com a janela em segundo plano, e é isso que se quer:
+   * com a janela à frente, a pessoa já está vendo o chat, e piscar a barra de
+   * tarefas seria chamar atenção para o que ela já está olhando.
+   *
+   * Os textos são limitados aqui, no `main`, e não no preload: é o `main` que
+   * escreve na tela do sistema, e um título de 4000 caracteres vira uma notificação
+   * que não cabe em lugar nenhum.
+   */
+  ipcMain.handle('desktop:mencao', (_e, titulo: unknown, corpo: unknown) => {
+    if (typeof titulo !== 'string' || typeof corpo !== 'string') return false;
+    const t = titulo.slice(0, 120).trim();
+    const c = corpo.slice(0, 240).trim();
+    if (!t || !c) return false;
+
+    try {
+      if (janela && !janela.isFocused()) janela.flashFrame(true);
+    } catch {
+      // Janela já destruída. A notificação abaixo ainda vale.
+    }
+
+    try {
+      if (!Notification.isSupported()) return false;
+      new Notification({ title: t, body: c }).show();
+      return true;
+    } catch {
+      return false;
+    }
   });
 }
 

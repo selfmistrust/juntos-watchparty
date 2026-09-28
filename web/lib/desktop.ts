@@ -37,6 +37,12 @@ export interface DesktopApi {
   copyText(text: string): Promise<boolean>;
   openInSystemBrowser(url: string): Promise<boolean>;
   openPermissionSettings(): Promise<void>;
+  /**
+   * Chama atenção para a janela e notifica o sistema. Só o desktop implementa:
+   * na web o padrão não deixa o app puxar o foco de outra aba, e o que dá para
+   * fazer — piscar o título e marcar o chat como não lido — é feito aqui.
+   */
+  notifyMention(title: string, body: string): Promise<boolean>;
 }
 
 declare global {

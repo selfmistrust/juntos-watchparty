@@ -13,6 +13,7 @@ import type {
   RoomSnapshot,
   SystemEvent,
   User,
+  ChatMentionEvent,
 } from '@/types';
 
 const MAX_FEED = 250;
@@ -27,6 +28,16 @@ interface UseRoomOptions {
   avatarUrl?: string;
   /** Cor salva no navegador; reenviada a cada entrada para não voltar à cor padrão. */
   color?: string;
+  /**
+   * Alguém te mencionou.
+   *
+   * É um callback e não estado, por dois motivos: `useRoom` não sabe nada de
+   * som nem de notificação — quem sabe é o `useMencoes` da página —, e o
+   * efeito de conexão não pode depender de um objeto que muda a cada render da
+   * página. Com callback guardado em ref, o listener se registra uma vez e
+   * sempre chama a versão atual.
+   */
+  onMention?: (evento: ChatMentionEvent) => void;
 }
 
 export interface RoomActions {
@@ -64,7 +75,7 @@ export type UploadTokenResult =
   | { ok: true; uploadUrl: string; publicUrl: string; contentType: string }
   | { ok: false; error: string };
 
-export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }: UseRoomOptions) {
+export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color, onMention }: UseRoomOptions) {
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [me, setMe] = useState<User | null>(null);
@@ -88,6 +99,16 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   /** Última senha tentada; usada tanto no join inicial quanto em reconexões. */
   const passwordRef = useRef('');
+  /**
+   * Callback de menção da página, guardado em ref.
+   *
+   * Fica no escopo do hook e não dentro do efeito: `useRef` chamado de dentro de
+   * um callback é hook em lugar errado, e o lint avisa com razão. Com a ref aqui,
+   * o listener do socket lê a versão atual do callback sem nunca se registrar de
+   * novo.
+   */
+  const mencaoRef = useRef(onMention);
+  mencaoRef.current = onMention;
   /**
    * Avatar a mandar em cada `room:join` — inclui reconexões automáticas do
    * Socket.io (queda de wi-fi, celular bloqueou, aba ficou muito tempo em
@@ -243,6 +264,18 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
     const onDenied = (message: string) => setNotice(message);
     const onDisconnect = () => setConnected(false);
 
+    /*
+     * Menção recebida.
+     *
+     * Lê a ref, que fica no escopo do hook: declarar `useRef` aqui dentro seria
+     * chamar um hook de dentro de um callback, que o React não permite — e o
+     * aviso do lint está certo mesmo. Com a ref no escopo, o listener do socket
+     * registra uma vez e sempre chama a versão atual do callback da página, sem
+     * depender dele: se fosse dependência do efeito, cada render da página — e o
+     * `draft` do chat muda a cada tecla — remontaria a conexão inteira.
+     */
+    const onMentionEvent = (evento: ChatMentionEvent) => mencaoRef.current?.(evento);
+
     /** Reação recebida: sorteia posição/duração aqui mesmo e agenda a própria remoção. */
     const onReaction = ({ id, emoji, name: who }: { id: string; emoji: string; userId: string; name: string }) => {
       const entry: FloatingReaction = {
@@ -272,6 +305,12 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
     socket.on('chat:reaction:add', onReactionAdd);
     socket.on('chat:reaction:remove', onReactionRemove);
     socket.on('chat:typing', onTyping);
+    /*
+     * Só a pessoa citada recebe isto. O servidor emite direto para o socket
+     * dela, e não pela sala — é a diferença entre o `@` ser um sinal e ser um
+     * alarme com som para todo mundo.
+     */
+    socket.on('chat:mention', onMentionEvent);
     socket.on('reaction:new', onReaction);
 
     const clockTimer = setInterval(() => syncClock(socket, clockOffset), 15_000);
@@ -290,6 +329,10 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color }:
       socket.off('chat:reaction:add', onReactionAdd);
       socket.off('chat:reaction:remove', onReactionRemove);
       socket.off('chat:typing', onTyping);
+      // Sem este `off`, o handler antigo continuaria registrado: o socket é
+      // reaproveitado entre salas, e a menção da sala anterior tocaria o som na
+      // pessoa que acabou de entrar em outra.
+      socket.off('chat:mention', onMentionEvent);
       socket.off('reaction:new', onReaction);
     };
     // avatarSeed/avatarUrl não entram nas deps de propósito: usá-las direto

@@ -114,6 +114,25 @@ export interface DesktopApi {
 
   /** Abre as configurações de permissões do app no sistema operacional. */
   openPermissionSettings(): Promise<void>;
+
+  /**
+   * Chama atenção para a janela do app, e mostra a notificação do sistema.
+   *
+   * Só existe no desktop porque é a única camada onde dá para **puxar o foco**.
+   * Na web, o navegador não deixa o app roubar a aba de quem está em outra
+   * página — e nem deveria. O que a web faz é piscar o título e marcar o chat
+   * como não lido, que é o mais que o padrão permite.
+   *
+   * `win.flashFrame` é o pedido de "olha aqui" da barra de tarefas, e só pisca
+   * se a janela **não** estiver em primeiro plano: com a janela à frente, a
+   * pessoa já está vendo, e piscar seria só ruído.
+   *
+   * A notificação do sistema é do Electron e não da `Notification` da web
+   * porque dentro do app a `Notification` depende de permissão do Chromium
+   * embarqueado, que nem sempre está concedida, e o resultado seria um botão de
+   * notificação que liga e não notifica. O `main` não depende de nada disso.
+   */
+  notifyMention(title: string, body: string): Promise<boolean>;
 }
 
 declare global {

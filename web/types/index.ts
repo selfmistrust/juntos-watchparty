@@ -149,6 +149,24 @@ export interface ChatMessage {
   };
   /** Reações na mensagem: emoji -> { count, users: string[] }. */
   reactions?: Record<string, { count: number; users: string[] }>;
+  /**
+   * Quem foi citado por `@nome`, em `sessionId`. O servidor é quem decide esta
+   * lista; o cliente só desenha o destaque em volta do que está aqui.
+   */
+  mentions?: string[];
+}
+
+/** Notificação de menção, entregue só para a pessoa citada. */
+export interface ChatMentionEvent {
+  messageId: string;
+  fromName: string;
+  fromColor: string;
+  fromSessionId: string;
+  /** O nome como foi digitado, para o texto do aviso fazer sentido. */
+  texto: string;
+  /** Recorte da mensagem, para o aviso não ser uma notificação vazia. */
+  preview: string;
+  at: number;
 }
 
 export type SystemEventKind = 'join' | 'leave' | 'play' | 'pause' | 'seek' | 'track' | 'host';

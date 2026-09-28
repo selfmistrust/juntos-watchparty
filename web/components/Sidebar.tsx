@@ -2,6 +2,7 @@ import { ChatCircle, ListPlus, Users, X } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import { useEffect, useRef, useState } from 'react';
 import { ChatPanel } from '@/components/chat/ChatPanel';
+import type { PreferenciasMencao } from '@/lib/mentionPreferences';
 import { PeoplePanel } from '@/components/people/PeoplePanel';
 import { PlaylistPanel } from '@/components/playlist/PlaylistPanel';
 import { IconButton } from '@/components/ui/Button';
@@ -25,6 +26,17 @@ interface Props {
   replyingTo?: ChatMessage | null;
   /** Ponte de WebRTC, repassada até o painel de tela compartilhada. */
   streamBridge: StreamController;
+  /**
+   * Preferências de menção, repassadas até o cabeçalho do chat.
+   *
+   * O `Sidebar` não decide nada disso: ele é a passagem entre a página, que
+   * tem o estado, e o `ChatPanel`, que tem o lugar onde o botão fica. Um
+   * componente que só repassa não deve ganhar um terceiro dono do estado.
+   */
+  mentionPrefs?: PreferenciasMencao;
+  onMentionPrefs?: (patch: Partial<PreferenciasMencao>) => void;
+  onPedirPermissaoNotificacao?: () => void;
+  jaPediuPermissaoNotificacao?: boolean;
 }
 
 export function Sidebar({
@@ -39,6 +51,10 @@ export function Sidebar({
   isHost,
   replyingTo,
   streamBridge,
+  mentionPrefs,
+  onMentionPrefs,
+  onPedirPermissaoNotificacao,
+  jaPediuPermissaoNotificacao,
 }: Props) {
   const [tab, setTab] = useState<TabId>('chat');
   const [unread, setUnread] = useState(0);
@@ -100,6 +116,10 @@ export function Sidebar({
             onReply={actions.reply}
             onCancelReply={actions.cancelReply}
             replyingTo={replyingTo ?? null}
+            mentionPrefs={mentionPrefs}
+            onMentionPrefs={onMentionPrefs}
+            onPedirPermissaoNotificacao={onPedirPermissaoNotificacao}
+            jaPediuPermissaoNotificacao={jaPediuPermissaoNotificacao}
           />
         )}
         {tab === 'queue' && (

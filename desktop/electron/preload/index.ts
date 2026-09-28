@@ -73,6 +73,18 @@ const api: DesktopApi = {
     // pedida pelo sistema na hora, e não há um painel para abrir. A função
     // existe para o contrato não mudar se um dia houver.
   },
+
+  notifyMention: async (title: string, body: string): Promise<boolean> => {
+    /*
+     * O texto vai inteiro para o processo principal, e a validação fica lá: o
+     * `soTexto` do preload garante o tipo, mas quem decide o tamanho aceito é o
+     * `main`, porque é o `main` que escreve na tela do sistema.
+     */
+    const t = soTexto(title);
+    const b = soTexto(body);
+    if (!t || !b) return false;
+    return (await ipcRenderer.invoke('desktop:mencao', t, b)) === true;
+  },
 };
 
 contextBridge.exposeInMainWorld('juntosDesktop', api);

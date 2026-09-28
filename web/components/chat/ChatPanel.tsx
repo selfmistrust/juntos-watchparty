@@ -1,14 +1,21 @@
 'use client';
 
 import { Image as ImageIcon, PaperPlaneRight, Sticker, Smiley, ArrowArcLeft } from '@phosphor-icons/react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Avatar } from '@/components/ui/Avatar';
 import { IconButton } from '@/components/ui/Button';
 import { compressImageFile, formatClock } from '@/lib/media';
+import { MentionAutocomplete } from './MentionAutocomplete';
+import { MentionPreferences } from './MentionPreferences';
+import { MentionText } from './MentionText';
+import { UserProfile } from './UserProfile';
 import { GifPicker } from './GifPicker';
 import { EmojiPicker } from './EmojiPicker';
 import { ReactionPicker } from './ReactionPicker';
 import { ReplyPreview } from './ReplyPreview';
+import { destravarSomDeMencao } from '@/lib/mentionSound';
+import { mencaoPendente, sugerir } from '@/lib/mentionHighlight';
+import type { PreferenciasMencao } from '@/lib/mentionPreferences';
 import type { FeedEntry, GifResult, User, ChatMessage } from '@/types';
 
 interface Props {
@@ -30,6 +37,11 @@ interface Props {
   onCancelReply: () => void;
   /** Mensagem que está sendo respondida (se houver). */
   replyingTo?: ChatMessage | null;
+  /** Preferências de menção e seus alteradores. */
+  mentionPrefs?: PreferenciasMencao;
+  onMentionPrefs?: (patch: Partial<PreferenciasMencao>) => void;
+  onPedirPermissaoNotificacao?: () => void;
+  jaPediuPermissaoNotificacao?: boolean;
 }
 
 export function ChatPanel({
@@ -47,6 +59,10 @@ export function ChatPanel({
   onReply,
   onCancelReply,
   replyingTo,
+  mentionPrefs,
+  onMentionPrefs,
+  onPedirPermissaoNotificacao,
+  jaPediuPermissaoNotificacao,
 }: Props) {
   const [draft, setDraft] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
@@ -104,6 +120,98 @@ export function ChatPanel({
   };
 
   const userById = useMemo(() => new Map(users.map((u) => [u.sessionId, u])), [users]);
+
+  /*
+   * Autocomplete de menções.
+   *
+   * O estado é derivado do texto, não mantido à parte: quem digita `@Ma` faz a
+   * lista aparecer, e quem apaga a letra faz sumir. Guardar a lista num estado
+   * paralelo exigiria sincronizar dois — e a divergência seria "a lista continua
+   * aberta depois de eu apagar o @".
+   *
+   * `indiceAtivo` é a exceção que precisa de estado: ele muda com o `ArrowDown` e
+   * não é função do texto.
+   *
+   * A si próprio não entra na lista. Menção a si mesmo não gera som nem
+   * notificação — o servidor nem resolve — então oferecer a si próprio seria
+   * sugerir algo que não acontece.
+   */
+  const [indiceAtivo, setIndiceAtivo] = useState(0);
+  const [perfilAberto, setPerfilAberto] = useState<string | null>(null);
+  const cursorRef = useRef(0);
+
+  const candidatos = useMemo(
+    () => (me ? users.filter((u) => u.sessionId !== me.sessionId) : users),
+    [users, me],
+  );
+
+  const mencaoAberta = useMemo(() => {
+    const antes = draft.slice(0, cursorRef.current);
+    const pendente = mencaoPendente(antes);
+    if (!pendente) return null;
+    const lista = sugerir(pendente.consulta, candidatos);
+    return lista.length > 0 ? { ...pendente, lista } : null;
+    // `cursorRef` é ref de propósito: ele muda sem render, e o `draft` já muda
+    // a cada tecla, então a dependência do texto cobre o recálculo.
+  }, [draft, candidatos]);
+
+  /*
+   * A lista reabre no primeiro item quando o texto muda. Sem isto, aceitar
+   * "Maria" e seguir digitando deixaria o índice apontando para a posição 5 de
+   * uma lista de 2 — e o `Enter` mandaria a pessoa errada.
+   */
+  useEffect(() => {
+    setIndiceAtivo(0);
+  }, [mencaoAberta?.consulta, mencaoAberta?.inicio]);
+
+  /**
+   * Aceita a sugestão: troca o `@parcial` já digitado por `@Nome Completo `.
+   *
+   * O espaço final é deliberado. Sem ele, `@Maria` seguido de `olá` vira
+   * `@Mariaolá`, que não casa com nome nenhum e a menção morre — a pessoa não
+   * recebe som nem notificação e não entende por quê.
+   */
+  const aceitarMencao = useCallback(
+    (user: User) => {
+      const inicio = mencaoAberta?.inicio;
+      if (inicio === undefined) return;
+      const ateCursor = cursorRef.current;
+      const novo = draft.slice(0, inicio) + '@' + user.name + ' ' + draft.slice(ateCursor);
+      setDraft(novo);
+      setIndiceAtivo(0);
+      const posicao = inicio + user.name.length + 2;
+      cursorRef.current = posicao;
+      // O cursor precisa ir para depois do espaço: sem isto, o próximo caractere
+      // digitado entra antes do nome e o `@Maria` fica `@Mar` + `ia`.
+      requestAnimationFrame(() => {
+        const ta = draftRef.current;
+        if (!ta) return;
+        ta.focus();
+        ta.setSelectionRange(posicao, posicao);
+      });
+    },
+    [draft, mencaoAberta],
+  );
+
+  /**
+   * O cursor é lido do DOM, e não inferido do texto: o valor do textarea é
+   * controlado pelo React, mas a posição do cursor é do navegador. Inferir de
+   * `draft.length` colocaria a detecção de `@` no fim da frase mesmo com o
+   * cursor no meio, e o autocomplete apareceria no lugar errado.
+   */
+  const lerCursor = () => {
+    cursorRef.current = draftRef.current?.selectionStart ?? draft.length;
+  };
+
+  const abrirPerfil = useCallback(
+    (sessionId: string) => {
+      // Só abre para quem está na sala agora. O `userById` é a lista viva, e
+      // clicar num nome de quem já saiu não tem o que mostrar.
+      if (!userById.has(sessionId)) return;
+      setPerfilAberto(sessionId);
+    },
+    [userById],
+  );
 
   /**
    * Rola até a última mensagem depois que o feed cresce.
@@ -193,6 +301,30 @@ export function ChatPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/*
+        * Cabeçalho do chat. Não existia, e foi criado só para a preferência de
+        * menção ter onde morar.
+        *
+        * A alternativa era esconder os três interruptores dentro do menu do
+        * player ou da lista de pessoas, e as duas estão longe demais de quem
+        * recebeu a menção. Uma linha de 36px é o preço de "desligar o som
+        * agora" ser um clique, e é bem mais barato do que a pessoa decidir
+        * deixar ligado e sair da sala.
+        *
+        * A borda inferior é a mesma do feed, então o cabeçalho não desenha uma
+        * faixa nova: ele apenas interrompe a coluna de mensagens.
+        */}
+      {(mentionPrefs && onMentionPrefs) && (
+        <div className="flex shrink-0 items-center justify-end border-b border-hairline px-2 py-1">
+          <MentionPreferences
+            prefs={mentionPrefs}
+            jaPediu={Boolean(jaPediuPermissaoNotificacao)}
+            onMudar={onMentionPrefs}
+            aoPedirPermissao={onPedirPermissaoNotificacao ?? (() => undefined)}
+          />
+        </div>
+      )}
+
       <div data-reaction-bounds className="scroll-thin flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {feed.length === 0 && (
           <p className="pt-6 text-center text-sm text-ink-faint">
@@ -283,7 +415,18 @@ export function ChatPanel({
                   />
                 ) : (
                   <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-ink/90">
-                    {entry.text}
+                    {/*
+                      * O destaque da menção entra por aqui, e este é o único
+                      * caminho com texto visível: a legenda de um GIF vai para o
+                      * `alt` da imagem, e a de uma imagem não é renderizada. Só
+                      * o texto de uma mensagem comum volta a ser lido.
+                      */}
+                    <MentionText
+                      texto={entry.text}
+                      participantes={users}
+                      mencionados={entry.mentions}
+                      aoAbrirPerfil={abrirPerfil}
+                    />
                   </p>
                 )}
 
@@ -471,7 +614,63 @@ export function ChatPanel({
               rows={1}
               value={draft}
               onChange={(e) => signalTyping(e.target.value)}
+              /*
+               * O foco no campo é o gesto que destrava o `AudioContext`.
+               *
+               * Aqui, e não num listener global de clique no load: o
+               * `ReactionDock` registra o `lib/sfx` antigo como removido
+               * justamente por causa de um listener que só existia para
+               * destravar áudio e nunca era desinstalado. Quem não vai escrever
+               * no chat não paga por isso, e não há nada global para vazar.
+               */
+              onFocus={destravarSomDeMencao}
+              onKeyUp={lerCursor}
+              onClick={lerCursor}
+              /*
+               * `aria-autocomplete="list"` diz que o campo completa com uma
+               * lista. O `aria-expanded` **não** vai aqui: ele não é aceito no
+               * papel implícito de `textbox`, e colocá-lo à força faria o leitor
+               * de tela anunciar um estado que ele não sabe interpretar. A
+               * lista é anunciada pelo `role="listbox"` do próprio componente.
+               */
+              aria-autocomplete="list"
               onKeyDown={(e) => {
+                /*
+                 * Com a lista aberta, as setas e o `Enter` pertencem a ela.
+                 *
+                 * Sem este desvio, `ArrowDown` no meio de uma frase moveria o
+                 * cursor do texto e o `Enter` mandaria a mensagem com `@Ma` pela
+                 * metade — que é o pior jeito de um autocomplete existir: ele
+                 * atrapalha quem não está usando.
+                 */
+                if (mencaoAberta) {
+                  const total = mencaoAberta.lista.length;
+                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setIndiceAtivo((atual) => {
+                      const passo = e.key === 'ArrowDown' ? 1 : -1;
+                      // Dá a volta em vez de travar na ponta: com a lista
+                      // aberta, o travamento é só um beco sem saída.
+                      return (atual + passo + total) % total;
+                    });
+                    return;
+                  }
+                  if (e.key === 'Enter' || e.key === 'Tab') {
+                    e.preventDefault();
+                    const escolhido = mencaoAberta.lista[indiceAtivo];
+                    if (escolhido) {
+                      aceitarMencao(escolhido);
+                      return;
+                    }
+                  }
+                  if (e.key === 'Escape') {
+                    // Não fecha a lista com um estado próprio: sem `@` no texto
+                    // ela some sozinha, e um estado a mais só criaria a
+                    // possibilidade de ela reaparecer depois do texto mudar.
+                    setDraft((atual) => atual.replace('@', '@ '));
+                    return;
+                  }
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   send();
@@ -493,8 +692,36 @@ export function ChatPanel({
               <PaperPlaneRight size={17} weight="fill" />
             </IconButton>
           </div>
+
+          {/*
+            * A lista fica dentro do wrapper `relative` da barra, e não solta no
+            * painel: é esse wrapper que é a âncora de posicionamento dos pickers,
+            * e a lista precisa da mesma largura de 336px da barra. Ancorada no
+            * container de fora, abriria com a largura da tela cheia e desalinhada
+            * na borda direita.
+            */}
+          {mencaoAberta && (
+            <MentionAutocomplete
+              sugestoes={mencaoAberta.lista}
+              ativo={indiceAtivo}
+              onEscolher={aceitarMencao}
+            />
+          )}
         </div>
       </div>
+
+      {/*
+        * O perfil de quem foi citado. Fica no fim, sobre tudo, e é o único
+        * elemento que sai do fluxo do painel.
+        */}
+      {perfilAberto && userById.get(perfilAberto) && (
+        <UserProfile
+          user={userById.get(perfilAberto)!}
+          isMe={perfilAberto === me?.sessionId}
+          isHost={hostId === perfilAberto}
+          onFechar={() => setPerfilAberto(null)}
+        />
+      )}
     </div>
   );
 }

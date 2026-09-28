@@ -184,6 +184,32 @@ export interface ChatMessage {
   };
   /** Reações na mensagem: emoji -> { count, users: string[] }. */
   reactions?: Record<string, { count: number; users: string[] }>;
+  /**
+   * Quem foi citado por `@nome` nesta mensagem, em `sessionId`.
+   *
+   * Vai na mensagem porque o destaque é público: todo mundo vê o `@nome`
+   * marcado. A **notificação** é separada e sai só para os ids desta lista
+   * (ver `chat:mention`), porque som e notificação para a sala inteira
+   * transformam o chat em lugar insuportável.
+   *
+   * A lista nunca inclui quem escreveu: citar a si mesmo é ruído, e a pessoa já
+   * está lendo a própria mensagem.
+   */
+  mentions?: string[];
+}
+
+/** Notificação de menção, entregue só para a pessoa citada. */
+export interface ChatMentionEvent {
+  messageId: string;
+  fromName: string;
+  fromColor: string;
+  /** `sessionId` de quem mencionou, para o cliente saber se é a si mesmo. */
+  fromSessionId: string;
+  /** O nome como foi digitado, para o texto do aviso fazer sentido. */
+  texto: string;
+  /** Recorte da mensagem, para o aviso não ser uma notificação vazia. */
+  preview: string;
+  at: number;
 }
 
 export type SystemEventKind =
