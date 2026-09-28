@@ -104,30 +104,42 @@ export function MentionAutocomplete({
   onPassarOMouse,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  /*
+   * `virado` significa "a lista esta abaixo do campo". O padrao e **acima**, e o
+   * efeito so vira para baixo quando ela nao couber em cima.
+   */
   const [virado, setVirado] = useState(false);
 
   /*
-   * Vira a lista para baixo **so** quando ela nao cabe na tela.
+   * ## O padrao estava do lado errado, e a lista saia da tela
    *
-   * ## A condicao estava invertida, e a lista sumia
+   * Medido em 27/09, na sala publicada, com uma pessoa na lista:
    *
-   * Era `setVirado(caixa.top < espaco.top)`, com `espaco` sendo o **campo**. O
-   * campo fica no rodape do painel, entao `caixa.top` e menor que `espaco.top`
-   * sempre que a lista esta acima dele -- ou seja, **sempre**, porque o padrao ja
-   * e `bottom-full`. A condicao disparava justamente no caso que funcionava, e
-   * movia a lista para `top-full`, que e para baixo do campo, para fora do
-   * painel.
+   * - janela: 1296 x 886
+   * - a barra de digitar: `top` 818, `bottom` 874
+   * - a lista, desenhada com `top-full` (abaixo): `top` 882, `bottom` 932
    *
-   * O sintoma era a lista de sugestoes nao aparecer com o campo funcionando
-   * perfeitamente -- que e a assinatura de "a lista esta sendo posicionada fora da
-   * tela", e nao de "a lista nao existe". E por isso ninguem olha no autocomplete
-   * quando o sintoma e "nao aparece nada": o campo funciona, entao a suspeita cai
-   * no filtro de nomes, que estava certo.
+   * A janela acaba em 886. A lista terminava em 932: quase toda fora da tela, com
+   * 4px aparecendo. Abaixo do campo havia 12px; acima, 818px. A lista cabia em
+   * cima com folga e nao cabia embaixo em hipotese alguma -- e mesmo assim era
+   * desenhada embaixo.
    *
-   * A referencia nao pode ser o campo: o campo e o que a lista acompanha, e ele
-   * esta sempre embaixo. A pergunta real e "a lista saiu da tela?", e a tela e a
-   * viewport -- dai `top < 0`, que so e verdade quando a lista subiu para fora
-   * do topo da janela.
+   * A comparacao `top < 0` estava certa e media na configuracao errada. Com o
+   * padrao em `top-full` a lista e desenhada embaixo, da `top` 882: nunca
+   * negativa, nunca zero, e a condicao nunca disparava. Ela ficava embaixo para
+   * sempre.
+   *
+   * ## Por que o padrao e acima
+   *
+   * O campo de mensagem fica no rodape do painel. Acima dele existe a area de
+   * mensagens, alta e rolavel; abaixo existe so a margem da pagina. A lista cabe
+   * em cima em quase toda situacao, entao "acima" e o estado que funciona sem
+   * depender de medicao -- e a medicao so e necessaria para o caso raro, que e a
+   * lista com gente demais para caber na area de mensagens.
+   *
+   * Com o padrao em cima, `top < 0` volta a ser a pergunta certa: a lista subiu
+   * para fora do topo da janela? Se sim, ela nao coube em cima, e o unico lugar
+   * que sobra e embaixo.
    *
    * ## Por que medir depois do desenho
    *
@@ -144,13 +156,22 @@ export function MentionAutocomplete({
   if (sugestoes.length === 0) return null;
 
   return (
+    /*
+     * `bg-raised` e nao `bg-popover`: o tema define `canvas`, `surface`,
+     * `raised`, `hover`, `hairline`, `ink`, `accent` e `live` -- e nao tem
+     * `popover`. Cor fora do tema nao da erro, nao gera CSS e nao avisa: o
+     * `background-color` volta como transparente e a lista aparece com borda,
+     * texto e avatar flutuando sobre as mensagens. Medido em 27/09 na sala
+     * publicada: `rgba(0, 0, 0, 0)`.
+     *
+     * Opaco de proposito. Com `/95` as mensagens de tras apareceriam por dentro
+     * do nome de quem esta sendo sugerido.
+     */
     <div
       ref={ref}
       role="listbox"
       aria-label="Participantes para mencionar"
-      className={`absolute inset-x-0 z-30 overflow-hidden rounded-xl border border-hairline bg-popover/95 shadow-lg backdrop-blur-md ${
-        virado ? 'bottom-full mb-2' : 'top-full mt-2'
-      }`}
+      className={`absolute inset-x-0 z-30 overflow-hidden rounded-xl border border-hairline bg-raised shadow-lg ${virado ? 'top-full mt-2' : 'bottom-full mb-2'}`}
     >
       {/*
         * Altura limitada: com muita gente na sala, a lista não pode cobrir o

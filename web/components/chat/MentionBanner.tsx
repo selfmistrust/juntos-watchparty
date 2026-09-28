@@ -71,7 +71,18 @@ export function MentionBanner({ fromName, texto, preview, total, onAbrir, onFech
       role="status"
       aria-live="polite"
     >
-      <div className="flex items-start gap-2 rounded-xl border border-accent/40 bg-popover/95 p-2.5 shadow-lg backdrop-blur-md">
+      {/*
+        * `bg-raised`, e nao `bg-popover`: o tema define `canvas`, `surface`,
+        * `raised`, `hover`, `hairline`, `ink`, `accent` e `live` -- e nao tem
+        * `popover`. Uma classe de cor que o tema nao define nao gera CSS nenhum,
+        * sem aviso: o `background-color` simplesmente volta como transparente.
+        * Era esse o fundo do aviso, que e a camada de que mais se depende, porque
+        * a notificacao do sistema e a menos confiavel das duas.
+        *
+        * E opaco de proposito: translucidez aqui deixaria as mensagens de tras
+        * aparecerem por dentro do texto do aviso.
+        */}
+      <div className="flex items-start gap-2 rounded-xl border border-accent/40 bg-raised p-2.5 shadow-lg">
         <At size={18} weight="bold" className="mt-0.5 shrink-0 text-accent" />
         <button
           type="button"

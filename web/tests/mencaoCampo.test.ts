@@ -187,20 +187,22 @@ test('a mensagem enviada continua com a mencao em destaque', () => {
 /*
  * A posicao da lista de sugestoes.
  *
- * Existe aqui por causa de um defeito que nao parecia defeito: a lista nao
+ * Dois defeitos nesta posicao, e os dois produziam o mesmo sintoma: a lista nao
  * aparecia, com o campo funcionando perfeitamente.
  *
- * A condicao era `setVirado(caixa.top < espaco.top)`, com `espaco` sendo o
- * campo. O campo fica no rodape do painel, entao a lista acima dele tem
- * `caixa.top` menor que `espaco.top` SEMPRE - e a condicao disparava justamente
- * no caso que funcionava, movendo a lista para baixo do campo, para fora do
- * painel.
+ * O primeiro foi a condicao invertida, comparando com o campo em vez da tela.
+ * O campo fica no rodape do painel, entao a lista acima dele tem `top` menor que
+ * o do campo SEMPRE, e a condicao disparava justamente no caso que funcionava.
+ *
+ * O segundo -- e o que segurou depois do primeiro -- foi o **sentido do ternario**.
+ * A comparacao ficou certa (`top < 0` contra a viewport) mas passou a ser
+ * medida com a lista desenhada em `top-full`, ou seja abaixo do campo, da `top`
+ * 882 numa janela de 886. Nunca negativa, nunca zero: a condicao nunca disparava
+ * e a lista ficava para sempre 46px fora da tela.
  *
  * E por isso ninguem olhou no autocomplete quando o sintoma foi "digito @Beni e
- * nada aparece": o campo funcionava, entao a suspeita caia no filtro de nomes,
- * que estava certo, e no WebSocket, que tambem estava certo.
- *
- * A referencia tem que ser a viewport, e nao o campo.
+ * nada aparece": o campo funcionava, entao a suspeita caia no filtro de nomes --
+ * que estava certo, e medido -- e no WebSocket, que tambem estava certo.
  */
 test('a lista nao e virada para fora da tela', () => {
   /*
@@ -231,10 +233,93 @@ test('a lista nao e virada para fora da tela', () => {
 });
 
 test('a lista nasce acima do campo', () => {
+  /*
+   * Este teste era o que segurava o defeito.
+   *
+   * A afirmacao dizia "acima" e a classe que ele travava era `top-full` -- que e
+   * **abaixo** do campo. Passava, typecheck passava, lint passava, e a lista
+   * ficava 46px fora da janela. Um teste que confere a string sem conferir o
+   * sentido dela nao trava nada: ele so documenta o que ja estava escrito.
+   *
+   * Por isso aqui os dois ramos sao lidos do ternario e conferidos pelo sentido,
+   * e nao pela ordem em que aparecem: trocar os rotulos e continuar afirmando
+   * "acima" tem que fazer o teste falhar.
+   *
+   * Medido na sala publicada com a condicao antiga, que media `top < 0` na
+   * configuracao errada: janela 886, lista de `top` 882 e `bottom` 932. Abaixo
+   * do campo havia 12px; acima, 818px.
+   */
+  const codigo = autocomplete
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+  const m = codigo.match(/virado\s*\?\s*'([^']+)'\s*:\s*'([^']+)'/);
+  assert.ok(m, 'o ternario da posicao precisa existir');
+
+  const [, quandoVirado, quandoNormal] = m;
   assert.match(
-    autocomplete,
-    /virado \? 'bottom-full mb-2' : 'top-full mt-2'/,
-    'o padrao e acima: o campo esta no rodape e o espaco util e o das mensagens',
+    quandoNormal,
+    /bottom-full/,
+    'sem virada a lista e `bottom-full`: ACIMA do campo, que esta no rodape do painel',
   );
-  assert.match(autocomplete, /useState\(false\)/, 'e ela comeca nao virada');
+  assert.match(
+    quandoVirado,
+    /top-full/,
+    'virada a lista e `top-full`: abaixo, e so quando nao coube em cima',
+  );
+  assert.match(autocomplete, /useState\(false\)/, 'e ela comeca nao virada, ou seja, em cima');
+});
+
+test('a lista de sugestoes tem fundo de verdade', () => {
+  /*
+   * `bg-popover/95` nao gerava CSS nenhum: `popover` nao existe no tema, e uma
+   * cor nao definida nao da erro -- o `background-color` simplesmente volta como
+   * transparente. Medido: `rgba(0, 0, 0, 0)`, com a borda e o texto aparecendo
+   * e nada atras.
+   *
+   * O aviso de mencao e as preferencias usavam a mesma cor inexistente. O aviso
+   * e a camada mais confiavel das duas -- a notificacao do sistema e a menos
+   * confiavel -- entao ele aparecia sem fundo nenhum.
+   *
+   * E a cor tem que ser **opaca**: com `/95` as mensagens de tras apareceriam por
+   * dentro do texto.
+   */
+  const corDoTema = (cor: string) => {
+    const cores = readFileSync(resolve(process.cwd(), '../web/tailwind.config.ts'), 'utf8');
+    return new RegExp(`^\\s+${cor}:`, 'm').test(cores);
+  };
+
+  for (const cor of ['popover']) {
+    assert.ok(!corDoTema(cor), `o tema nao define \`${cor}\`: a classe nao gera CSS`);
+  }
+
+  const arquivos = {
+    MentionAutocomplete: autocomplete,
+    MentionBanner: readFileSync(
+      resolve(process.cwd(), '../web/components/chat/MentionBanner.tsx'),
+      'utf8',
+    ),
+    MentionPreferences: readFileSync(
+      resolve(process.cwd(), '../web/components/chat/MentionPreferences.tsx'),
+      'utf8',
+    ),
+  };
+
+  for (const [nome, fonte] of Object.entries(arquivos)) {
+    const semComentario = fonte
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    assert.ok(
+      !/\bbg-popover/.test(semComentario),
+      `${nome}: sem \`bg-popover\`, que nao existe no tema e deixa o fundo transparente`,
+    );
+    assert.ok(
+      !/backdrop-blur/.test(semComentario),
+      `${nome}: sem \`backdrop-blur\`: o fundo e opaco, e desfocar atras de opaco nao faz nada`,
+    );
+  }
+
+  const codigo = autocomplete
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+  assert.match(codigo, /bg-raised/, 'e a lista usa \`bg-raised\`, que existe no tema');
 });

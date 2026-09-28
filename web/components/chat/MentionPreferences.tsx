@@ -74,8 +74,13 @@ export function MentionPreferences({
         <BellSimple size={17} />
       </IconButton>
 
+      {/*
+       * `bg-raised` e nao `bg-popover`: `popover` nao existe no tema, e uma cor
+       * nao definida nao gera CSS nenhum -- o fundo voltaria transparente e os
+       * botoes flutuariam sobre o painel sem nada atras.
+       */}
       {aberto && (
-        <div className="animate-fade-up absolute right-0 top-full z-40 mt-2 w-64 rounded-xl border border-hairline bg-popover/95 p-3 shadow-lg backdrop-blur-md">
+        <div className="animate-fade-up absolute right-0 top-full z-40 mt-2 w-64 rounded-xl border border-hairline bg-raised p-3 shadow-lg">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-medium text-ink">Menções</p>
             <IconButton dense label="Fechar" onClick={() => setAberto(false)}>
