@@ -10,13 +10,14 @@
  * cada conta para o seu próprio player. Ele tem posição seekável como qualquer
  * arquivo, então a sincronização trata igual.
  */
-export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive';
+export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive' | 'spotify';
 
 export interface PlaylistItem {
   id: string;
   kind: MediaKind;
   /**
-   * videoId do YouTube, URL direta de um .mp4, ou vazio em `stream` e `drive`.
+   * videoId do YouTube, URL direta de um .mp4, ou vazio em `stream`, `drive` e
+   * `spotify`.
    */
   src: string;
   /**
@@ -35,6 +36,22 @@ export interface PlaylistItem {
   addedById: string;
   /** Transmissão referenciada, quando `kind === 'stream'`. */
   streamId?: string;
+  /**
+   * URI da faixa no Spotify, quando `kind === 'spotify'`.
+   *
+   * O `src` fica vazio e não é um buraco: **o Spotify não tem URL de áudio**.
+   * Quem entrega o som é o Web Playback SDK, direto do Spotify para o navegador
+   * de cada pessoa. Não passa por este servidor, nem por bucket, nem por socket
+   * — e não há como montar um `src` sem que a URL seja uma mentira.
+   *
+   * Cada pessoa toca com o token da **própria** conta, e só quem tem Spotify
+   * Premium ouve alguma coisa. Quem não tem Premium vê a faixa tocando e não
+   * ouve: isso é a regra do plano, não um estado quebrado, e a interface tem de
+   * dizer isso em vez de fingir que está tudo bem.
+   */
+  spotifyUri?: string;
+  /** Duração em milissegundos, para a barra de progresso antes do áudio chegar. */
+  spotifyDurationMs?: number;
 }
 
 /**

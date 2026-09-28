@@ -2,6 +2,7 @@ import type { AppProps } from 'next/app';
 import { Bricolage_Grotesque, Inter } from 'next/font/google';
 import Head from 'next/head';
 import { YoutubeAccountProvider } from '@/hooks/useYouTubeAccount';
+import { SpotifyAccountProvider } from '@/hooks/useSpotifyAccount';
 import { DriveAccountProvider } from '@/hooks/useDriveAccount';
 import '@/styles/globals.css';
 
@@ -37,7 +38,9 @@ export default function App({ Component, pageProps }: AppProps) {
       <div className={`${inter.variable} ${display.variable} font-sans`}>
         <YoutubeAccountProvider>
           <DriveAccountProvider>
-            <Component {...pageProps} />
+            <SpotifyAccountProvider>
+              <Component {...pageProps} />
+            </SpotifyAccountProvider>
           </DriveAccountProvider>
         </YoutubeAccountProvider>
         {/* Alvo dos portais (pickers, dropdowns). Fica dentro deste wrapper de

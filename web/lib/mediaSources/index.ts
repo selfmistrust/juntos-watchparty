@@ -10,8 +10,10 @@ export { youtubeProvider, searchYoutube, addYoutubeFromUrl } from './youtube';
 export { driveProvider } from './drive';
 export { globoplayProvider } from './globoplay';
 export { screenShareProvider } from './screenShare';
+export { spotifyProvider } from './spotify';
 export { useYoutubeSource } from './useYoutubeSource';
 export { useScreenShare } from './useScreenShare';
+export { useSpotifySource } from './useSpotifySource';
 
 export type {
   MediaSourceProvider,

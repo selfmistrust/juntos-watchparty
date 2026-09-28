@@ -7,6 +7,7 @@ import { ReactionDock } from './ReactionDock';
 import { ReactionsOverlay } from './ReactionsOverlay';
 import { YoutubePlayer } from './YoutubePlayer';
 import { DriveVideo } from './DriveVideo';
+import { SpotifyStage } from './SpotifyStage';
 import { useFullscreenLandscape } from '@/hooks/useFullscreenLandscape';
 import type { RoomActions } from '@/hooks/useRoom';
 import type { FloatingReaction, PlaylistItem, PlayerHandle, ReactionEmoji, RoomSnapshot } from '@/types';
@@ -348,6 +349,26 @@ export function VideoStage({
             captionsOn={captionsOn}
             onReady={handleReady}
             onEnded={actions.ended}
+          />
+        ) : currentItem.kind === 'spotify' ? (
+          /*
+           * A faixa `spotify` não tem player, e o motivo está no componente.
+           *
+           * Todas as outras fontes recebem o tempo do servidor e tocam o mesmo
+           * áudio em todas as máquinas. O Spotify não tem URL de áudio: o som
+           * vem do Web Playback SDK, em cada navegador, com a conta de cada
+           * pessoa. Um player aqui tocaria em uma máquina só, e a sala veria uma
+           * coisa e ouviria outra.
+           *
+           * O palco mostra quem vai ouvir, que é a informação que o silêncio
+           * sozinho não dá. Ver `SpotifyStage`.
+           */
+          <SpotifyStage
+            key={currentItem.id}
+            title={currentItem.title}
+            artwork={currentItem.thumbnail}
+            conectado={false}
+            reproduz={false}
           />
         ) : currentItem.kind === 'drive' && currentItem.driveFileId ? (
           /*

@@ -7,7 +7,7 @@
  * instante chega pelo relógio da mídia, não por `position`. Por isso o item
  * carrega `streamId` e o `src` fica vazio, e o player não tenta sincronizar.
  */
-export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive';
+export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive' | 'spotify';
 
 export interface PlaylistItem {
   id: string;
@@ -39,6 +39,24 @@ export interface PlaylistItem {
   addedById: string;
   /** Transmissão ao vivo referenciada, quando `kind === 'stream'`. */
   streamId?: string;
+  /**
+   * URI da faixa no Spotify, quando `kind === 'spotify'`.
+   *
+   * É o único identificador que viaja. O `src` fica vazio porque **não existe
+   * URL de áudio do Spotify** — e é proposital que não exista: o Spotify não
+   * entrega o áudio, ele toca pelo Web Playback SDK, direto do navegador para o
+   * ouvido de cada pessoa. Não há proxy a montar aqui, e um `src` com a URL de um
+   * preview seria uma promessa falsa.
+   *
+   * Só o uri viaja, e não o token de quem escolheu: o estado da sala vai para
+   * todo mundo, e a conta de uma pessoa não tem motivo de estar ali. Cada
+   * participant toca com o token da própria conta, e quem não tem conta
+   * conectada simplesmente não ouve — o que é uma limitação do plano, não um
+   * estado quebrado.
+   */
+  spotifyUri?: string;
+  /** Duração em segundos, usada para a barra de progresso sem esperar o áudio. */
+  spotifyDurationMs?: number;
 }
 
 /**
