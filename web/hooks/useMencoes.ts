@@ -50,11 +50,23 @@ interface Opcoes {
  */
 export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoes) {
   const [prefs, setPrefs] = useState<PreferenciasMencao>(PADRAO_MENCAO);
-  const [carimboNaoLido, setCarimboNaoLido] = useState(0);
+  /**
+   * Menções que chegaram e ainda não foram vistas, e a última delas.
+   *
+   * O par vai junto porque o contador sozinho não serve para nada: um "(3)" na
+   * aba não diz *quem* chamou, e quem foi chamado quer saber quem foi. A última
+   * menção é o que o aviso dentro do app mostra.
+   */
+  const [naoLidas, setNaoLidas] = useState<{ total: number; ultima: EventoMencao | null }>({
+    total: 0,
+    ultima: null,
+  });
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
   const abrirChatRef = useRef(aoAbrirChat);
   abrirChatRef.current = aoAbrirChat;
+  const atencaoRef = useRef(aoChamarAtencao);
+  atencaoRef.current = aoChamarAtencao;
 
   /*
    * Lê as preferências depois da montagem, e não no `useState` inicial: o
@@ -126,13 +138,20 @@ export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoe
 
     if (!naoPerturbe) {
       if (som) tocarSomDeMencao();
-      aoChamarAtencao?.(evento);
-    } else {
-      // Com "não perturbe" a pessoa ainda precisa saber que foi chamada, só
-      // sem som, sem notificação e sem a aba piscando. Sem isto, a opção vira
-      // "não me avise", e aí a menção é conteúdo e não sinal.
-      setCarimboNaoLido((n) => n + 1);
+      atencaoRef.current?.(evento);
     }
+
+    /*
+     * A menção é registrada sempre, perturbando ou não.
+     *
+     * A contagem é o que alimenta o `(n)` no título da aba e o aviso dentro do
+     * app — e o aviso dentro do app é a camada de que mais se pode confiar,
+     * porque não depende de o navegador decidir mostrar notificação. Com "não
+     * perturbe" ela perde o som e a notificação, mas continua sabendo que foi
+     * chamada; sem isto, a opção vira "não me avise", e aí a menção é conteúdo
+     * e não sinal.
+     */
+    setNaoLidas((atual) => ({ total: atual.total + 1, ultima: evento }));
 
     /*
      * Notificação do sistema, só com a aba escondida.
@@ -156,7 +175,23 @@ export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoe
     if (typeof window === 'undefined' || !('Notification' in window)) return;
     if (Notification.permission !== 'granted') return;
     try {
-      const n = new Notification(titulo, { body: corpo, tag: evento.messageId });
+      /*
+       * O `icon` é explícito porque, sem ele, o Chrome usa o favicon da página —
+       * que no Juntos é o logo do app, e numa notificação de "fulano te
+       * mencionou" parece o próprio fulano falando. Um ícone de menção lê
+       * diferente de um ícone do site.
+       *
+       * O `tag` é o id da mensagem: duas menções da mesma mensagem não
+       * empilham dois avisos, e a segunda substitui a primeira em vez de
+       * empurrar a anterior para fora da tela.
+       */
+      const n = new Notification(titulo, {
+        body: corpo,
+        tag: `mencao-${evento.messageId}`,
+        icon: '/mention-48x48.png',
+        badge: '/favicon.ico',
+        silent: true,
+      });
       n.onclick = () => {
         window.focus();
         abrirChatRef.current?.();
@@ -166,15 +201,17 @@ export function useMencoes({ meuSessionId, aoChamarAtencao, aoAbrirChat }: Opcoe
       // Navegador sem suporte real à notificação: o som e o destaque do chat já
       // saíram, e perder a terceira camada não pode ser erro.
     }
-  }, [meuSessionId, aoChamarAtencao]);
+  }, [meuSessionId]);
 
   return {
     prefs,
     atualizarPrefs,
     pedirPermissao,
     tratar,
-    carimboNaoLido,
-    limparNaoLidos: useCallback(() => setCarimboNaoLido(0), []),
+    /** Quantas menções chegaram, e a última delas. */
+    mencoesNaoLidas: naoLidas.total,
+    ultimaMencao: naoLidas.ultima,
+    limparNaoLidas: useCallback(() => setNaoLidas({ total: 0, ultima: null }), []),
     jaPediuPermissao: typeof window !== 'undefined' && jaPediuPermissaoDeNotificacao(),
   };
 }

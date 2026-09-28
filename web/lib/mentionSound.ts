@@ -107,14 +107,31 @@ export function tocarSomDeMencao(): void {
   /*
    * Envelope curto, com ataque de poucos milissegundos. Um ataque de zero
    * estoura; um sem decaimento deixa o tom ligado depois de passar o bip.
+   *
+   * O ganho é 0.5, e não 0.16.
+   *
+   * 0.16 foi medido no silêncio e soou razoável — o que é o erro clássico: o som
+   * de um player é lembrado no volume em que as pessoas ouvem música, e não no
+   * silêncio. Quem está com a sala tocando tem o volume do vídeo, que é alto, e
+   * o bip some embaixo dele.
+   *
+   * 0.5 é audível por cima de um vídeo em volume normal, e ainda abaixo de
+   * incomodar. A faixa em que o `gain` satura e distorce é acima de ~0.9, então
+   * há folga antes do estouro.
    */
-  ganho.gain.linearRampToValueAtTime(0.16, agora + 0.01);
+  ganho.gain.linearRampToValueAtTime(0.5, agora + 0.008);
   ganho.gain.exponentialRampToValueAtTime(0.0001, agora + 0.22);
 
   for (const [indice, frequencia] of [880, 1174].entries()) {
     const osc = ctx.createOscillator();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(frequencia, agora + indice * 0.09);
+    /*
+     * Os dois tons compartilham o mesmo envelope, e isso funciona porque o
+     * segundo começa 90ms depois: quando ele entra, o primeiro já decaiu, e os
+     * dois não se somam no mesmo instante. Um envelope por tom custaria um nó
+     * de ganho por bip sem mudar o que se ouve.
+     */
     osc.connect(ganho);
     osc.start(agora + indice * 0.09);
     osc.stop(agora + 0.24);

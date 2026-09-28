@@ -8,6 +8,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { VideoStage } from '@/components/player/VideoStage';
 import { useRoom } from '@/hooks/useRoom';
 import { useMencoes } from '@/hooks/useMencoes';
+import { MentionBanner } from '@/components/chat/MentionBanner';
 import { useStreamBridge } from '@/hooks/useStreamBridge';
 import type { ChatMentionEvent } from '@/types';
 
@@ -122,46 +123,84 @@ export default function RoomPage() {
    */
   const streamBridge = useStreamBridge();
 
-  /** Destaque temporário do painel de chat quando a menção chega. */
-  const [chatPulsando, setChatPulsando] = useState(false);
-  const temporizadorPulso = useRef<ReturnType<typeof setTimeout>>();
+  /** Ponte para a limpeza do contador, montada depois do `useMencoes`. */
+  const limparNaoLidasRef = useRef<() => void>(() => undefined);
 
-  const chamarAtencao = useCallback(() => {
-    if (temporizadorPulso.current) clearTimeout(temporizadorPulso.current);
-    setChatPulsando(true);
-    temporizadorPulso.current = setTimeout(() => setChatPulsando(false), 2600);
+  /**
+   * Abre o chat quando alguém te menciona.
+   *
+   * É aqui que o "destacar a aba/chat" vira alguma coisa visível. O aviso em
+   * si mora no `MentionBanner`; este callback é o que ele chama ao ser clicado,
+   * e o que a notificação do sistema chama quando a pessoa clica nela.
+   *
+   * Abrir o painel é o gesture certo e não é invasivo: quem estava vendo vídeo
+   * numa tela cheia vê o painel, e quem já tinha o chat aberto não sente nada.
+   * Roubar o foco da janela seria outra coisa, e na web não seria possível.
+   */
+  const abrirChat = useCallback(() => {
+    setSidebarOpen(true);
+    /*
+     * Abrir o chat **é** ver as menções. Sem zerar aqui, o `(3)` ficava na aba
+     * depois de a pessoa ter lido tudo, e ela não teria como saber se aquilo
+     * era novidade ou resíduo — e título de aba que mente sobre o estado é pior
+     * do que não ter.
+     *
+     * A limpeza vem por ref porque `abrirChat` é criado **antes** do
+     * `useMencoes`, que precisa de `abrirChat`. A mesma ponte do `useRoom`, com
+     * a mesma razão: a ordem dos hooks não deixa a dependência ser direta.
+     */
+    limparNaoLidasRef.current();
   }, []);
 
   const mencoes = useMencoes({
     meuSessionId: me?.sessionId,
-    aoChamarAtencao: chamarAtencao,
-    aoAbrirChat: () => setSidebarOpen(true),
+    aoAbrirChat: abrirChat,
   });
   mencaoRef.current = mencoes.tratar;
+  limparNaoLidasRef.current = mencoes.limparNaoLidas;
 
   /*
-   * O título da aba pisca quando a menção chega com a aba escondida.
+   * O título da aba marca quantas menções chegaram.
    *
    * Na web não existe API para focar outra aba — e não deveria, um site que
    * roubasse o foco seria hostil. O que dá para fazer é marcar o título, que é
-   * o que a pessoa vê na barra de tarefas e no Alt+Tab, e é por isso que ele
-   * volta ao normal sozinho: piscar para sempre seria a mesma coisa que o som
-   * que o cooldown corta.
+   * o que a pessoa vê na barra de tarefas e no Alt+Tab.
+   *
+   * ## A versão anterior acumulava `(0) (0) (0) (0) junto`
+   *
+   * Ela lia `document.title` como base **depois** de já ter escrito nele, e
+   * escrevia mesmo com o contador em zero. Cada menção acrescentava um `(0)`,
+   * porque a "base" da vez seguinte já era o título adulterado. E a guarda
+   * `!original.includes('•')` nunca segurou nada: nada escrevia `•`.
+   *
+   * A base agora é capturada uma vez, na montagem, antes de qualquer escrita, e
+   * guardada numa ref. Daí em diante o título é sempre `base` ou
+   * `(n) base` — nunca as duas coisas ao mesmo tempo. E nada é escrito quando o
+   * contador é zero, porque `(0) junto` é pior do que `junto`.
+   *
+   * Por que mexer no título de todo modo: ele é o único indicador que sobrevive
+   * a aba em segundo plano sem depender de notificação do sistema, que o
+   * navegador pode escolher não mostrar.
    */
-  useEffect(() => {
-    if (chatPulsando) return;
-    if (typeof document === 'undefined') return;
-    const original = document.title;
-    if (!original.includes('•')) document.title = `(${mencoes.carimboNaoLido}) ${original}`;
-    if (mencoes.carimboNaoLido === 0) return;
-    const t = setTimeout(() => {
-      document.title = original;
-    }, 4000);
-    return () => clearTimeout(t);
-  }, [mencoes.carimboNaoLido, chatPulsando]);
+  const tituloBase = useRef<string | null>(null);
+  if (tituloBase.current === null && typeof document !== 'undefined') {
+    tituloBase.current = document.title;
+  }
 
-  useEffect(() => () => {
-    if (temporizadorPulso.current) clearTimeout(temporizadorPulso.current);
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const base = tituloBase.current ?? document.title;
+    const naoLidas = mencoes.mencoesNaoLidas;
+    document.title = naoLidas > 0 ? `(${naoLidas}) ${base}` : base;
+  }, [mencoes.mencoesNaoLidas]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    return () => {
+      // A base é restaurada ao sair: sem isto, sair da sala deixava o `(2)` na
+      // aba, e a próxima sala começaria com um contador de fantasma.
+      if (tituloBase.current) document.title = tituloBase.current;
+    };
   }, []);
 
   /**
@@ -308,6 +347,31 @@ export default function RoomPage() {
           jaPediuPermissaoNotificacao={mencoes.jaPediuPermissao}
         />
       </div>
+
+      {/*
+        * O aviso de menção, dentro do app.
+        *
+        * Fica logo acima da barra de bate-papo, e não no centro da tela: a
+        * menção é sobre o chat, e um aviso no meio taparia o vídeo — que é a
+        * única coisa que a pessoa está querendo ver enquanto assiste.
+        *
+        * Só aparece quando o painel está fechado. Com ele aberto, a mensagem
+        * citada já está na tela e o aviso seria uma segunda cópia do que a
+        * pessoa está lendo.
+        */}
+      {mencoes.ultimaMencao && !sidebarOpen && (
+        <MentionBanner
+          fromName={mencoes.ultimaMencao.fromName}
+          texto={mencoes.ultimaMencao.texto}
+          preview={mencoes.ultimaMencao.preview}
+          total={mencoes.mencoesNaoLidas}
+          onAbrir={() => {
+            abrirChat();
+            mencoes.limparNaoLidas();
+          }}
+          onFechar={mencoes.limparNaoLidas}
+        />
+      )}
 
       {notice && (
         <div className="animate-fade-up pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-xl border border-hairline bg-raised px-4 py-2.5 text-sm text-ink shadow-lift">
