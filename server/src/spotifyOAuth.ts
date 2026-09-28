@@ -70,6 +70,67 @@ export function spotifyConfigured(): boolean {
   return clientId().length > 0 && clientSecret().length > 0 && redirectUri().length > 0;
 }
 
+/**
+ * Diagnóstico do boot, no mesmo formato do `logGoogleConfigShape`.
+ *
+ * ## Por que isto existe
+ *
+ * "A integração não está configurada no servidor" é o mesmo sintoma para quatro
+ * causas diferentes: variável com nome errado, valor colado com espaço na borda,
+ * variável salva no ambiente errado do Render, e variável que existe mas nunca
+ * chegou no processo. Do lado de cá, todas produzem exatamente
+ * `configured: false`, e o log dizia só "faltam credenciais" — que não aponta
+ * para nada.
+ *
+ * O caso que motivou isto: as três variáveis estavam no Render, o serviço
+ * reiniciou (uptime de 2 minutos), e `configured` continuava `false`. A causa
+ * só aparece quando o log diz **qual** das três não chegou.
+ *
+ * ## O que NÃO é registrado
+ *
+ * Nenhum valor de segredo, nem fragmento, nem tamanho. Só **o nome** da
+ * variável que falta, e se o valor tem caractere invisível na borda. Isso
+ * localiza o erro sem servir para vazar nada — quem lê o log já tem acesso ao
+ * deploy.
+ */
+export function logSpotifyConfigShape(): void {
+  const valores = [
+    ['SPOTIFY_CLIENT_ID', clientId()],
+    ['SPOTIFY_CLIENT_SECRET', clientSecret()],
+    ['SPOTIFY_REDIRECT_URI', redirectUri()],
+  ] as const;
+
+  const problemas: string[] = [];
+  for (const [nome, valor] of valores) {
+    if (!valor) {
+      problemas.push(`${nome} ausente ou vazia`);
+      continue;
+    }
+    /*
+     * O `trim` pega espaço e quebra de linha nas pontas, que é onde o paste de
+     * credencial costuma sujar o valor. O Render guarda o `\n` do clipboard e o
+     * valor *parece* certo na tela — e o código inteiro se comporta como se
+     * estivesse configurado quando não está.
+     */
+    if (valor !== valor.trim()) problemas.push(`${nome} tem espaço ou quebra de linha na borda`);
+  }
+
+  const uri = redirectUri();
+  if (uri && !/^https:\/\//.test(uri)) {
+    /*
+     * O Spotify exige https fora de localhost, e recusar aqui é muito mais
+     * barato do que descobrir isso depois de a pessoa ter autorizado tudo.
+     */
+    problemas.push('SPOTIFY_REDIRECT_URI não começa com https://');
+  }
+
+  if (problemas.length === 0) {
+    console.log(`[spotify] as tres variaveis chegaram (${uri})`);
+    return;
+  }
+  console.warn(`[spotify] fonte DESLIGADA — ${problemas.join('; ')}`);
+}
+
 interface TokenRecord {
   accessToken: string;
   /** O Spotify **não** devolve refresh token em toda renovação; o antigo continua valendo. */

@@ -12,7 +12,7 @@ import { registerYoutubeRoutes } from './youtubeRoutes.js';
 import { registerDriveRoutes } from './driveRoutes.js';
 import { registrarRotasPush, pushConfigurado } from './push.js';
 import { registerSpotifyRoutes } from './spotifyRoutes.js';
-import { spotifyConfigured } from './spotifyOAuth.js';
+import { logSpotifyConfigShape } from './spotifyOAuth.js';
 import { logGoogleConfigShape } from './googleOAuth.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -175,8 +175,9 @@ server.listen(PORT, () => {
     `[push] aviso com o site fechado: ${pushConfigurado ? 'ligado' : 'DESLIGADO (faltam chaves VAPID)'}`,
   );
   // Mesma ideia: uma fonte sem credenciais é um card que não abre, e isso é
-  // melhor aparecer no boot do que na primeira pessoa que clicar nele.
-  console.log(`[spotify] fonte: ${spotifyConfigured() ? 'configurada' : 'DESLIGADA (faltam credenciais)'}`);
+  // melhor aparecer no boot do que na primeira pessoa que clicar nele. O
+  // diagnóstico diz **qual** variável não chegou, e nunca o valor.
+  logSpotifyConfigShape();
 });
 
 // Limpeza periódica de vídeos enviados que não estão mais na fila de
