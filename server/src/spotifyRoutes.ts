@@ -25,6 +25,35 @@ function jsonError(res: Response, http: number, error: string) {
 }
 
 /**
+ * Página de erro do OAuth, e não um JSON cru.
+ *
+ * A pessoa autorizou no Spotify e voltou para cá. Um `{"error":"..."}` na tela
+ * não diz o que houve nem offers a menor saída possível — que é tentar de novo.
+ * E "tente de novo" é seguro justamente porque o registro `pending` foi
+ * consumido: um segundo clique cria um novo.
+ */
+function paginaDeFalha(res: Response, mensagem: string): void {
+  res.status(400).type('html').send(`<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spotify · juntos</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#08080A;color:#ECECEF;font-family:system-ui,-apple-system,sans-serif}
+  .c{max-width:24rem;padding:2rem;text-align:center}
+  h1{font-size:1rem;font-weight:600;margin:0 0 .5rem}
+  p{font-size:.8125rem;line-height:1.6;color:#8C8C99;margin:0 0 1.5rem}
+  a{display:inline-block;padding:.625rem 1.25rem;border-radius:.75rem;
+    background:#7C5CFF;color:#fff;font-size:.8125rem;font-weight:500;text-decoration:none}
+</style></head><body><div class="c">
+<h1>${mensagem}</h1>
+<p>Isso costuma acontecer quando a autorização passa do tempo ou é aberta duas vezes.
+Nada foi conectado, e a fila da sala não mudou.</p>
+<a href="/">Voltar para o Juntos</a>
+</div></body></html>`);
+}
+
+/**
  * Rotas do Spotify.
  *
  * A superfície é a mesma do YouTube, de propósito: `status`, `oauth/start`,
@@ -122,13 +151,36 @@ export function registerSpotifyRoutes(app: Express): void {
       const pending = await takePending(state);
 
       if (!pending) {
-        return jsonError(res, 400, 'spotify_state_invalid');
+        /*
+         * "state inválido" tem três causas que produzem a mesma resposta, e sem
+         * este log elas são indistinguíveis depois do deploy:
+         *
+         *   - o Spotify não devolveu `state` (o fluxo foi montado errado)
+         *   - o `state` chegou mas não há registro (expirou, ou foi consumido)
+         *   - a pessoa clicou em "conectar" duas vezes e voltou pelo fluxo velho
+         *
+         * As três respondem `400` e o JSON não diz qual é. O registro só existe
+         * por `PENDING_TTL_SEC`, então "esperou demais para autorizar" é a
+         * primeira hipótese quando a pessoa demorou.
+         *
+         * Só o formato, nunca o valor: o `state` é um token de uso único.
+         */
+        const motivo = state
+          ? `state de ${state.length} caracteres nao encontrado (expirou ou ja foi usado)`
+          : 'o Spotify nao devolveu o state';
+        console.warn(`[spotify] callback sem registro valido: ${motivo}`);
+        return paginaDeFalha(res, 'A autorização do Spotify expirou.');
       }
+
       if (erro) {
+        console.warn(`[spotify] a pessoa recusou o consentimento: ${erro}`);
         res.redirect(pending.returnTo || '/');
         return;
       }
-      if (!code) return jsonError(res, 400, 'spotify_code_missing');
+      if (!code) {
+        console.warn('[spotify] callback sem code');
+        return jsonError(res, 400, 'spotify_code_missing');
+      }
 
       const result = await completeOAuth({
         sessionId: pending.sessionId,
@@ -136,10 +188,16 @@ export function registerSpotifyRoutes(app: Express): void {
         codeVerifier: pending.codeVerifier,
       });
       if (!result.ok) {
-        console.error('[spotify] oauth falhou:', result.error);
-        res.redirect(pending.returnTo || '/');
-        return;
+        console.error('[spotify] a troca do code falhou:', result.error);
+        return paginaDeFalha(res, 'O Spotify recusou a autorização. Tente de novo.');
       }
+
+      /*
+       * O log de sucesso é o que fecha odiagnóstico: ele diz que o `code`
+       * chegou, que o `state` casou e que a conta foi gravada. Sem ele, "funciona"
+       * e "não funciona" são o mesmo silêncio.
+       */
+      console.log(`[spotify] conta conectada, sessao ${pending.sessionId.slice(0, 8)}…`);
       res.redirect(pending.returnTo || '/');
     } catch (err) {
       console.error('[spotify] callback falhou', err);
