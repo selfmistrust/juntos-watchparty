@@ -176,7 +176,7 @@ test('o Spotify entra no fim da grade, sem mexer na ordem dos outros', () => {
   const flatMap = modal.slice(modal.indexOf('MEDIA_SOURCES.flatMap'), pos);
   assert.ok(
     !flatMap.includes('spotify'),
-    'e nenhum dos cards existentes pode passar a提到 o Spotify, que mudaria a ordem',
+    'e nenhum dos cards existentes pode passar a mencionar o Spotify, que mudaria a ordem',
   );
   assert.ok(
     modal.indexOf('{spotify.panel}') !== -1,
@@ -301,12 +301,26 @@ test('o uri do catalogo e validado antes de virar proxy', () => {
   /*
    * A rota de faixas recebe um `uri` do cliente e o costura numa URL da Web API.
    * Sem a trava, ela seria um proxy SSRF generico com a credencial da pessoa.
+   *
+   * O limite de 1 a 64 caracteres foi acrescentado junto com o parse explicito:
+   * `[A-Za-z0-9]+` aceitava qualquer tamanho, e a validação real — que é a de
+   * `rotaDeContainer`, no modulo — ficava so na metade, num ponto onde a URL ja
+   * estava sendo montada. As duas regras precisam dizer a mesma coisa, e o teste
+   * confere as duas.
    */
   const c = semComentario(rotas);
   assert.match(
     c,
-    /\^spotify:\(album\|playlist\):\[A-Za-z0-9\]\+\$/,
-    'so album e playlist, e so com ids do Spotify',
+    /\^spotify:\(album\|playlist\):\[A-Za-z0-9\]\{1,64\}\$/,
+    'a rota so aceita album e playlist, com id de 1 a 64 caracteres do Spotify',
+  );
+  const oauth = readFileSync(resolve(process.cwd(), '../server/src/spotifyOAuth.ts'), 'utf8');
+  const modulo = semComentario(oauth);
+  const rota = modulo.slice(modulo.indexOf('function rotaDeContainer'));
+  assert.match(
+    rota,
+    /\^spotify:album:\(\[A-Za-z0-9\]\{1,64\}\)/,
+    'e o modulo aceita a mesma faixa: as duas regras nao podem divergir',
   );
 });
 

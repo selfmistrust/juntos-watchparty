@@ -372,27 +372,23 @@ export function registerSpotifyRoutes(app: Express): void {
       res.json({ items: result.items });
     } catch (err) {
       /*
-       * Este `catch` é o que produzia `spotify_search_failed` na tela, e ele era
-       * o oposto do que o texto pedia: um código genérico que não diz nada,
-       * justamente na rota que deveria dizer o motivo real.
+       * Este `catch` é o último lugar onde um erro do Spotify pode virar
+       * "problema do servidor" sem ser do servidor, e por isso ele registra os
+       * cinco dados que fecham a origem: rota interna, operação, exceção, e o
+       * status que o Spotify tinha respondido (quando existe).
        *
-       * A falha chega aqui de três jeitos, e cada um tem uma leitura diferente
-       * para quem está olhando:
-       *
-       *   `spotify_sem_token:*`  o `search()` não devolveu, e por isso o motivo
-       *                          já é conhecido e está na frase
-       *   `Invalid URL`         uma URL montada com lixo. É bug nosso, e 502 é o
-       *                          status certo
-       *   rede / timeout        o Spotify não respondeu. Também 502, e de novo
-       *                          culpa nossa — não do Spotify
-       *
-       * O `console.error` traz a exceção inteira; a resposta traz uma frase que
-       * diz que a falha foi do lado de cá, e **não** repete o erro técnico como
-       * se fosse a resposta da API. Um `search_failed` na tela faz a pessoa
-       * procurar no Spotify, que é o lugar errado.
+       * Um 502 aqui significa que a exceção **não** é uma resposta do Spotify —
+       * o Spotify responderia 400, 401, 403 ou 429, e esses quatro são
+       * propagados com o status e a frase, nunca mascarados aqui. Então, quando
+       * este registro aparece, a leitura é: o Spotify respondeu, ou a chamada
+       * morreu antes de responder.
        */
-      const bruto = err instanceof Error ? err.message : String(err);
-      console.error(`[spotify] busca: exceção inesperada — ${bruto}`, err);
+      console.error(
+        `[spotify] 502 | rota=/api/spotify/search | operacao=search | ` +
+          `sem status do Spotify: a falha nao veio de uma resposta dele | ` +
+          `excecao=${err instanceof Error ? err.message : String(err)}`,
+        err,
+      );
       res.status(502).json({
         error:
           'A busca não chegou ao Spotify. Isso é um problema do servidor do Juntos, ' +
@@ -404,9 +400,22 @@ export function registerSpotifyRoutes(app: Express): void {
   app.get('/api/spotify/tracks', async (req, res) => {
     try {
       const uri = String(req.query.uri ?? '').trim();
-      // Só o que a Web API de catálogo devolve. Um `uri` de outro host viria do
-      // cliente, e sem esta trava ele viraria um proxy SSRF genérico.
-      if (!/^spotify:(album|playlist):[A-Za-z0-9]+$/.test(uri)) {
+      /*
+       * A validação real está em `rotaDeContainer`, no módulo, porque é lá que a
+       * URL é montada — e é essa montagem que precisa do parse explícito, já que
+       * `spotify:album:ID` vira `/albums/ID/tracks` e não `/album:ID/tracks`.
+       *
+       * Esta trava na rota existe para **não chamar o módulo** com lixo: um
+       * `uri` de outro host, ou de outro tipo, viraria uma URL da Web API com a
+       * credencial da pessoa. A resposta é a mesma nos dois níveis, para o painel
+       * não ter dois textos para o mesmo erro.
+       *
+       * As duas listas estão alinhadas de propósito: `rotaDeContainer` aceita id
+       * de 1 a 64 caracteres, e esta regex também. Uma regex mais frouxa aqui
+       * deixaria a validação real só na metade — que foi como o endpoint
+       * inexistente passou.
+       */
+      if (!/^spotify:(album|playlist):[A-Za-z0-9]{1,64}$/.test(uri)) {
         return jsonError(res, 400, 'spotify_uri_invalid');
       }
       const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);
@@ -415,8 +424,12 @@ export function registerSpotifyRoutes(app: Express): void {
       if (!result.ok) return erroDeSpotify(res, result.reason, result.status ?? 502);
       res.json({ items: result.items });
     } catch (err) {
-      const bruto = err instanceof Error ? err.message : String(err);
-      console.error(`[spotify] faixas: exceção inesperada — ${bruto}`, err);
+      console.error(
+        `[spotify] 502 | rota=/api/spotify/tracks | operacao=listTracks | ` +
+          `sem status do Spotify: a falha nao veio de uma resposta dele | ` +
+          `excecao=${err instanceof Error ? err.message : String(err)}`,
+        err,
+      );
       res.status(502).json({
         error:
           'A lista de faixas não chegou ao Spotify. Isso é um problema do servidor ' +

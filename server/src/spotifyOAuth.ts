@@ -383,6 +383,58 @@ export async function marcarPendingUsado(state: string, sessionId: string, desti
  * chamada e, no pior caso, invalida a sessão.
  */
 /**
+ * Lê o corpo da resposta e registra a forma dele, sem nunca registrar segredo.
+ *
+ * ## Por que `text()` e não `json()`
+ *
+ * `r.json()` é um atalho que faz `text()` e o parse juntos — e quando o parse
+ * falha, o corpo já foi jogado fora. Um `SyntaxError` sozinha não diz se veio
+ * vazio, pela metade, ou com HTML de proxy, que são três causas diferentes com
+ * três consigos diferentes.
+ *
+ * ## O que o log mostra, e por que cada campo
+ *
+ *   status          o que o Spotify respondeu
+ *   Content-Type    `application/json` com o corpo cheio é o Spotify; `text/html`
+ *                   é alguém no meio, e isso muda o defeito de "resposta
+ *                   truncada" para "proxy responded"
+ *   Content-Length  o tamanho que o servidor **declara**
+ *   tamanho real     o tamanho que **chegou**
+ *
+ * A diferença entre os dois é a informação mais valiosa do registro: declarados
+ * iguais e real menor significa corte no caminho; declarados diferentes e real
+ * igual significa que o Spotify mandou outra coisa.
+ *
+ * ## O que nunca aparece aqui
+ *
+ * Cabeçalhos de requisição, `Authorization`, access token e refresh token. Só a
+ * resposta. Os 200 primeiros caracteres bastam para identificar corpo vazio, JSON
+ * truncado e HTML de proxy, e não transbordam o log.
+ */
+async function lerCorpo(r: Response, operacao: string, caminho: string): Promise<string | null> {
+  let texto: string;
+  try {
+    texto = await r.text();
+  } catch (err) {
+    console.warn(
+      `[spotify] ${operacao} GET ${caminho} | status=${r.status} | ` +
+        `falha ao ler o corpo: ${(err as Error).message}`,
+    );
+    return null;
+  }
+
+  const declarado = r.headers.get('content-length');
+  console.warn(
+    `[spotify] ${operacao} GET ${caminho} | status=${r.status} | ` +
+      `type=${r.headers.get('content-type') ?? '(nenhum)'} | ` +
+      `declarado=${declarado ?? '(nenhum)'} | real=${texto.length} | ` +
+      `inicio=${JSON.stringify(texto.slice(0, 200))}`,
+  );
+
+  return texto;
+}
+
+/**
  * Sem genérico, de propósito.
  *
  * A primeira versão era `chamarWebApi<T>` e devolvia `{ r, tokenUsado }` — o `T`
@@ -829,6 +881,10 @@ const TOKEN_RENOVACAO =
 const RESPOSTA_TRUNCADA =
   'A resposta do Spotify chegou incompleta. É passageiro — busque de novo agora.';
 
+/** `uri` de fora do catálogo. Não vira chamada: a rota é montada a partir dele. */
+const URI_INVALIDA =
+  'Esse endereço do Spotify não é de um álbum ou de uma playlist, então não dá para listar as faixas.';
+
 /**
  * O motivo interno do token, virando texto.
  *
@@ -913,11 +969,19 @@ export async function search(
    * A distinção importa porque a ação muda: corpo truncado é passageiro e a
    * pessoa pode tentar de novo já; token recusado exige reconectar.
    */
+  /*
+   * O corpo passa por `lerCorpo`, que o lê como texto e registra a forma antes do
+   * parse. Ver a nota dessa função: o motivo é que `r.json()` não deixa inspecionar
+   * nada quando falha.
+   */
+  const corpo = await lerCorpo(r, 'busca', '/search');
+  if (corpo === null) return { ok: false, reason: RESPOSTA_TRUNCADA, status: 502 };
+
   let data: SearchResponse;
   try {
-    data = (await r.json()) as SearchResponse;
+    data = JSON.parse(corpo) as SearchResponse;
   } catch {
-    console.warn(`[spotify] busca: resposta 200 com corpo ilegível (${r.headers.get('content-length') ?? 'sem length'})`);
+    console.warn(`[spotify] busca: corpo nao e JSON (${corpo.length} chars, inicio="${corpo.slice(0, 60)}")`);
     return { ok: false, reason: RESPOSTA_TRUNCADA, status: 502 };
   }
 
@@ -977,6 +1041,50 @@ export async function search(
   return { ok: true, items };
 }
 
+/**
+ * Converte o `uri` de catálogo no endpoint certo, com parse explícito.
+ *
+ * ## O defeito
+ *
+ * A primeira versão fazia `uri.replace(/^spotify:/, '')`, o que produzia:
+ *
+ *   spotify:album:4aaw...     ->  /album:4aaw.../tracks      (não existe)
+ *   spotify:playlist:37i9...   ->  /playlist:37i9.../tracks  (não existe)
+ *
+ * Remover o prefixo não é transformar o formato — é só apagar texto. O `uri` do
+ * Spotify é `spotify:<tipo>:<id>`, e o tipo é **singular**, enquanto o endpoint é
+ * **plural** em álbum, e playlist nem usa `/tracks`: usa `/items`. A
+ * transformation tem que ser essa, escrita uma a uma.
+ *
+ * ## Por que isso não aparecia antes
+ *
+ * Uma rota inexistente devolve 404, e 404 era tratado como "o Spotify não
+ * encontrou esse recurso" — uma frase verdadeira e inútil, que não aponta que o
+ * caminho foi montado errado aqui. E a playlist tem o agravante do campo: o
+ * endpoint de itens devolve `items[].track`, e o de `/albums/{id}/tracks` já
+ * devolve a faixa direto. Tratar os dois com o mesmo formato esvazia a lista sem
+ * nenhum erro.
+ *
+ * ## `null` para o que não é catálogo
+ *
+ * A função é a **única** que monta URL de API a partir de valor que veio do
+ * cliente, então é ela que valida. Um `uri` de outro host não chega a virar
+ * chamada: sem esta checagem, a rota seria um proxy com a credencial da pessoa.
+ */
+function rotaDeContainer(uri: string): string | null {
+  // `album` e `playlist` singulares, id de base62 maiúsculo e minúsculo. O
+  // Spotify usa maiúsculas nos ids, mas `A-Z` fica porque um id em minúsculas
+  // vindo de alguma fonte não é motivo para virar erro de sintaxe.
+  const album = /^spotify:album:([A-Za-z0-9]{1,64})$/.exec(uri);
+  if (album) return `/albums/${album[1]}/tracks?limit=50`;
+
+  const playlist = /^spotify:playlist:([A-Za-z0-9]{1,64})$/.exec(uri);
+  // `/items` e não `/tracks`, e o campo é `items[]` — ver a nota do defeito.
+  if (playlist) return `/playlists/${playlist[1]}/items?limit=50`;
+
+  return null;
+}
+
 /** Detalhes de um álbum ou playlist: as faixas, na ordem. */
 export async function listTracks(
   sessionId: string,
@@ -984,21 +1092,33 @@ export async function listTracks(
 ): Promise<
   { ok: true; items: SpotifySearchItem[] } | { ok: false; reason: string; status?: number }
 > {
-  // `50` aqui e não `LIMITE_BUSCA`: aqui a lista inteira é o conteúdo, e a tela
-  // rola. São dois limites com finalidades diferentes, e por isso dois nomes.
-  const alvo = uri.replace(/^spotify:/, '');
+  const rota = rotaDeContainer(uri);
+  if (!rota) return { ok: false, reason: URI_INVALIDA, status: 400 };
+
   let r: Response;
   try {
-    ({ r } = await chamarWebApi(sessionId, `/${alvo}/tracks?limit=50`));
+    ({ r } = await chamarWebApi(sessionId, rota));
   } catch (err) {
     const motivo = String((err as Error).message).split(':')[1] ?? 'not_connected';
     return { ok: false, reason: fraseDoToken(motivo), status: 401 };
   }
   if (!r.ok) {
-    const doSpotify = await registrarErroSpotify(`faixas GET /${alvo}/tracks`, r);
+    const doSpotify = await registrarErroSpotify(`listTracks GET ${rota}`, r);
     return { ok: false, reason: motivoDeErro(r.status, doSpotify), status: r.status };
   }
-  const data = (await r.json()) as {
+
+  /*
+   * O mesmo tratamento da busca: `r.text()` com registro da forma da resposta
+   * antes do parse.
+   *
+   * Este `await r.json()` estava solto, sem `try` — e por isso uma resposta pela
+   * metade subia como exceção e virava o 502 genérico da rota, que atribuía a
+   * falha ao servidor do Juntos sem dizer que o Spotify tinha respondido 200.
+   */
+  const corpo = await lerCorpo(r, 'listTracks', rota);
+  if (corpo === null) return { ok: false, reason: RESPOSTA_TRUNCADA, status: 502 };
+
+  let data: {
     items?: Array<{
       track?: {
         id: string;
@@ -1011,10 +1131,22 @@ export async function listTracks(
     }>;
   };
 
+  try {
+    data = JSON.parse(corpo) as typeof data;
+  } catch {
+    console.warn(`[spotify] listTracks: corpo nao e JSON (${corpo.length} chars, inicio="${corpo.slice(0, 60)}")`);
+    return { ok: false, reason: RESPOSTA_TRUNCADA, status: 502 };
+  }
+
+  if (!data || typeof data !== 'object') {
+    console.warn('[spotify] listTracks: resposta 200 sem objeto JSON');
+    return { ok: false, reason: RESPOSTA_TRUNCADA, status: 502 };
+  }
+
   const items: SpotifySearchItem[] = [];
   for (const row of data.items ?? []) {
-    const t = row.track;
-    if (!t) continue; // faixa local do dono da playlist não tem preview nem player
+    const t = row?.track;
+    if (!t?.id) continue; // faixa local do dono da playlist não tem preview nem player
     items.push({
       id: t.id,
       kind: 'track',

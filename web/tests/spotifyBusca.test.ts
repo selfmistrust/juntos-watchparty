@@ -191,16 +191,26 @@ test('o parse da resposta do Spotify fica dentro de um try', () => {
    */
   const c = semComentario(oauth);
   const fn = c.slice(c.indexOf('export async function search'));
-  const blocoParse = fn.slice(fn.indexOf('await r.json()') - 200, fn.indexOf('await r.json()') + 200);
+  /*
+   * O `r.json()` foi depois movido para `lerCorpo` + `JSON.parse` protegido, e
+   * este teste acompanhou: a exigência agora é que a leitura do corpo da busca
+   * passe por `lerCorpo` e que o parse esteja em `try`. Ver `spotify502.test.ts`
+   * para a leitura por extenso, incluindo o que o log precisa mostrar.
+   */
   assert.match(
-    blocoParse,
-    /try \{[\s\S]{0,80}await r\.json\(\)/,
-    'o r.json() precisa estar dentro de um try',
+    fn,
+    /const corpo = await lerCorpo\(r, 'busca', '\/search'\);/,
+    'a leitura do corpo passa por lerCorpo, que registra a forma da resposta',
+  );
+  assert.match(
+    fn,
+    /try \{\s*data = JSON\.parse\(corpo\)/,
+    'e o parse fica dentro de um try',
   );
   assert.match(
     c,
     /if \(!data \|\| typeof data !== 'object'\)/,
-    'e um corpo que nao e objeto tambem e resposta truncada, nao excecao',
+    'um corpo que nao e objeto tambem e resposta truncada, nao excecao',
   );
   assert.match(c, /RESPOSTA_TRUNCADA\s*=/, 'a frase diz que e passageiro');
   assert.ok(
@@ -306,8 +316,12 @@ test('a busca pede limit=10 e nao envia parametro vazio', () => {
     /searchParams\.set\('limit',\s*String\(LIMITE_BUSCA\)\)/,
     'e é o que vai na busca, não um número solto',
   );
-  // A lista de faixas de um álbum usa 50 de propósito, e por isso tem outro nome.
-  const faixas = c.slice(c.indexOf('export async function listTracks'));
+  /*
+   * A lista de faixas de álbum e playlist usa 50, porque ali a lista **é** o
+   * conteúdo e a tela rola. O `50` mora em `rotaDeContainer`, que é onde a URL é
+   * montada — ver `spotify502.test.ts`, que confere o endpoint inteiro.
+   */
+  const faixas = c.slice(c.indexOf('function rotaDeContainer'));
   assert.match(faixas, /limit=50/, 'a lista de álbum continua 50, que é outro caso');
 
   const clienteC = semComentario(cliente);
