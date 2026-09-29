@@ -36,20 +36,6 @@ interface Props {
    * progresso, que num `MediaStream` não tem para onde apontar.
    */
   live?: boolean;
-  /**
-   * A barra mostra **a sua** posição, e não a da sala.
-   *
-   * O vídeo e a transmissão têm uma posição só: o servidor a guarda, e todos
-   * puxam dela. O Spotify não tem essa posição. O áudio sai do Web Playback SDK
-   * na conta de cada pessoa, no dispositivo de cada pessoa, e o servidor não tem
-   * como saber onde cada uma está — nem como mandar todas para o mesmo lugar.
-   *
-   * Por isso a barra fica visível e arrastável=false. Arrastar e ver o contador
-   * andar só na sua máquina ensinaria que a sala está sincronizada, e ela não
-   * está: a faixa seguinte começa do zero para cada pessoa. A barra desabilitada
-   * com um aviso curto diz a verdade sem roubar o espaço de nada.
-   */
-  pessoal?: boolean;
   onTogglePlay: () => void;
   onSeek: (seconds: number) => void;
   onNext: () => void;
@@ -73,7 +59,6 @@ export function PlayerControls({
   sidebarOpen,
   captionsOn,
   live,
-  pessoal,
   onTogglePlay,
   onSeek,
   onNext,
@@ -123,12 +108,7 @@ export function PlayerControls({
             step={0.5}
             value={Math.min(current, duration || 0)}
             onChange={handleSeek}
-            disabled={!canControl || duration === 0 || pessoal}
-            title={
-              pessoal
-                ? 'A posição é só a da sua conta: o Spotify toca na sua máquina e a sala não governa esse relógio.'
-                : undefined
-            }
+            disabled={!canControl || duration === 0}
             style={{ ['--progress' as string]: `${progress}%` }}
             /* A trilha fica com 4px, mas o alvo sensível é o dobro. O `py-2`
                adiciona 16px de área clicável sem engrossar o desenho — no toque
@@ -240,22 +220,6 @@ export function PlayerControls({
           <span className="ml-1 flex shrink-0 items-center gap-1.5 rounded-md bg-live/90 px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-white">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
             Ao vivo
-          </span>
-        ) : pessoal ? (
-          /*
-           * O tempo é real e é o da sua conta — mas não é o da sala, e o texto
-           * diz isso em vez de deixar a barra falar por si. Sem o selo, a barra
-           * desabilitada parece defeito; com ele, é informação.
-           */
-          <span
-            className="ml-1 flex shrink-0 items-center gap-1.5 whitespace-nowrap"
-            title="O Spotify toca na sua conta, no seu dispositivo. A sala não controla este relógio."
-          >
-            <span className="font-mono text-xs tabular-nums text-white/70">
-              <span className="[@media(max-width:400px)]:hidden">{formatTime(current)} </span>
-              <span className="text-white/35">/ {formatTime(duration)}</span>
-            </span>
-            <span className="hidden text-2xs text-white/45 [@media(min-width:520px)]:inline">na sua conta</span>
           </span>
         ) : (
           <span className="ml-1 min-w-0 shrink select-none truncate font-mono text-xs tabular-nums text-white/70">

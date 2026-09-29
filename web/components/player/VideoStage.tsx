@@ -7,7 +7,6 @@ import { ReactionDock } from './ReactionDock';
 import { ReactionsOverlay } from './ReactionsOverlay';
 import { YoutubePlayer } from './YoutubePlayer';
 import { DriveVideo } from './DriveVideo';
-import { SpotifyStage, usePlayerSpotify } from './SpotifyStage';
 import { useFullscreenLandscape } from '@/hooks/useFullscreenLandscape';
 import type { RoomActions } from '@/hooks/useRoom';
 import type { FloatingReaction, PlaylistItem, PlayerHandle, ReactionEmoji, RoomSnapshot } from '@/types';
@@ -33,15 +32,6 @@ interface Props {
    * fecha, e é por isso que o palco precisa de um estado de espera próprio.
    */
   liveStream?: MediaStream | null;
-  /**
-   * A conta Spotify desta pessoa está conectada, segundo o servidor.
-   *
-   * Vem de `/api/spotify/status` e é a **única** coisa que pode virar o estado
-   * de "sem conta". Um erro do SDK não desconta ninguém: `account_error` deixa
-   * a conta conectada e muda só a reprodução, e é essa separação que impede o
-   * palco de pedir login para quem já está logado.
-   */
-  spotifyConectado?: boolean;
   /** A conexão com quem transmite está em andamento. */
   liveConnecting?: boolean;
   liveError?: string | null;
@@ -59,7 +49,6 @@ export function VideoStage({
   liveStream,
   liveConnecting,
   liveError,
-  spotifyConectado = false,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<PlayerHandle>(null);
@@ -131,26 +120,6 @@ export function VideoStage({
 
   const isPlaying = Boolean(state?.isPlaying);
 
-  /*
-   * O estado do player do Spotify vem do hook, e não de um literal.
-   *
-   * A versão anterior passava `conectado={false}` fixo para o palco, e o texto
-   * que saía daí — "Conecte sua conta do Spotify para ouvir" — apareceu para uma
-   * pessoa que tinha acabado de buscar e enfileirar uma música com a conta
-   * conectada. O literal estava certo sobre o que o componente sabia, que era
-   * nada, e errado sobre o mundo.
-   *
-   * `faixa` e `tocando` entram aqui para fechar a ordem do item 6: conta
-   * conectada → faixa vira mídia atual → token → SDK conecta → `ready` → toca.
-   * Sem os dois, o player conectava e a sala ficava em silêncio sem que nada
-   * dissesse por quê.
-   */
-  const { estado: estadoDoPlayer, aviso: avisoDoPlayer, relogio: relogioDoPlayer } = usePlayerSpotify({
-    conectado: spotifyConectado,
-    faixa: currentItem?.kind === 'spotify' ? currentItem.spotifyUri : null,
-    tocando: isPlaying,
-  });
-  const ehSpotify = currentItem?.kind === 'spotify';
   const hasNext = Boolean(state && state.currentIndex < state.playlist.length - 1);
 
   /** Troca de faixa: zera o relógio local e espera o novo player avisar que carregou. */
@@ -227,24 +196,6 @@ export function VideoStage({
 
   /** Relógio de UI. */
   useEffect(() => {
-    /*
-     * O relógio do Spotify vem do SDK, e não do `<video>`.
-     *
-     * Não existe `PlayerHandle` para uma faixa do Spotify — o áudio sai do Web
-     * Playback SDK, na conta de cada pessoa — então o `getCurrentTime()` do vídeo
-     * não tem o que ler. Era daí que vinha o `0:00 / 0:00` com a música tocando:
-     * não um relógio parado, um relógio que nunca recebeu nada.
-     *
-     * O relógio do SDK é projetado a partir da última posição que ele confirmou,
-     * e vem em milissegundos. A conversão para segundos acontece aqui, num só
-     * lugar, para o resto da interface continuar trabalhando em segundos como
-     * toda a aplicação.
-     */
-    if (ehSpotify) {
-      setCurrent(relogioDoPlayer.posicaoMs / 1000);
-      setDuration(relogioDoPlayer.duracaoMs / 1000);
-      return;
-    }
     // Ao vivo o relógio mostraria uma posição que não corresponde a nada, já que
     // a barra de progresso some.
     if (isStream) return;
@@ -256,7 +207,7 @@ export function VideoStage({
       if (d && Math.abs(d - duration) > 0.5) setDuration(d);
     }, 250);
     return () => clearInterval(id);
-  }, [duration, isStream, ehSpotify, relogioDoPlayer]);
+  }, [duration, isStream]);
 
   /**
    * Correção de deriva. Diferenças grandes viram seek; pequenas viram uma
@@ -398,32 +349,6 @@ export function VideoStage({
             captionsOn={captionsOn}
             onReady={handleReady}
             onEnded={actions.ended}
-          />
-        ) : currentItem.kind === 'spotify' ? (
-          /*
-           * A faixa `spotify` não tem player, e o motivo está no componente.
-           *
-           * Todas as outras fontes recebem o tempo do servidor e tocam o mesmo
-           * áudio em todas as máquinas. O Spotify não tem URL de áudio: o som
-           * vem do Web Playback SDK, em cada navegador, com a conta de cada
-           * pessoa. Um player aqui tocaria em uma máquina só, e a sala veria uma
-           * coisa e ouviria outra.
-           *
-           * O palco mostra quem vai ouvir, que é a informação que o silêncio
-           * sozinho não dá. Ver `SpotifyStage`.
-           *
-           * `estadoDoPlayer` vem do hook, que é quem conversa com o SDK. A
-           * versão anterior passava `conectado={false}` **fixo**, e o palco
-           * respondia "Conecte sua conta do Spotify" para quem tinha acabado de
-           * buscar com a conta conectada: a mensagem estava certa para o código e
-           * errada para a situação.
-           */
-          <SpotifyStage
-            key={currentItem.id}
-            title={currentItem.title}
-            artwork={currentItem.thumbnail}
-            estado={estadoDoPlayer}
-            aviso={avisoDoPlayer}
           />
         ) : currentItem.kind === 'drive' && currentItem.driveFileId ? (
           /*
@@ -607,7 +532,6 @@ export function VideoStage({
           sidebarOpen={sidebarOpen}
           captionsOn={currentItem?.kind === 'youtube' ? captionsOn : undefined}
           live={isStream}
-          pessoal={ehSpotify}
           onTogglePlay={togglePlay}
           onSeek={handleSeek}
           onNext={() => state && actions.selectTrack(state.currentIndex + 1)}

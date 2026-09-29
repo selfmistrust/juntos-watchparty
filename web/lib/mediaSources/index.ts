@@ -10,10 +10,9 @@ export { youtubeProvider, searchYoutube, addYoutubeFromUrl } from './youtube';
 export { driveProvider } from './drive';
 export { globoplayProvider } from './globoplay';
 export { screenShareProvider } from './screenShare';
-export { spotifyProvider } from './spotify';
+export { spotifyProvider } from './spotifyLink';
 export { useYoutubeSource } from './useYoutubeSource';
 export { useScreenShare } from './useScreenShare';
-export { useSpotifySource } from './useSpotifySource';
 
 export type {
   MediaSourceProvider,
@@ -27,6 +26,7 @@ export { READY, unavailable, checking } from './types';
 import { driveProvider } from './drive';
 import { globoplayProvider } from './globoplay';
 import { screenShareProvider } from './screenShare';
+import { spotifyProvider } from './spotifyLink';
 import type { MediaSourceProvider } from './types';
 import { uploadProvider } from './upload';
 
@@ -44,4 +44,11 @@ export const MEDIA_SOURCES: MediaSourceProvider[] = [
   driveProvider,
   globoplayProvider,
   screenShareProvider,
+  /*
+   * O Spotify entra no fim, e a posição é deliberada: a grade é de duas colunas
+   * e um número ímpar deixaria a última linha com um card só e um buraco ao
+   * lado. Ele vai no fim também porque não é uma fonte — ver `spotifyLink.tsx`,
+   * que explica por que ele só abre um link e não reproduz nada.
+   */
+  spotifyProvider,
 ];

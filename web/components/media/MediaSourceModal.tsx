@@ -7,7 +7,6 @@ import { TruncatedText } from '@/components/ui/TruncatedText';
 import { useYoutubeSource } from '@/lib/mediaSources/useYoutubeSource';
 import { useScreenShare } from '@/lib/mediaSources/useScreenShare';
 import { useDriveSource } from '@/lib/mediaSources/useDriveSource';
-import { useSpotifySource } from '@/lib/mediaSources/useSpotifySource';
 import type { StreamController } from '@/hooks/useStreamBridge';
 import {
   MEDIA_SOURCES,
@@ -62,7 +61,6 @@ export function MediaSourceModal({
   const youtube = useYoutubeSource();
   const tela = useScreenShare(streamBridge);
   const drive = useDriveSource();
-  const spotify = useSpotifySource();
   const sources = useMemo<MediaSourceProvider[]>(
     () =>
       MEDIA_SOURCES.flatMap((f) => {
@@ -71,24 +69,9 @@ export function MediaSourceModal({
         // versão do hook, mantendo o lugar, evita que um card suma da grade
         // quando uma fonte ganha painel próprio.
         if (f.id === 'upload') return [f, youtube.provider];
-        if (f.id === 'screen') return [tela.provider];
-    if (f.id === 'drive') return [drive.provider];
         return [f];
-      })
-        /*
-         * O Spotify entra **no fim**, e a posição é deliberada.
-         *
-         * A grade é de duas colunas, e ela tinha cinco cards: um número ímpar
-         * deixava a última linha com um card só e um buraco ao lado. Acrescentar
-         * no fim fecha a linha e não move nenhum card existente — que era o
-         * requisito. Inserir no meio trocaria de lugar o Drive e a Globoplay, e
-         * quem já sabe de cabeça onde fica cada fonte teria que procurar de novo.
-         *
-         * Ele não entra por `MEDIA_SOURCES` porque precisa do painel próprio, o
-         * mesmo caminho do YouTube: um card de duas linhas não comporta busca.
-         */
-        .concat([spotify.provider]),
-    [youtube.provider, tela.provider, drive.provider, spotify.provider],
+      }),
+    [youtube.provider],
   );
 
   const context = useRef<MediaSourceContext>({ canControl, addToPlaylist, requestUploadToken });
@@ -265,7 +248,6 @@ export function MediaSourceModal({
       {youtube.panel}
       {tela.panel}
       {drive.panel}
-      {spotify.panel}
     </>
   );
 
