@@ -340,8 +340,33 @@ export function registerSpotifyRoutes(app: Express): void {
       if (!result.ok) return erroDeSpotify(res, result.reason, result.status ?? 502);
       res.json({ items: result.items });
     } catch (err) {
-      console.error('[spotify] search falhou', err);
-      res.status(502).json({ error: 'spotify_search_failed' });
+      /*
+       * Este `catch` é o que produzia `spotify_search_failed` na tela, e ele era
+       * o oposto do que o texto pedia: um código genérico que não diz nada,
+       * justamente na rota que deveria dizer o motivo real.
+       *
+       * A falha chega aqui de três jeitos, e cada um tem uma leitura diferente
+       * para quem está olhando:
+       *
+       *   `spotify_sem_token:*`  o `search()` não devolveu, e por isso o motivo
+       *                          já é conhecido e está na frase
+       *   `Invalid URL`         uma URL montada com lixo. É bug nosso, e 502 é o
+       *                          status certo
+       *   rede / timeout        o Spotify não respondeu. Também 502, e de novo
+       *                          culpa nossa — não do Spotify
+       *
+       * O `console.error` traz a exceção inteira; a resposta traz uma frase que
+       * diz que a falha foi do lado de cá, e **não** repete o erro técnico como
+       * se fosse a resposta da API. Um `search_failed` na tela faz a pessoa
+       * procurar no Spotify, que é o lugar errado.
+       */
+      const bruto = err instanceof Error ? err.message : String(err);
+      console.error(`[spotify] busca: exceção inesperada — ${bruto}`, err);
+      res.status(502).json({
+        error:
+          'A busca não chegou ao Spotify. Isso é um problema do servidor do Juntos, ' +
+          'e não da sua conta. Tente de novo em alguns instantes.',
+      });
     }
   });
 
@@ -359,8 +384,13 @@ export function registerSpotifyRoutes(app: Express): void {
       if (!result.ok) return erroDeSpotify(res, result.reason, result.status ?? 502);
       res.json({ items: result.items });
     } catch (err) {
-      console.error('[spotify] tracks falhou', err);
-      res.status(502).json({ error: 'spotify_tracks_failed' });
+      const bruto = err instanceof Error ? err.message : String(err);
+      console.error(`[spotify] faixas: exceção inesperada — ${bruto}`, err);
+      res.status(502).json({
+        error:
+          'A lista de faixas não chegou ao Spotify. Isso é um problema do servidor ' +
+          'do Juntos, e não da sua conta. Tente de novo em alguns instantes.',
+      });
     }
   });
 }

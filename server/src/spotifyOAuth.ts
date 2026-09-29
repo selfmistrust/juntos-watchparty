@@ -466,7 +466,10 @@ async function fetchMe(accessToken: string): Promise<MeResponse | null> {
  */
 export async function getValidAccessToken(
   sessionId: string,
-): Promise<{ ok: true; token: string } | { ok: false; reason: 'not_connected' | 'revoked' }> {
+): Promise<
+  | { ok: true; token: string }
+  | { ok: false; reason: 'not_connected' | 'revoked' | 'renovacao_falhou' }
+> {
   const record = await loadTokens(sessionId);
   if (!record) return { ok: false, reason: 'not_connected' };
 
@@ -498,15 +501,33 @@ export async function getValidAccessToken(
     await saveTokens(sessionId, refreshed);
     return { ok: true, token: refreshed.accessToken };
   } catch (err) {
+    /*
+     * `spotifyFetch` transforma resposta ruim em `spotify_<status>`, e aqui isso
+     * vira a distinção que decide o que acontece com a conta.
+     *
+     * A primeira versão fazia `Number(mensagem.split('_')[1])` e caía em
+     * `not_connected` para **qualquer** falha que não fosse 400 ou 401 — rede,
+     * timeout, uma resposta sem corpo. E `not_connected` é o motivo que apaga o
+     * token: o registro era destruído por um erro de rede, que é a pior das
+     * combinações, porque a pessoa perdia a conta por causa de um instante sem
+     * internet e a única correção era reconectar tudo.
+     *
+     * Só 400 e 401 apagam o token, e só porque são o Spotify dizendo que o
+     * refresh token não vale mais. Qualquer outra coisa devolve
+     * `renovacao_falhou`, que **mantém** a conta: o próximo clique tenta de novo
+     * e, se a rede voltou, funciona.
+     */
     const status = Number((err as Error).message.split('_')[1]);
     if (status === 400 || status === 401) {
       // `invalid_grant`: o refresh token foi revogado ou a pessoa desautorizou o
       // app. Não adianta tentar de novo, e deixar o registro só faria o card
       // continuar dizendo "conectado" para uma conta que não funciona mais.
       await redis.del(TOKEN_KEY(sessionId));
+      console.warn(`[spotify] refresh token recusado (${status}); a conta foi desconectada`);
       return { ok: false, reason: 'revoked' };
     }
-    return { ok: false, reason: 'not_connected' };
+    console.warn(`[spotify] renovação falhou sem conseguir ler o motivo: ${(err as Error).message}`);
+    return { ok: false, reason: 'renovacao_falhou' };
   }
 }
 
@@ -735,6 +756,23 @@ const TOKEN_AUSENTE =
   'Nenhuma conta do Spotify conectada nesta sessão. Use "Conectar Spotify" no painel.';
 const TOKEN_REVOGADO =
   'O Spotify revogou a autorização desta conta. Use "Trocar de conta" para autorizar de novo.';
+const TOKEN_RENOVACAO =
+  'A conexão com o Spotify ficou sem resposta ao renovar a autorização. Sua conta continua ' +
+  'conectada — tente a busca de novo em alguns instantes.';
+
+/**
+ * O motivo interno do token, virando texto.
+ *
+ * São três estados com três ações diferentes — conectar, reconectar, esperar — e
+ * reduzi-los a um `not_connected` fazia a pessoa executar a ação errada: um
+ * "conecte de novo" quando bastava esperar, e um "espere" quando a conta tinha
+ * sido revogada de verdade.
+ */
+function fraseDoToken(motivo: string): string {
+  if (motivo === 'revoked') return TOKEN_REVOGADO;
+  if (motivo === 'renovacao_falhou') return TOKEN_RENOVACAO;
+  return TOKEN_AUSENTE;
+}
 
 /**
  * Busca por termo, em faixas, álbuns e playlists.
@@ -785,7 +823,7 @@ export async function search(
      * conectada viraria 500.
      */
     const motivo = String((err as Error).message).split(':')[1] ?? 'not_connected';
-    return { ok: false, reason: motivo === 'revoked' ? TOKEN_REVOGADO : TOKEN_AUSENTE, status: 401 };
+    return { ok: false, reason: fraseDoToken(motivo), status: 401 };
   }
 
   if (!r.ok) {
@@ -849,7 +887,7 @@ export async function listTracks(
     ({ r } = await chamarWebApi(sessionId, `/${alvo}/tracks?limit=50`));
   } catch (err) {
     const motivo = String((err as Error).message).split(':')[1] ?? 'not_connected';
-    return { ok: false, reason: motivo === 'revoked' ? TOKEN_REVOGADO : TOKEN_AUSENTE, status: 401 };
+    return { ok: false, reason: fraseDoToken(motivo), status: 401 };
   }
   if (!r.ok) {
     const doSpotify = await registrarErroSpotify(`faixas GET /${alvo}/tracks`, r);

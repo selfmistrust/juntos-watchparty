@@ -173,6 +173,65 @@ test('o termo e validado antes de gastar uma chamada de rede', () => {
   );
 });
 
+test('uma falha de rede na renovacao nao desconecta a conta', () => {
+  /*
+   * O defeito mais caro que este arquivo fecha, e ele não apareceu em nenhuma
+   * tela: `getValidAccessToken` caía em `not_connected` para **qualquer** falha
+   * que não fosse 400/401 — inclusive timeout e "sem internet". E `not_connected`
+   * era o motivo que apaga o token.
+   *
+   * Ou seja: um instante de rede ruim desconectava a conta, e a única correção
+   * passava a ser refazer o login inteiro. A pessoa reconnectava, o token era
+   * emitido de novo, a busca funcionava, e a pergunta natural — "por que isso
+   * acontece comigo?" — não tinha resposta em lugar nenhum, porque o defeito
+   * tinha apagado a evidência.
+   */
+  const c = semComentario(oauth);
+  const fn = c.slice(c.indexOf('export async function getValidAccessToken'));
+  const bloco = fn.slice(0, fn.indexOf('\n}'));
+
+  assert.match(
+    bloco,
+    /reason: 'renovacao_falhou'/,
+    'falha que nao e 400/401 vira renovacao_falhou, e nao not_connected',
+  );
+  assert.ok(
+    !/return \{ ok: false, reason: 'not_connected' \};?\s*\}\s*catch|catch[\s\S]{0,600}reason: 'not_connected'/.test(bloco),
+    'e nunca no catch: not_connected apaga o token, entao nao pode ser o fallback',
+  );
+  assert.match(
+    c,
+    /motivo === 'renovacao_falhou'[\s\S]{0,120}?TOKEN_RENOVACAO/,
+    'e o texto diz que a conta continua conectada, porque e verdade',
+  );
+  assert.match(
+    c,
+    /motivo === 'revoked'[\s\S]{0,120}?TOKEN_REVOGADO/,
+    'enquanto revogado manda reconectar',
+  );
+});
+
+test('o catch da rota fala que a falha e do servidor, e nao da conta', () => {
+  /*
+   * `spotify_search_failed` na tela mandava a pessoa procurar no Spotify, que é o
+   * lugar errado: a exceção era nossa. Um código genérico nesse ponto é o oposto
+   * do que o texto pedia, que era dizer o motivo.
+   */
+  const c = semComentario(rotas);
+  assert.ok(
+    !/spotify_search_failed/.test(c) && !/spotify_tracks_failed/.test(c),
+    'nenhum codigo generico no corpo da resposta de erro',
+  );
+  const bloco = c.slice(c.indexOf('api/spotify/search'));
+  const blocoCatch = bloco.slice(bloco.indexOf('catch'), bloco.indexOf('api/spotify/tracks'));
+  assert.match(
+    blocoCatch,
+    /problema do servidor\s*\n?\s*do Juntos/,
+    'a resposta diz que a falha e do servidor do Juntos',
+  );
+  assert.match(blocoCatch, /console\.error\(/, 'e a excecao inteira vai para o log');
+});
+
 test('o log registra endpoint, status e o corpo do Spotify', () => {
   const c = semComentario(oauth);
   const fn = c.slice(c.indexOf('async function registrarErroSpotify'));
