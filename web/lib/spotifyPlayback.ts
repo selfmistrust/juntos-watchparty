@@ -84,44 +84,127 @@ export function carregarSdkSpotify(): Promise<boolean> {
  *
  *   sem_conta   nao ha autorizacao. A pessoa nao conectou.
  *   sem_token   ha conta, e o token nao pode ser emitido. Reconectar resolve.
+ *   sem_escopo  a conta esta conectada, mas o token foi autorizado **antes** de
+ *               user-modify-playback-state existir. Token granted nao cresce, e
+ *               a unica saida e autorizar de novo. Nao e Premium, e nao e a conta.
  *   premium     a conta conectou e o Spotify recusou a reproducao. So o SDK sabe
  *               disto, e o `/me` nao.
  *   ambiente    o SDK nao rodou aqui: contexto sem TLS, script bloqueado, ou
  *               Electron — que o Spotify Connect nao reconhece.
- *   tocando     o player esta pronto e ha `device_id`.
+ *   autoplay    o navegador bloqueou o audio por regra de autoplay. O device esta
+ *               pronto; so falta um clique da pessoa. E um evento real do SDK.
+ *   pronto      o device conectou, recebeu `device_id`, e NAO esta tocando.
+ *   tocando     o SDK confirmou que esta reproduzindo.
+ *
+ * ## Por que `pronto` e `tocando` sao separados
+ *
+ * A primeira versao tratava o `ready` como "tocando", e o palco dizia "Tocando
+ * pelo Spotify, na sua conta" com o player conectado, nada carregado e
+ * `0:00 / 0:00` na barra. `ready` quer dizer que o **device** existe, e nada
+ * mais: ele nao afirma que ha audio, nem que ha faixa, nem que ela comecou.
+ *
+ * Quem tem que dizer que esta tocando e o `player_state_changed`, que e quem
+ * sabe. Sem essa separacao, qualquer texto de reproducao e uma previsao em vez
+ * de uma leitura — que e exatamente o tipo de texto que a pessoa viu.
  */
 export type EstadoDoPlayer =
   | 'sem_conta'
   | 'sem_token'
+  | 'sem_escopo'
   | 'premium'
   | 'ambiente'
+  | 'autoplay'
+  | 'pronto'
   | 'tocando';
 
 export interface PlayerSpotify {
   play: () => Promise<void>;
   pause: () => Promise<void>;
   seek: (ms: number) => Promise<void>;
-  /** Toca uma faixa pelo uri. Só isso: a fila é de faixas, uma a uma. */
+  /** O `device_id` que o `ready` entregou. É o destino do `PUT /me/player/play`. */
+  deviceId: string;
+  /**
+   * Carrega uma faixa pelo uri.
+   *
+   * A fila guarda **faixas**, uma a uma: quem escolhe um disco na busca percorre
+   * ele e escolhe as músicas, então não há contexto para transmitir.
+   */
   tocar: (trackUri: string) => Promise<void>;
+  /**
+   * Libera a saída de áudio neste navegador.
+   *
+   * A referência do SDK é explícita: isto precisa ser chamado de dentro de um
+   * gesto da pessoa, e é o que resolve o `autoplay_failed`. Como a faixa vira a
+   * mídia atual na sala sem ninguém clicar em nada, o gesto chega depois — e o
+   * site inteiro é um gesto válido, porque a pessoa pode estar digitando no
+   * chat, não apertando play.
+   */
+  ativar: () => Promise<void>;
   destruir: () => void;
   on: (evento: 'player_state_changed' | 'not_ready', fn: () => void) => void;
 }
 
+/**
+ * A superfície real do `Spotify.Player`.
+ *
+ * Copiada da referência oficial, método por método: `connect`, `disconnect`,
+ * `addListener`, `removeListener`, `getCurrentState`, `setName`, `getVolume`,
+ * `setVolume`, `pause`, `resume`, `togglePlay`, `seek`, `previousTrack`,
+ * `nextTrack` e `activateElement`.
+ *
+ * A primeira versão **declarava** `loadTrack`, `playTrack` e `pauseTrack` neste
+ * tipo. Três métodos que não existem. O TypeScript aceitou, o navegador não: o
+ * erro real em produção foi
+ *
+ *   [spotify] playTrack recusado: TypeError: s.playTrack is not a function
+ *   [spotify] playback_error: Cannot perform operation, no list was loaded.
+ *
+ * A lição é sobre a origem do tipo, não sobre o método: um tipo escrito à mão
+ * declara o que o programador supõe, e o `tsc` não tem como discordar. Só a
+ * documentação discorda. Por isso a lista aqui é a da referência, e a busca pela
+ * faixa vai para `PUT /me/player/play`, que é a via documentada para o device do
+ * SDK — o áudio continua vindo do player no navegador.
+ */
 interface PlayerBruto {
   connect: () => Promise<boolean>;
   disconnect: () => void;
   addListener: (evento: string, fn: (arg?: unknown) => void) => boolean;
   removeListener: (evento: string, fn?: (arg?: unknown) => void) => boolean;
-  getCurrentState: () => Promise<unknown>;
-  activateElement: () => Promise<void>;
-  play: () => Promise<void>;
+  getCurrentState: () => Promise<WebPlaybackState | null>;
+  setName: (nome: string) => Promise<void>;
+  getVolume: () => Promise<number>;
+  setVolume: (v: number) => Promise<void>;
   pause: () => Promise<void>;
+  play: () => Promise<void>;
   resume: () => Promise<void>;
   togglePlay: () => Promise<void>;
   seek: (ms: number) => Promise<void>;
-  loadTrack: (id: string) => Promise<unknown>;
-  playTrack: (id: string) => Promise<unknown>;
-  pauseTrack: () => Promise<void>;
+  previousTrack: () => Promise<void>;
+  nextTrack: () => Promise<void>;
+  activateElement: () => Promise<void>;
+}
+
+/** O que o `ready` entrega. */
+interface WebPlaybackPlayer {
+  device_id: string;
+}
+
+/**
+ * O estado que o SDK devolve, do jeito que a referência documenta.
+ *
+ * `is_playing` vem do objeto que o `player_state_changed` entrega. A referência
+ * documenta `paused` no `WebPlaybackState` e o `player_state_changed` traz
+ * `position`, `duration` e `track_window`; `is_playing` aparece nos exemplos do
+ * SDK. Por isso os dois são lidos, e `paused` é o critério quando só um vem.
+ */
+interface WebPlaybackState {
+  is_playing?: boolean;
+  paused?: boolean;
+  position?: number;
+  duration?: number;
+  track_window?: {
+    current_track?: { uri?: string; name?: string } | null;
+  };
 }
 
 interface PlayerWindow extends Window {
@@ -150,6 +233,15 @@ interface PlayerWindow extends Window {
 export async function conectarPlayerSpotify(opts: {
   nomeDoPlayer: string;
   pedirToken: () => Promise<string | null>;
+  /**
+   * Carrega a faixa no device do SDK.
+   *
+   * Fica de fora porque a chamada é HTTP e o token é do servidor: este módulo
+   * cuida do SDK e nada mais. É a continuação do player, não um caminho de áudio
+   * paralelo — o corpo da requisição é um uri, e quem entrega o som continua
+   * sendo o player deste navegador.
+   */
+  carregar: (deviceId: string, trackUri: string) => Promise<void>;
   onEstado: (estado: EstadoDoPlayer) => void;
 }): Promise<PlayerSpotify | null> {
   const carregou = await carregarSdkSpotify();
@@ -198,17 +290,42 @@ export async function conectarPlayerSpotify(opts: {
       },
     });
 
-    escutar('ready', () => {
+    escutar('ready', (arg) => {
+      const deviceId = (arg as WebPlaybackPlayer | undefined)?.device_id ?? '';
+      if (!/^[A-Fa-f0-9]{32}$/.test(deviceId)) {
+        /*
+         * Sem `device_id` nao ha `PUT /me/player/play` possivel, e sem ele o
+         * Spotify miraria no dispositivo ativo da conta no celular da pessoa --
+         * o oposto do que a sala quer. E o palco nao pode dizer "pronto" sem
+         * isso, porque "pronto" sem destino nao e nada.
+         */
+        console.warn(`[spotify] ready sem device_id utilizavel (${deviceId.length} chars)`);
+        opts.onEstado('ambiente');
+        finalizar(null);
+        return;
+      }
+
       /*
-       * `activateElement` é o que impede o navegador de roubar o som para outra
-       * aba depois que o player conecta. Sem ele o Spotify toca, mas o áudio sai
-       * em outro lugar — e o sintoma (silêncio) não aponta para cá.
+       * `activateElement` libera o audio no dispositivo de saida, e a referencia
+       * do SDK e explicita: ele precisa ser chamado **emavincia**, de dentro de um
+       * gesto da pessoa. Chamado aqui, fora de um clique, ele nao resolve o caso
+       * que importa -- e o evento que reporta a falha e o `autoplay_failed`, que
+       * ficou sem tratamento ate agora. O palco chama `destivar` no fim e quem
+       * libera e o clique em "Tocar".
        */
       void player.activateElement();
-      opts.onEstado('tocando');
+
+      /*
+       * `ready` diz que o **device** existe. Nao diz que ha faixa, nem que ela
+       * comecou, nem que ha audio. A primeira versao publicava `tocando` aqui, e
+       * o palco escrevia "Tocando pelo Spotify" com `0:00 / 0:00` na barra e
+       * nenhum som. Quem publica `tocando` e o `player_state_changed`, abaixo.
+       */
+      opts.onEstado('pronto');
+
       finalizar({
         play: async () => {
-          await player.resume();
+          await player.play();
         },
         pause: async () => {
           await player.pause();
@@ -216,20 +333,30 @@ export async function conectarPlayerSpotify(opts: {
         seek: async (ms) => {
           await player.seek(ms);
         },
+        deviceId,
+        ativar: async () => {
+          await player.activateElement();
+        },
         /*
-         * Toca uma faixa, e só uma faixa.
+         * Carrega a faixa no device, e so a faixa.
          *
-         * Álbum e playlist não são transmitidos como contexto: a fila guarda
-         * **faixas**, e quem escolhe um disco na busca percorre ele e escolhe as
-         * músicas. Tocar pelo contexto exigiria `PUT /me/player/play` com o token
-         * da pessoa direto na chamada — um segundo caminho de áudio, fora do
-         * SDK, e sem nenhuma necessidade. O caminho do SDK também é o único que
-         * o Spotify autoriza: o áudio é entregue pelo player, não por nós.
+         * Avia `PUT /me/player/play?device_id=...` com `{"uris":[...]}`, porque a
+         * referencia do `Spotify.Player` nao tem metodo nenhum para escolher uma
+         * faixa -- ver `PlayerBruto`. A versao anterior chamava `playTrack` e
+         * recebia `TypeError: s.playTrack is not a function`, o que deixava o
+         * player com `Cannot perform operation, no list was loaded`.
+         *
+         * O corpo e um uri. O audio continua vindo do player do SDK, neste
+         * navegador, com a conta desta pessoa.
+         *
+         * A decisao sobre Premium nao e tomada aqui: o Spotify responde 403 e o
+         * `account_error` e quem traduz isso.
          */
         tocar: async (trackUri) => {
-          const id = trackUri.split(':').pop();
-          if (!id) return;
-          await player.playTrack(id);
+          if (!/^spotify:track:[A-Za-z0-9]{1,64}$/.test(trackUri)) {
+            throw new Error(`spotify_uri_invalida:${trackUri.slice(0, 40)}`);
+          }
+          await opts.carregar(deviceId, trackUri);
         },
         destruir: () => {
           for (const [evento, fn] of registrados) player.removeListener(evento, fn);
@@ -240,6 +367,38 @@ export async function conectarPlayerSpotify(opts: {
           escutar(evento, fn);
         },
       });
+    });
+
+    /*
+     * `player_state_changed` e quem sabe se ha audio, e por isso e quem publica
+     * `tocando`. Sem este listener o estado so poderia ficar parado em `pronto` para
+     * sempre, e o texto do palco nunca poderia afirmar reproducao -- nem
+     * mentir sobre ela.
+     */
+    escutar('player_state_changed', (arg) => {
+      const s = (arg as WebPlaybackState | undefined) ?? {};
+      const tocando = s.is_playing ?? (s.paused === undefined ? undefined : !s.paused);
+      if (tocando === undefined) return;
+      const faixaAtual = s.track_window?.current_track?.uri ?? null;
+      console.log(
+        `[spotify] player_state_changed tocando=${tocando} faixa=${faixaAtual ?? 'nenhuma'}`,
+      );
+      opts.onEstado(tocando ? 'tocando' : 'pronto');
+    });
+
+    /*
+     * `autoplay_failed` e um evento real da referencia, e ele nao estava sendo
+     * tratado. O navegador recusou iniciar audio sem gesto da pessoa -- o que
+     * acontece na sala com frequencia, porque a faixa vira a midia atual sem
+     * ninguem ter clicado em nada.
+     *
+     * Sem tratamento, a sala ficava mostrando a faixa e ninguem ouvia, e nenhum
+     * texto explicava: o palco dizia que estava tocando. Este e o estado que
+     * fecha essa conta, e ele diz o que a pessoa pode fazer.
+     */
+    escutar('autoplay_failed', () => {
+      console.warn('[spotify] autoplay_failed: o navegador exigiu um gesto antes do audio');
+      opts.onEstado('autoplay');
     });
 
     /*
@@ -331,11 +490,38 @@ export function textoDoEstado(estado: EstadoDoPlayer): string | null {
       return 'Conecte sua conta do Spotify para ouvir. Cada pessoa ouve com a conta dela.';
     case 'sem_token':
       return 'Sua sessão do Spotify expirou. Reconecte para continuar ouvindo.';
+    case 'sem_escopo':
+      /*
+       * A pessoa está conectada e vai ver "reconecte" logo depois de ter feito
+       * isso. A explicação importa: a conta não mudou, o consentimento é que
+       * precisa ser refeito, porque o Spotify não acrescenta escopos a uma
+       * autorização já dada.
+       *
+       * Sem este texto o caminho seria silencioso — o device conecta, o palco
+       * não diz nada, e a pessoa conclui que o Spotify não funciona aqui.
+       */
+      return 'O Spotify precisa de uma nova autorização para tocar nesta sala. Reconecte a conta.';
     case 'premium':
       return 'Spotify Premium é necessário para reproduzir nesta aplicação.';
     case 'ambiente':
       return 'Este ambiente não é compatível com o Spotify Connect. A faixa está na fila.';
+    case 'autoplay':
+      /*
+       * O único estado que pede um clique, e o clique resolve mesmo. O navegador
+       * recusou o áudio porque ninguém tinha interagido com a aba ainda — a faixa
+       * vira mídia current na sala sem ninguém clicar em nada, então isto é o
+       * caso comum, não o raro.
+       */
+      return 'O navegador segurou o áudio até você interagir com a página. Aperte Tocar para liberar.';
     default:
+      /*
+       * `pronto` e `tocando` **não** têm texto aqui, e a ausência é o ponto.
+       *
+       * A primeira versão transformava o `ready` em "tocando" e o palco
+       * escrevia "Tocando pelo Spotify, na sua conta" com nada carregado e
+       * `0:00 / 0:00` na barra. Um device conectado não é áudio tocando, e
+       * dizer que é uma previsão, não uma leitura.
+       */
       return null;
   }
 }

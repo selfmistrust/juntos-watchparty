@@ -50,8 +50,36 @@ const PENDING_TTL_SEC = 10 * 60;
  * a documentação atual pede `streaming`, `user-read-email` e
  * `user-read-private`. Os três aparecem aqui porque a validação de Premium do SDK
  * usa os dados de perfil.
+ *
+ * ## `user-modify-playback-state` não é opcional
+ *
+ * Ele entrou depois do player conectar e não tocar nada. A referência do Web
+ * Playback SDK não tem nenhum método para carregar uma faixa: a lista de
+ * `Spotify.Player` é `connect`, `disconnect`, `addListener`, `removeListener`,
+ * `getCurrentState`, `setName`, `getVolume`, `setVolume`, `pause`, `resume`,
+ * `togglePlay`, `seek`, `previousTrack`, `nextTrack` e `activateElement`. Não há
+ * `playTrack`, não há `loadTrack`, não há `addToQueue`.
+ *
+ * A forma documentada de colocar uma faixa naquele device é
+ * `PUT /v1/me/player/play?device_id=...` com o corpo `{"uris":[...]}`, e ela
+ * exige este scope. É a continuação do SDK, não um segundo caminho de áudio: o
+ * som **continua** sendo entregue pelo player no navegador, e o corpo da
+ * requisição é um uri, não áudio.
+ *
+ * ## O custo: quem já autorizou vai ter de autorizar de novo
+ *
+ * Token granted não cresce. Quem conectou antes desta mudança tem um token sem
+ * este scope, e o `PUT` volta 403 sem tocar. Por isso `escoposFaltando` no
+ * `/token-info` passou a incluir este nome: é o que permite dizer "reconecte"
+ * a quem precisa, em vez de "Premium insuficiente" a quem não tem nada a ver com
+ * Premium.
  */
-const SCOPE = ['streaming', 'user-read-email', 'user-read-private'].join(' ');
+const SCOPE = [
+  'streaming',
+  'user-read-email',
+  'user-read-private',
+  'user-modify-playback-state',
+].join(' ');
 
 const AUTH_URL = 'https://accounts.spotify.com/authorize';
 const TOKEN_URL = 'https://accounts.spotify.com/api/token';
@@ -1180,4 +1208,90 @@ export async function listTracks(
     });
   }
   return { ok: true, items };
+}
+
+/** `spotify:track:` seguido de 22 caracteres base62 — o formato real do id. */
+const URI_DE_TRACK = /^spotify:track:[A-Za-z0-9]{1,64}$/;
+/** O `device_id` do SDK é um hex de 32; aceitar só isso evita forjar device alheio. */
+const DEVICE_ID = /^[A-Fa-f0-9]{32}$/;
+
+/**
+ * Carrega uma faixa no device do Web Playback SDK desta pessoa.
+ *
+ * ## Por que uma chamada de Web API e não um método do player
+ *
+ * A referência do `Spotify.Player` não tem método nenhum para escolher uma
+ * faixa. A lista completa é `connect`, `disconnect`, `addListener`,
+ * `removeListener`, `getCurrentState`, `setName`, `getVolume`, `setVolume`,
+ * `pause`, `resume`, `togglePlay`, `seek`, `previousTrack`, `nextTrack` e
+ * `activateElement`. A primeira versão deste código chamava `playTrack`, que
+ * não existe: o resultado era `TypeError: s.playTrack is not a function` e
+ * `playback_error: Cannot perform operation, no list was loaded`.
+ *
+ * A via oficial é `PUT /v1/me/player/play` com o `device_id` do `ready` no
+ * query e `{"uris":[...]}` no corpo. Ela **não** é um segundo caminho de áudio:
+ * o som continua sendo entregue pelo player do SDK no navegador, e o corpo da
+ * requisição é um uri, nunca áudio. Ela exige `user-modify-playback-state`, que
+ * foi somado ao `SCOPE`.
+ *
+ * ## Por que o `device_id` vem do cliente
+ *
+ * Ele é emitido pelo `ready` do SDK, no navegador, e é o identificador do device
+ * naquela sessão. Sem ele o Spotify mira no dispositivo "ativo" da conta no
+ * celular da pessoa, que é o oposto do que a sala quer.
+ */
+export async function iniciarReproducao(
+  sessionId: string,
+  trackUri: string,
+  deviceId: string,
+): Promise<{ ok: true } | { ok: false; reason: string; status?: number }> {
+  if (!URI_DE_TRACK.test(trackUri)) return { ok: false, reason: URI_INVALIDA, status: 400 };
+  if (!DEVICE_ID.test(deviceId)) return { ok: false, reason: 'spotify_device_invalido', status: 400 };
+
+  const caminho = `/me/player/play?device_id=${encodeURIComponent(deviceId)}`;
+
+  /*
+   * O scope falta aqui em quase todos os primeiros dias: quem conectou antes de
+   * `user-modify-playback-state` existir tem um token granted que não cresce. O
+   * Spotify responde 403, e sem esta checagem a pessoa receberia "Premium
+   * insuficiente" — que é falso, e a empurraria para comprar um plano que ela
+   * já tem.
+   */
+  const peek = await peekTokens(sessionId);
+  if (!peek) return { ok: false, reason: 'not_connected', status: 401 };
+  const faltando = SCOPES_NECESSARIOS.filter((s) => !scopesDoToken(peek.accessToken).includes(s));
+  if (faltando.length > 0) {
+    console.log(
+      `[spotify] play recusado antes de chamar a API: faltam scopes [${faltando.join(', ')}] ` +
+        `sessao=${hashDeSessao(sessionId)}`,
+    );
+    return { ok: false, reason: 'spotify_scope_faltando', status: 403 };
+  }
+
+  let r: Response;
+  try {
+    ({ r } = await chamarWebApi(sessionId, caminho, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uris: [trackUri] }),
+    }));
+  } catch (err) {
+    const motivo = String((err as Error).message).split(':')[1] ?? 'not_connected';
+    return { ok: false, reason: fraseDoToken(motivo), status: 401 };
+  }
+
+  if (!r.ok) {
+    const doSpotify = await registrarErroSpotify('play PUT /me/player/play', r);
+    return { ok: false, reason: motivoDeErro(r.status, doSpotify), status: r.status };
+  }
+
+  /*
+   * Só o status e o tamanho do device. O device_id é público — ele aparece na
+   * lista de dispositivos do Spotify Connect da própria pessoa —, e o token
+   * nunca entra num log.
+   */
+  console.log(
+    `[spotify] play aceito device=${deviceId.slice(0, 8)}… sessao=${hashDeSessao(sessionId)} status=${r.status}`,
+  );
+  return { ok: true };
 }

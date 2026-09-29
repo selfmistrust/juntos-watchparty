@@ -153,6 +153,44 @@ export async function listSpotifyTracks(uri: string): Promise<SpotifyItem[]> {
 }
 
 /**
+ * Carrega uma faixa no device do Web Playback SDK desta pessoa.
+ *
+ * ## Por que isto não baixa áudio
+ *
+ * Não baixa, e o corpo da requisição é o que prova: mandamos um **uri**, e o
+ * Spotify devolve 204 sem corpo nenhum. Quem entrega o som é o player do SDK
+ * rodando neste navegador, com a conta desta pessoa. Se algum dia esta função
+ * passar a receber bytes, ela deixou de ser a continuação do SDK e virou outra
+ * coisa — e isso precisa aparecer na revisão, não num deploy.
+ *
+ * ## `credentials: 'include'`
+ *
+ * Igual às outras chamadas, e pelo mesmo motivo: sem o cookie o servidor
+ * resolveria outra sessão, o `/status` diria "conectado" e esta chamada cairia em
+ * `not_connected` para quem acabou de conectar.
+ */
+export async function playSpotifyTrack(deviceId: string, uri: string): Promise<void> {
+  const r = await fetch(`${SERVER_URL}/api/spotify/play`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deviceId, uri }),
+  });
+  if (r.ok) return;
+
+  let mensagem = 'O Spotify não aceitou carregar esta faixa.';
+  let statusDoSpotify: number | undefined;
+  try {
+    const corpo = (await r.json()) as { error?: unknown; statusDoSpotify?: unknown };
+    if (typeof corpo?.error === 'string' && corpo.error) mensagem = corpo.error;
+    if (typeof corpo?.statusDoSpotify === 'number') statusDoSpotify = corpo.statusDoSpotify;
+  } catch {
+    /* Corpo não-JSON perde o status, e o status é a pista. */
+  }
+  throw new SpotifyErro(mensagem, r.status, statusDoSpotify);
+}
+
+/**
  * Access token curto para o SDK.
  *
  * Só é chamada pelo `getOAuthToken` do Web Playback SDK, e é a única rota daqui

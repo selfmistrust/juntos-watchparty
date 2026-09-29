@@ -2,7 +2,7 @@
 
 import { MusicNotes } from '@phosphor-icons/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { spotifyAccessToken } from '@/lib/spotifyAccount';
+import { spotifyAccessToken, playSpotifyTrack } from '@/lib/spotifyAccount';
 import {
   conectarPlayerSpotify,
   textoDoEstado,
@@ -57,11 +57,22 @@ export function SpotifyStage({ title, artwork, estado }: Props) {
       <div className="min-w-0 max-w-sm">
         <p className="truncate text-sm font-medium text-ink">{title}</p>
         {aviso && <p className="mt-1 text-2xs leading-relaxed text-ink-faint">{aviso}</p>}
+        {/*
+         * Só o `tocando` afirma reprodução, e só porque o `player_state_changed`
+         * disse. A versão anterior imprimia isto com o estado `tocando` que o
+         * `ready` publicava — device conectado, nada carregado, `0:00 / 0:00` na
+         * barra e nenhum som. Um device conectado não é uma música tocando.
+         */}
         {estado === 'tocando' && (
           <p className="mt-1 text-2xs leading-relaxed text-ink-faint">
             Tocando pelo Spotify, na sua conta. Quem não tem Premium vê a faixa e não ouve o áudio.
           </p>
         )}
+        {/*
+         * `pronto` é o device conectado sem áudio rolando. Não se anuncia nada
+         * porque não há nada a anunciar: a faixa está na tela, o nome está logo
+         * acima, e um texto aqui seria uma previsão.
+         */}
       </div>
     </div>
   );
@@ -121,21 +132,29 @@ export function usePlayerSpotify(opts: {
   const tocar = useCallback((uri: string) => {
     void playerRef.current?.tocar(uri).catch((err) => {
       /*
-       * `playTrack` pode rejeitar quando a conta não pode reproduzir, e essa é
-       * a pista mais direta que existe. Não é o `account_error` que confirma,
-       * mas registrá-la evita o silêncio de uma sala que mostra tocando e não
-       * sai som.
+       * `tocar` avanca por `PUT /me/player/play`, e o erro que chega aqui e do
+       * servidor. Um 403 com `spotify_scope_faltando` tem um significado proprio
+       * e precisa virar estado: a pessoa esta conectada, o consentimento so
+       * precisa ser refeito, e sem isso o palco ficaria mudo com a faixa na tela
+       * -- que e o mesmo silencio do defeito original, com outro formato.
+       *
+       * Nada aqui vira `premium`. Quem decide isso e o `account_error` do SDK.
        */
-      console.warn('[spotify] playTrack recusado:', err);
+      const e = err as { status?: number; message?: string };
+      if (e?.status === 403 && typeof e.message === 'string' && e.message.includes('scope')) {
+        setEstado('sem_escopo');
+        return;
+      }
+      console.warn('[spotify] Spotify recusou carregar a faixa:', err);
     });
   }, []);
 
   useEffect(() => {
     /*
-     * `!conectado` é o **único** lugar onde o estado volta a "sem conta". Ele vem
-     * de `/api/spotify/status`, que é a resposta do servidor sobre o token — e
-     * não de um erro do SDK. Um `account_error` deixa a conta conectada e muda
-     * só o estado de reprodução, que é o que a distinção compra.
+     * `!conectado` e o **unico** lugar onde o estado volta a "sem conta". Ele vem
+     * de `/api/spotify/status`, que e a resposta do servidor sobre o token -- e
+     * nao de um erro do SDK. Um `account_error` deixa a conta conectada e muda
+     * so o estado de reproducao, que e o que a distincao compra.
      */
     if (!opts.conectado) {
       setEstado('sem_conta');
@@ -148,18 +167,23 @@ export function usePlayerSpotify(opts: {
     void conectarPlayerSpotify({
       /*
        * O nome aparece na lista de dispositivos do Spotify Connect. Sem um nome
-       * que a pessoa reconheça, ela não consegue escolher este dispositivo como
-       * saída de áudio — e o player tocaria no alto-falante errado, sem aviso.
+       * que a pessoa reconheca, ela nao consegue escolher este dispositivo como
+       * saida de audio -- e o player tocaria no alto-falante errado, sem aviso.
        */
-      nomeDoPlayer: 'Juntos — esta sala',
+      nomeDoPlayer: 'Juntos - esta sala',
       /*
-       * `getOAuthToken` roda no navegador, e é por isso que o token chega aqui
+       * `getOAuthToken` roda no navegador, e e por isso que o token chega aqui
        * em vez de ser guardado no cliente. O `credentials: 'include'` desta
-       * chamada é o que amarra o token à **mesma** sessão que fez o OAuth — sem
-       * ele o servidor criaria uma sessão nova, o `status` diria "conectado" e
+       * chamada e o que amarra o token a **mesma** sessao que fez o OAuth -- sem
+       * ele o servidor criaria uma sessao nova, o `status` diria "conectado" e
        * este `access-token` responderia 401 para a conta que acabou de conectar.
        */
       pedirToken: spotifyAccessToken,
+      /*
+       * A carga da faixa passa pelo servidor porque o token vive la. O corpo da
+       * requisicao e um uri; quem entrega o som continua sendo este player.
+       */
+      carregar: playSpotifyTrack,
       onEstado: (novo) => {
         if (!vivo) return;
         setEstado(novo);
@@ -168,7 +192,7 @@ export function usePlayerSpotify(opts: {
       if (!vivo) {
         /*
          * O componente saiu enquanto o script carregava. Conectar mesmo assim
-         * deixaria um device_id órfão no Spotify até a aba fechar.
+         * deixaria um device_id orfao no Spotify ate a aba fechar.
          */
         p?.destruir();
         return;
@@ -185,30 +209,69 @@ export function usePlayerSpotify(opts: {
   }, [opts.conectado]);
 
   /*
-   * A faixa só começa depois do `ready`, e o efeito reage a três coisas: o
-   * `ready`, a faixa, e o play da sala — nunca a um render a mais. Depender
-   * apenas de `estado` e `faixa` faria a faixa tocar assim que o player
-   * conectasse, mesmo com a sala em pause.
+   * A faixa so comeca depois do `ready`, e so quando a sala esta tocando.
    *
-   * São dois comandos porque são dois momentos. A faixa mudou, e a música
-   * recomeça pelo início. A sala voltou a tocar **a mesma** faixa que ela mesma
-   * mandou pausar, e o que se quer é retomar: `playTrack` aqui jogaria a
-   * pessoa para os primeiros segundos toda vez que ela desse play.
+   * A dependencia e `pronto` e nao `tocando`: `tocando` passa a ser a leitura do
+   * `player_state_changed`, e depender dele aqui criaria um laco em que cada
+   * estado novo recarrega a faixa. O `ready` e a readiness do device; e ele que
+   * autoriza a primeira carga.
    *
-   * `play` é o nome daqui e não `resume` porque é o que a interface deste
-   * projeto expõe; ele chama o `resume` do SDK por baixo.
+   * Sao dois comandos porque sao dois momentos. A faixa mudou, e a musica recomeca
+   * pelo inicio. A sala voltou a tocar **a mesma** faixa que ela mesma mandou
+   * pausar, e o que se quer e retomar -- recarregar aqui jogaria a pessoa para os
+   * primeiros segundos toda vez que ela desse play.
    */
   useEffect(() => {
-    if (estado !== 'tocando' || !opts.faixa || !opts.tocando) return;
+    if (estado !== 'pronto' || !opts.faixa || !opts.tocando) return;
     if (ultimaFaixa.current === opts.faixa) {
       void playerRef.current?.play().catch(() => {
-        /* Retomar o que já está tocando não é erro que a pessoa precise ver. */
+        /* Retomar o que ja esta tocando nao e erro que a pessoa precise ver. */
       });
       return;
     }
     ultimaFaixa.current = opts.faixa;
     tocar(opts.faixa);
   }, [estado, opts.faixa, opts.tocando, tocar]);
+
+  /*
+   * O `autoplay_failed` só se resolve com um gesto real da pessoa.
+   *
+   * A referência do SDK diz que `activateElement` precisa ser chamado de dentro
+   * de um gesto, e é por isso que chamá-lo no `ready` não resolvia: o `ready`
+   * acontece sem ninguém ter tocado em nada. Na sala isso é o caso comum, não o
+   * raro — a faixa vira mídia atual por decisão de outra pessoa, e o áudio é
+   * recusado.
+   *
+   * Qualquer gesto serve, e por isso o listener é na janela inteira: a pessoa
+   * pode estar digitando no chat, e isso também é um gesto. Ouvir só o botão de
+   * play deixaria quem só lê a sala sem saída.
+   */
+  const semPlayer = estado === 'sem_conta' || estado === 'sem_token';
+  useEffect(() => {
+    if (semPlayer) return;
+    const liberar = () => {
+      const p = playerRef.current;
+      if (!p) {
+        /*
+         * O player ainda não existe — o `ready` não chegou. O listener fica, e o
+         * próximo gesto tenta de novo. Sairem na primeira tentativa sem ativar
+         * nada deixaria a pessoa sem áudio e sem nenhuma forma de destravar.
+         */
+        return;
+      }
+      void p.ativar().catch(() => {
+        /* Sem áudio liberado não há como melhorar daqui. */
+      });
+      window.removeEventListener('pointerdown', liberar);
+      window.removeEventListener('keydown', liberar);
+    };
+    window.addEventListener('pointerdown', liberar, { passive: true });
+    window.addEventListener('keydown', liberar);
+    return () => {
+      window.removeEventListener('pointerdown', liberar);
+      window.removeEventListener('keydown', liberar);
+    };
+  }, [semPlayer]);
 
   /*
    * O pause da sala precisa chegar no Spotify.

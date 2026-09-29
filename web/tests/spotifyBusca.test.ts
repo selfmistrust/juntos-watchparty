@@ -402,7 +402,15 @@ test('o catch da rota fala que a falha e do servidor, e nao da conta', () => {
 
 test('o log registra endpoint, status e o corpo do Spotify', () => {
   const c = semComentario(oauth);
-  const fn = c.slice(c.indexOf('async function registrarErroSpotify'));
+  const inicio = c.indexOf('async function registrarErroSpotify');
+  /*
+   * A fatia precisa acabar com a função. Sem o limite, ela vai até o fim do
+   * arquivo e passa a varrer `iniciarReproducao`, que lê `peek.accessToken` para
+   * checar escopo — e acusa um log que não existe. Já aconteceu: a verificação
+   * era mais larga que o que media.
+   */
+  const fim = c.indexOf('\n}', inicio);
+  const fn = c.slice(inicio, fim);
   assert.match(fn, /error\?\.status/, 'o error.status');
   assert.match(fn, /error\?\.message/, 'o error.message');
   assert.match(fn, /error\?\.reason/, 'o error.reason quando existir');
@@ -411,6 +419,31 @@ test('o log registra endpoint, status e o corpo do Spotify', () => {
     !/accessToken|Bearer/.test(fn),
     'e nunca registra o token: o log é lido por quem tem acesso ao deploy, e o token nao precisa estar lá',
   );
+});
+
+test('nenhum log do Spotify escreve token, em nenhuma funcao', () => {
+  /*
+   * A verificação acima é por função, e por isso não cobre o arquivo inteiro. Esta
+   * cobre os dois: para cada `console.*` do módulo, o trecho até o fim da
+   * instrução não pode mencionar token nem `Authorization`.
+   *
+   * Vale a redundância porque o vazamento que importa é justamente o que
+   * ninguém procurou: o `pending.sessionId.slice(0, 8)` que estava no log do
+   * callback foi encontrado por leitura, não por teste.
+   */
+  const c = semComentario(oauth);
+  for (const m of c.matchAll(/console\.(?:log|warn|error)\(([\s\S]{0,400}?)\);/g)) {
+    assert.ok(
+      !/accessToken|refreshToken|Authorization|Bearer/.test(m[1]),
+      `um log do Spotify escreve token: ${m[1].slice(0, 90)}`,
+    );
+  }
+  for (const m of c.matchAll(/console\.(?:log|warn|error)\(`([^`]{0,300})`/g)) {
+    assert.ok(
+      !/\$\{(?:auth|result|peek|record)\.accessToken\}/.test(m[1]),
+      `um log do Spotify interpola o access token: ${m[1].slice(0, 90)}`,
+    );
+  }
 });
 
 test('a falta de token nao vira 500, e tem acao propria', () => {

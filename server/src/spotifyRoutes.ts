@@ -17,6 +17,7 @@ import {
   getStatus,
   getValidAccessToken,
   hashDeSessao,
+  iniciarReproducao,
   listTracks,
   peekTokens,
   scopesDoToken,
@@ -149,8 +150,23 @@ export function registerSpotifyRoutes(app: Express): void {
        * quase sempre uma divisão de sessão: a rota que o player chama resolve
        * para outra, e nenhuma das duas acusa nada. O `hashDeSessao` garante que
        * o identificador do log não seja o valor do cookie.
+       *
+       * `cookie` e `nav` existem porque apareceu **dois** hashes diferentes no log
+       * da mesma máquina, um deles sempre `connected=false`. Alguém chega sem o
+       * cookie, o `ensureSessionId` cria uma sessão nova, e o `Set-Cookie` dela
+       * sobrescreve a boa. Duas causas possíveis — cliente sem credencial, ou
+       * corrida entre requisições — e os dois campos as separam: `cookie=ausente`
+       * é a primeira, `cookie=presente` com sessão nova é a segunda.
+       *
+       * O User-Agent vai sem nada de identificador pessoal: é o suficiente para
+       * dizer se as duas requisições vêm do Electron, do Chrome ou de um webhook.
        */
-      console.log(`[spotify] status session=${hashDeSessao(sessionId)} connected=${status.connected}`);
+      const comCookie = readSessionId(req) !== null;
+      const ua = String(req.headers['user-agent'] ?? '').slice(0, 40).replace(/\s+/g, ' ');
+      console.log(
+        `[spotify] status session=${hashDeSessao(sessionId)} connected=${status.connected} ` +
+          `cookie=${comCookie ? 'presente' : 'ausente'} ua="${ua}"`,
+      );
       res.json(status);
     } catch (err) {
       console.error('[spotify] status falhou', err);
@@ -357,6 +373,33 @@ export function registerSpotifyRoutes(app: Express): void {
    * O JWT é decodificado **aqui**, e só o campo `scope` sai. A assinatura não é
    * verificada de propósito: isto não valida nada, é leitura de diagnóstico.
    */
+  app.post('/api/spotify/play', async (req, res) => {
+    try {
+      if (!isTrustedOrigin(req)) return jsonError(res, 403, 'forbidden');
+      const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);
+      if (!sessionId) return jsonError(res, 400, 'session_required');
+
+      const uri = String(req.body?.uri ?? '').trim();
+      const deviceId = String(req.body?.deviceId ?? '').trim();
+
+      const result = await iniciarReproducao(sessionId, uri, deviceId);
+      if (!result.ok) {
+        /*
+         * O status do Spotify segue adiante, e `spotify_scope_faltando` volta 403
+         * sem nunca ter passado pelo Spotify — porque é a **nossa** checagem, não a
+         * dele. Mascarar os dois como 403 do Spotify diria à pessoa que a conta
+         * foi recusada, quando na verdade o token dela é antigo e o consentimento
+         * precisa ser refeito.
+         */
+        return erroDeSpotify(res, result.reason, result.status ?? 502);
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('[spotify] play falhou', err);
+      res.status(500).json({ error: 'spotify_play_failed' });
+    }
+  });
+
   app.get('/api/spotify/token-info', async (req, res) => {
     try {
       const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);

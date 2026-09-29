@@ -208,20 +208,45 @@ test('a fila nao guarda URL de audio do Spotify', () => {
   );
 });
 
-test('o playback nao chama a Web API do Spotify por fora do SDK', () => {
+test('o audio nunca passa pelo nosso servidor nem pelo navegador', () => {
   /*
-   * `PUT /me/player/play` com o token da pessoa no navegador seria um segundo
-   * caminho de audio, fora do SDK -- que e o unico que o Spotify autoriza. E
-   * seria desnecessario: a fila e de faixas, uma a uma, e `playTrack` do SDK
-   * faz isso.
+   * Este teste estava escrito ao contrário, e foi ele que produziu o defeito.
+   *
+   * A versão anterior afirmava que `PUT /me/player/play` seria "um segundo caminho
+   * de áudio, fora do SDK" e proibia a chamada. A conclusão estava errada: a via
+   * documentada para carregar uma faixa no device do SDK **é** esse endpoint, o
+   * corpo da requisição é um uri, e o som continua sendo entregue pelo player no
+   * navegador. Proibir o endpoint deixou o player com
+   * `Cannot perform operation, no list was loaded` — e a interface chamando isso
+   * de "tocando".
+   *
+   * A propriedade que vale não é "não chamar o endpoint". É: nenhum áudio
+   * atravessa esta aplicação. Nenhum byte, nenhuma URL de mídia, nenhum proxy.
    */
   const c = semComentario(playback);
   assert.ok(
     !/api\.spotify\.com/.test(c),
-    'nenhuma chamada direta a api.spotify.com dentro do playback',
+    'o cliente nunca fala direto com api.spotify.com: o token nao sai do servidor',
   );
-  assert.ok(!/me\/player\/play/.test(c), 'e em especial nenhum PUT /me/player/play');
-  assert.match(c, /player\.playTrack\(id\)/, 'o audio entra pelo playTrack do SDK');
+
+  /*
+   * O ponto que o teste antigo confiava poder medir é o corpo da requisição, e
+   * ele tem que ser um uri. Um array de bytes aqui seria a linha em que esta
+   * aplicação deixa de ser um cliente do Spotify e vira outra coisa.
+   */
+  const oauthC = semComentario(oauth);
+  const play = oauthC.slice(oauthC.indexOf('export async function iniciarReproducao'));
+  assert.match(play, /JSON\.stringify\(\{ uris: \[trackUri\] \}\)/, 'o corpo e um uri, nunca audio');
+  assert.ok(
+    !/r\.arrayBuffer|\.blob\(\)|Buffer\.from|base64/i.test(play),
+    'e nenhuma leitura de corpo binario: nao existe download de audio',
+  );
+
+  const rotasC2 = semComentario(rotas);
+  assert.ok(
+    !/spotify.*proxy|stream.*spotify/i.test(rotasC2),
+    'e nenhuma rota de proxy de midia do Spotify',
+  );
 });
 
 test('os scopes nao permitem escrever na biblioteca da pessoa', () => {
@@ -444,20 +469,27 @@ test('trocar de faixa nao desconta a conta', () => {
   );
 });
 
-test('os cinco eventos do SDK sao tratados com estados proprios', () => {
+test('os eventos do SDK sao tratados com estados proprios', () => {
   const c = semComentario(playback);
   for (const [evento, esperado] of [
-    ['ready', "'tocando'"],
+    /*
+     * `ready` leva a `pronto`, e nao a `tocando`. Um device conectado nao e uma
+     * musica tocando: o `ready` nao afirma que ha faixa nem que ela comecou. A
+     * versao anterior publicava `tocando` aqui, e o palco escrevia "Tocando pelo
+     * Spotify" com `0:00 / 0:00` na barra e nenhum som.
+     */
+    ['ready', "'pronto'"],
     ['authentication_error', "'sem_token'"],
     ['account_error', "'premium'"],
     ['initialization_error', "'ambiente'"],
+    ['autoplay_failed', "'autoplay'"],
   ] as const) {
     const bloco = c.slice(c.indexOf(`escutar('${evento}'`));
     const corpo = bloco.slice(0, bloco.indexOf('});'));
     assert.ok(corpo.length > 0, `${evento} precisa de um listener`);
     assert.match(corpo, new RegExp(`onEstado\\(${esperado}\\)`), `${evento} leva a ${esperado}`);
   }
-  for (const evento of ['not_ready', 'playback_error']) {
+  for (const evento of ['not_ready', 'playback_error', 'player_state_changed']) {
     assert.ok(c.includes(`escutar('${evento}'`), `${evento} tem listener`);
   }
   /*
@@ -492,20 +524,32 @@ test('a faixa so comeca depois do ready', () => {
   const c = semComentario(palco);
   const hook = c.slice(c.indexOf('export function usePlayerSpotify'));
 
-  const efeito = hook.slice(hook.indexOf("if (estado !== 'tocando' || !opts.faixa || !opts.tocando) return;"));
+  const efeito = hook.slice(
+    hook.indexOf("if (estado !== 'pronto' || !opts.faixa || !opts.tocando) return;"),
+  );
   assert.match(
     efeito.slice(0, efeito.indexOf('}, [estado')),
     /tocar\(opts\.faixa\)/,
-    'a faixa nova e passada ao playTrack',
+    'a faixa nova e carregada no device do SDK',
   );
   assert.match(
     efeito.slice(0, efeito.indexOf('}, [estado')),
     /playerRef\.current\?\.play\(\)/,
-    'e voltar a tocar a mesma faixa e um resume, nao um playTrack que recomeca',
+    'e voltar a tocar a mesma faixa e um resume, nao recarregar do zero',
   );
   assert.ok(
-    !/if \(estado !== 'tocando' \|\| !opts\.faixa\) return;\s*tocar/.test(c),
-    'e a faixa nao toca so com o ready: o play da sala tambem conta',
+    !/if \(estado !== 'pronto' \|\| !opts\.faixa\) return;\s*tocar/.test(c),
+    'e a faixa nao carrega so com o ready: o play da sala tambem conta',
+  );
+  /*
+   * A dependencia e `pronto`, e nao `tocando`. `tocando` passou a ser a leitura
+   * do `player_state_changed`; depender dele aqui recarregaria a faixa a cada
+   * mudanca de estado, e a musica nunca terminaria.
+   */
+  assert.match(
+    efeito.slice(efeito.indexOf('}, [estado')),
+    /\[estado, opts\.faixa, opts\.tocando, tocar\]/,
+    'e a lista de dependencias nao inclui tocando, que e leitura do SDK',
   );
 });
 
@@ -562,6 +606,254 @@ test('o painel nao inventa o estado do player', () => {
     painelC,
     /cada pessoa usa a própria, e só ouve se tiver Spotify Premium/,
     'e o texto de conta desconectada continua dizendo que o audio exige Premium',
+  );
+});
+
+test('so se chama metodo que existe no Spotify.Player', () => {
+  /*
+   * O erro real em produção, textualmente:
+   *
+   *   [spotify] playTrack recusado: TypeError: s.playTrack is not a function
+   *   [spotify] playback_error: Cannot perform operation, no list was loaded.
+   *
+   * `playTrack`, `loadTrack` e `pauseTrack` estavam **declarados** no tipo
+   * `PlayerBruto`, que é escrito à mão. O `tsc` não tem como discordar de um
+   * tipo que o próprio código inventou; só a documentação discorda.
+   *
+   * Este teste amarra a lista do tipo à lista real da referência, e falha no
+   * momento em que alguém acrescenta um método sem conferir.
+   */
+  const c = semComentario(playback);
+  /*
+   * A fatia vai ate o fim de `PlayerBruto`, e nao ate `PlayerWindow`: entre os
+   * dois mora `WebPlaybackState`, cujos campos (`paused`, `position`) entrariam
+   * na lista de metodos e acusariam um falso positivo.
+   */
+  const inicio = c.indexOf('interface PlayerBruto');
+  const bloco = c.slice(inicio, c.indexOf('}', inicio));
+  const declarados = [...bloco.matchAll(/^\s{2}([a-zA-Z]+)\??:/gm)].map((m) => m[1]);
+
+  const OFICIAIS = [
+    'connect',
+    'disconnect',
+    'addListener',
+    'removeListener',
+    'getCurrentState',
+    'setName',
+    'getVolume',
+    'setVolume',
+    'pause',
+    'play',
+    'resume',
+    'togglePlay',
+    'seek',
+    'previousTrack',
+    'nextTrack',
+    'activateElement',
+  ];
+
+  for (const nome of declarados) {
+    assert.ok(
+      OFICIAIS.includes(nome),
+      `${nome} nao existe em Spotify.Player; a lista oficial esta em PlayerBruto`,
+    );
+  }
+  for (const nome of OFICIAIS) {
+    assert.ok(
+      declarados.includes(nome),
+      `${nome} existe em Spotify.Player e sumiu do tipo: a copia da referencia esta incompleta`,
+    );
+  }
+
+  /*
+   * E nenhum método pode ser chamado no corpo, porque um método chamado e um
+   * método inventado que passou pelo typecheck.
+   */
+  for (const apelido of ['playTrack', 'loadTrack', 'pauseTrack', 'addToQueue', 'setTrack']) {
+    assert.ok(
+      !new RegExp(`player\\.${apelido}\\s*\\(`).test(c),
+      `player.${apelido}() nao pode ser chamado: o metodo nao existe`,
+    );
+  }
+});
+
+test('a faixa e carregada pelo endpoint documentado, com o device do SDK', () => {
+  /*
+   * Não existe método de faixa no `Spotify.Player`, então a via oficial é
+   * `PUT /me/player/play?device_id=...` com `{"uris":[...]}`. O corpo é um uri:
+   * o áudio continua vindo do player do SDK neste navegador.
+   */
+  const oauthC = semComentario(oauth);
+  const play = oauthC.slice(oauthC.indexOf('export async function iniciarReproducao'));
+  assert.match(play, /\/me\/player\/play\?device_id=/, 'a chamada mira o device do SDK');
+  assert.match(play, /JSON\.stringify\(\{ uris: \[trackUri\] \}\)/, 'e manda o uri da faixa, so');
+  assert.match(play, /method: 'PUT'/, 'com PUT');
+  assert.ok(
+    !/audio|preview|mp3|bytes|buffer/i.test(play.replace(/\/\*[\s\S]*?\*\//g, '')),
+    'e nada nesta funcao fala em bytes de audio: aqui so passa uri',
+  );
+  assert.match(play, /DEVICE_ID\.test\(deviceId\)/, 'o device_id e validado antes de virar query');
+  assert.match(play, /URI_DE_TRACK\.test\(trackUri\)/, 'e o uri e validado como spotify:track:');
+
+  const rotasC2 = semComentario(rotas);
+  assert.match(
+    rotasC2,
+    /app\.post\('\/api\/spotify\/play'/,
+    'e existe uma rota para isso, com o mesmo sessionId das outras',
+  );
+
+  const cliente = readFileSync(resolve(process.cwd(), '../web/lib/spotifyAccount.ts'), 'utf8');
+  const clienteC = semComentario(cliente);
+  const playCli = clienteC.slice(clienteC.indexOf('export async function playSpotifyTrack'));
+  assert.match(
+    playCli,
+    /SERVER_URL\}\/api\/spotify\/play`[\s\S]{0,300}?credentials: 'include'/,
+    'e o cliente manda credencial: sem cookie o servidor resolveria outra sessao',
+  );
+  assert.match(playCli, /body: JSON\.stringify\(\{ deviceId, uri \}\)/, 'passando o device e o uri');
+});
+
+test('carregar a faixa exige o scope que so foi adicionado agora', () => {
+  /*
+   * Token granted não cresce. Quem conectou antes desta mudança tem um token sem
+   * `user-modify-playback-state` e o Spotify devolve 403 — e sem a checagem a
+   * pessoa receberia "Premium insuficiente", que é falso, e iria comprar um plano
+   * que já tem.
+   */
+  const oauthC = semComentario(oauth);
+  assert.match(
+    oauthC,
+    /'user-modify-playback-state'/,
+    'o scope esta no pedido de autorizacao',
+  );
+  const play = oauthC.slice(oauthC.indexOf('export async function iniciarReproducao'));
+  assert.match(
+    play,
+    /faltando\.length > 0[\s\S]{0,400}?spotify_scope_faltando/,
+    'e a falta de scope tem um motivo proprio, que nao e Premium nem Spotify',
+  );
+  assert.match(
+    play,
+    /reason: 'spotify_scope_faltando', status: 403/,
+    'devolvendo 403 sem passar pelo Spotify, porque a checagem e nossa',
+  );
+});
+
+test('pronto e tocando sao estados diferentes, e so o segundo afirma audio', () => {
+  /*
+   * O `ready` diz que o **device** existe. Não diz que há faixa, nem que ela
+   * começou, nem que há áudio. A primeira versão publicava `tocando` no `ready`
+   * e o palco escrevia "Tocando pelo Spotify, na sua conta" com nada carregado
+   * e `0:00 / 0:00` na barra.
+   */
+  const c = semComentario(playback);
+  const ready = c.slice(c.indexOf("escutar('ready'"), c.indexOf("escutar('player_state_changed'"));
+  assert.match(ready, /onEstado\('pronto'\)/, 'o ready publica pronto');
+  assert.ok(
+    !/onEstado\('tocando'\)/.test(ready),
+    'e nao publica tocando: device conectado nao e musica tocando',
+  );
+
+  const mudou = c.slice(c.indexOf("escutar('player_state_changed'"));
+  assert.match(
+    mudou.slice(0, mudou.indexOf('});')),
+    /onEstado\(tocando \? 'tocando' : 'pronto'\)/,
+    'e quem publica tocando e o player_state_changed, que e quem sabe',
+  );
+
+  /*
+   * `player_state_changed` existia na interface desde o começo e nunca foi
+   * registrado. O estado de reprodução não tinha fonte.
+   */
+  assert.ok(
+    c.includes("escutar('player_state_changed'"),
+    'o listener de player_state_changed existe de fato, e nao so no tipo',
+  );
+
+  // O texto de `pronto` e `tocando` nao vem de textoDoEstado, e sim do palco,
+  // que so o diria quando o SDK confirmou.
+  const texto = semComentario(playback).slice(
+    semComentario(playback).indexOf('export function textoDoEstado'),
+  );
+  assert.ok(
+    !/case 'pronto'/.test(texto) && !/case 'tocando'/.test(texto),
+    'nenhum dos dois ganha aviso generico: so o palco fala de reproducao',
+  );
+  const palco = semComentario(
+    readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8'),
+  );
+  assert.match(
+    palco,
+    /\{estado === 'tocando' && \([\s\S]{0,200}?Tocando pelo Spotify/,
+    'e o palco so diz "Tocando pelo Spotify" no estado que o SDK confirmou',
+  );
+});
+
+test('o audio preso por autoplay tem estado proprio e um caminho de saida', () => {
+  /*
+   * `autoplay_failed` é um evento da referência e não estava sendo tratado. Na
+   * sala ele é o caso comum: a faixa vira mídia atual por decisão de outra
+   * pessoa, sem gesto nenhum, e o navegador recusa o áudio.
+   */
+  const c = semComentario(playback);
+  assert.ok(c.includes("escutar('autoplay_failed'"), 'o autoplay_failed tem listener');
+  const bloco = c.slice(c.indexOf("escutar('autoplay_failed'"));
+  assert.match(bloco.slice(0, bloco.indexOf('});')), /onEstado\('autoplay'\)/, 'e vira estado proprio');
+
+  /*
+   * O caminho de saída é um gesto real. Chamar `activateElement` no `ready` não
+   * resolve, porque o `ready` acontece sem ninguém ter clicado em nada.
+   */
+  const palcoC = semComentario(
+    readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8'),
+  );
+  assert.match(
+    palcoC,
+    /window\.addEventListener\('pointerdown', liberar[\s\S]{0,200}?window\.addEventListener\('keydown', liberar/,
+    'e o gesto e escutado na janela: digitar no chat tambem e um gesto',
+  );
+  assert.match(palcoC, /p\.ativar\(\)/, 'chamando activateElement por dentro do gesto');
+  const texto = semComentario(playback).slice(
+    semComentario(playback).indexOf('export function textoDoEstado'),
+  );
+  assert.match(
+    texto,
+    /case 'autoplay':[\s\S]{0,200}?interagir com a página/,
+    'e o texto diz o que a pessoa pode fazer, em vez de culpar a conta',
+  );
+});
+
+test('quem autorizou antes do scope novo recebe um estado proprio', () => {
+  /*
+   * Token granted não cresce. Quem conectou antes de
+   * `user-modify-playback-state` existir tem um token válido que não reproduz, e
+   * o `/status` continua dizendo `connected: true` — a conta está lá, o
+   * consentimento é que está desatualizado.
+   *
+   * Sem estado para isso o caminho é silencioso: o device conecta, o palco não
+   * diz nada, e a pessoa conclui que o Spotify não funciona aqui. É o defeito
+   * original com outro formato.
+   */
+  const c = semComentario(playback);
+  assert.match(c, /\| 'sem_escopo'/, 'o estado existe');
+  assert.match(
+    c.slice(c.indexOf("case 'sem_escopo'")),
+    /nova autorização para tocar nesta sala/,
+    'e o texto diz o que fazer, sem culpar Premium nem a conta',
+  );
+
+  const palcoC = semComentario(
+    readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8'),
+  );
+  const fn = palcoC.slice(palcoC.indexOf('const tocar = useCallback'));
+  assert.match(
+    fn.slice(0, fn.indexOf('}, []);')),
+    /status === 403[\s\S]{0,200}?setEstado\('sem_escopo'\)/,
+    'e o 403 de escopo vira esse estado no gancho, em vez de um log e nada',
+  );
+  assert.ok(
+    !/setEstado\('premium'\)/.test(fn),
+    'e nenhum 403 vira premium: so o account_error do SDK decide isso',
   );
 });
 
