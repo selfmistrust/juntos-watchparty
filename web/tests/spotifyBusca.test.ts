@@ -176,6 +176,56 @@ test('a marcacao do state nao substitui o consumo do registro', () => {
   );
 });
 
+test('o parse da resposta do Spotify fica dentro de um try', () => {
+  /*
+   * A origem do 502 que a pessoa viu.
+   *
+   * `chamarWebApi` devolvia a `Response` crua, e o `await r.json()` ficava
+   * **fora** do `try` que protegia a chamada — com o `<T>` genérico na
+   * assinatura prometendo que o corpo já estava convertido. O Spotify
+   * respondia 200, o corpo chegava truncado, o `r.json()` lançava, e a rota
+   * respondia "problema do servidor do Juntos".
+   *
+   * Isso é verdade, e não ajuda: não diz que a resposta chegou pela metade, e
+   * repetir o clique resolve. A ação muda, e é por isso que a distinção importa.
+   */
+  const c = semComentario(oauth);
+  const fn = c.slice(c.indexOf('export async function search'));
+  const blocoParse = fn.slice(fn.indexOf('await r.json()') - 200, fn.indexOf('await r.json()') + 200);
+  assert.match(
+    blocoParse,
+    /try \{[\s\S]{0,80}await r\.json\(\)/,
+    'o r.json() precisa estar dentro de um try',
+  );
+  assert.match(
+    c,
+    /if \(!data \|\| typeof data !== 'object'\)/,
+    'e um corpo que nao e objeto tambem e resposta truncada, nao excecao',
+  );
+  assert.match(c, /RESPOSTA_TRUNCADA\s*=/, 'a frase diz que e passageiro');
+  assert.ok(
+    !/chamarWebApi</.test(c),
+    'e chamarWebApi nao tem mais generico: ele prometia um parse que nao fazia',
+  );
+});
+
+test('um item sem id nao derruba a busca inteira', () => {
+  /*
+   * O Spotify manda `null` no lugar de faixas indisponíveis em alguns markets.
+   * Um `null` só derrubava a busca com `Cannot read properties of null`, e o
+   * resultado era um 502 que falava do servidor do Juntos por causa de um item
+   * que a API não podia entregar.
+   */
+  const c = semComentario(oauth);
+  for (const tipo of ['t', 'a', 'p']) {
+    assert.match(
+      c,
+      new RegExp(`for \\(const ${tipo} of data\\.[a-z]+\\?\\.items \\?\\? \\[\\]\\) \\{\\s*if \\(!${tipo}\\?\\.id\\) continue;`),
+      `o item "${tipo}" sem id e pulado, e a busca continua`,
+    );
+  }
+});
+
 test('a rota repassa o status que veio do Spotify', () => {
   const c = semComentario(rotas);
   assert.match(

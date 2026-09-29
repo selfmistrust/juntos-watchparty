@@ -382,7 +382,19 @@ export async function marcarPendingUsado(state: string, sessionId: string, desti
  * conta que não está na lista, e renovar o token não muda nada — só queima uma
  * chamada e, no pior caso, invalida a sessão.
  */
-async function chamarWebApi<T>(
+/**
+ * Sem genérico, de propósito.
+ *
+ * A primeira versão era `chamarWebApi<T>` e devolvia `{ r, tokenUsado }` — o `T`
+ * não aparecia em lugar nenhum do retorno. A assinatura prometia que o corpo já
+ * estava convertido, e o `await r.json()` ficava **fora** do `try` que protegia a
+ * chamada. Um corpo truncado do Spotify virava exceção, e a exceção virava um
+ * 502 que falava do servidor sem dizer que a resposta tinha chegado pela metade.
+ *
+ * Devolver a `Response` crua deixa explícito quem faz o parse — e quem coloca o
+ * parse dentro de um `try`.
+ */
+async function chamarWebApi(
   sessionId: string,
   caminhoEQuery: string,
   init: RequestInit = {},
@@ -808,6 +820,16 @@ const TOKEN_RENOVACAO =
   'conectada — tente a busca de novo em alguns instantes.';
 
 /**
+ * O Spotify respondeu 200, e o corpo não chegou inteiro.
+ *
+ * A distinção de `TOKEN_RENOVACAO` é deliberada: aqui **não** é a conta nem a
+ * autorização, é o caminho. Repetir o clique resolve, e dizer "reconecte" faria a
+ * pessoa jogar fora uma conta que está perfeitamente boa.
+ */
+const RESPOSTA_TRUNCADA =
+  'A resposta do Spotify chegou incompleta. É passageiro — busque de novo agora.';
+
+/**
  * O motivo interno do token, virando texto.
  *
  * São três estados com três ações diferentes — conectar, reconectar, esperar — e
@@ -861,7 +883,7 @@ export async function search(
 
   let r: Response;
   try {
-    ({ r } = await chamarWebApi<SearchResponse>(sessionId, `/search?${url.searchParams.toString()}`));
+    ({ r } = await chamarWebApi(sessionId, `/search?${url.searchParams.toString()}`));
   } catch (err) {
     /*
      * `spotify_sem_token:<motivo>` é o único erro que `chamarWebApi` lança: não
@@ -877,11 +899,45 @@ export async function search(
     const doSpotify = await registrarErroSpotify('busca GET /search', r);
     return { ok: false, reason: motivoDeErro(r.status, doSpotify), status: r.status };
   }
-  const data = (await r.json()) as SearchResponse;
+
+  /*
+   * O `r.json()` está dentro do `try` porque ele lança, e essa era a origem do
+   * 502 que a pessoa via.
+   *
+   * O Spotify respondeu 200 e o corpo chegou incompleto — corte de conexão, proxy
+   * no meio, ou uma resposta de edge com corpo vazio. A exceção subia da função e
+   * a rota respondia com "problema do servidor do Juntos", o que é verdade, mas
+   * não ajuda: ela não diz que a resposta chegou pela metade, e repetir o clique
+   * provavelmente funciona.
+   *
+   * A distinção importa porque a ação muda: corpo truncado é passageiro e a
+   * pessoa pode tentar de novo já; token recusado exige reconectar.
+   */
+  let data: SearchResponse;
+  try {
+    data = (await r.json()) as SearchResponse;
+  } catch {
+    console.warn(`[spotify] busca: resposta 200 com corpo ilegível (${r.headers.get('content-length') ?? 'sem length'})`);
+    return { ok: false, reason: RESPOSTA_TRUNCADA, status: 502 };
+  }
+
+  if (!data || typeof data !== 'object') {
+    console.warn('[spotify] busca: resposta 200 sem objeto JSON');
+    return { ok: false, reason: RESPOSTA_TRUNCADA, status: 502 };
+  }
 
   const items: SpotifySearchItem[] = [];
 
+  /*
+   * `t?.id` e não `t.id`.
+   *
+   * O Spotify manda `null` no lugar de faixas indisponíveis em alguns markets, e
+   * um único `null` derrubava a busca inteira com `Cannot read properties of
+   * null` — de novo um 502 que falava do servidor quando o Spotify só tinha um
+   * resultado que nao pode ser usado. Um item que não tem id não é um item, e a busca segue.
+   */
   for (const t of data.tracks?.items ?? []) {
+    if (!t?.id) continue;
     items.push({
       id: t.id,
       kind: 'track',
@@ -895,6 +951,7 @@ export async function search(
   }
 
   for (const a of data.albums?.items ?? []) {
+    if (!a?.id) continue;
     items.push({
       id: a.id,
       kind: 'album',
@@ -906,6 +963,7 @@ export async function search(
   }
 
   for (const p of data.playlists?.items ?? []) {
+    if (!p?.id) continue;
     items.push({
       id: p.id,
       kind: 'playlist',
