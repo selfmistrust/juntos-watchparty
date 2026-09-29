@@ -39,8 +39,28 @@ function jsonError(res: Response, http: number, error: string) {
  * com o status em mãos. O corpo da resposta é esse texto, e o cliente mostra
  * direto.
  */
-function erroDeSpotify(res: Response, reason: string) {
-  res.status(403).json({ error: reason });
+/**
+ * Envia o erro do Spotify com **o status do Spotify**, e não um 403 fixo.
+ *
+ * ## O defeito que isto corrige
+ *
+ * A rota respondia `403` para qualquer falha. Um `400` do Spotify chegava ao
+ * console do navegador como `403 Forbidden` — que é a assinatura de "sem
+ * permissão", e mandava o diagnóstico para o lado errado. O erro de parâmetro
+ * inválido e o erro de conta não autorizada viravam a mesma coisa na tela, e o
+ * `403` do navegador era **meu**, não do Spotify.
+ *
+ * Passar o status adiante é o que torna o console utilizável: `429` no console
+ * é limite de requisições, `401` é token, `400` é parâmetro. Um `403` real no
+ * console passa a significar exatamente uma coisa.
+ */
+function erroDeSpotify(res: Response, reason: string, statusDoSpotify: number) {
+  // O status do Spotify vai adiante, com uma regra: o que é culpa do Spotify
+  // (`401`, `403`, `429`) passa; o resto fica `502`, porque aí a falha foi nossa ou
+  // a resposta não era do Spotify. Um `400` virando `502` seria errado do outro
+  // jeito, então `400` também passa.
+  const status = [400, 401, 403, 429].includes(statusDoSpotify) ? statusDoSpotify : 502;
+  res.status(status).json({ error: reason, statusDoSpotify });
 }
 
 /**
@@ -317,7 +337,7 @@ export function registerSpotifyRoutes(app: Express): void {
       const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);
       if (!sessionId) return jsonError(res, 400, 'session_required');
       const result = await search(sessionId, term);
-      if (!result.ok) return erroDeSpotify(res, result.reason);
+      if (!result.ok) return erroDeSpotify(res, result.reason, result.status ?? 502);
       res.json({ items: result.items });
     } catch (err) {
       console.error('[spotify] search falhou', err);
@@ -336,7 +356,7 @@ export function registerSpotifyRoutes(app: Express): void {
       const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);
       if (!sessionId) return jsonError(res, 400, 'session_required');
       const result = await listTracks(sessionId, uri);
-      if (!result.ok) return erroDeSpotify(res, result.reason);
+      if (!result.ok) return erroDeSpotify(res, result.reason, result.status ?? 502);
       res.json({ items: result.items });
     } catch (err) {
       console.error('[spotify] tracks falhou', err);

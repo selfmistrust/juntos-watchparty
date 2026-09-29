@@ -311,6 +311,63 @@ async function consumirPending(state: string): Promise<void> {
   await redis.del(PENDING_KEY(state));
 }
 
+/**
+ * Chama a Web API com o token da pessoa, e renova **uma vez** se o Spotify recusar.
+ *
+ * ## Por que repetir só uma vez
+ *
+ * A renovação acontece por margem de 60 segundos antes de o token vencer, então o
+ * `401` aqui é raro — e quando vem, quase sempre é o token revogado de verdade,
+ * não um token velho. Nesses casos repetir não ajuda.
+ *
+ * O laço de refresh é o modo de falha clássico dessa integração: renova, chama de
+ * novo, o Spotify recusa de novo, renova de novo. Cada volta consome uma chamada
+ * ao `/api/token` e um `invalid_grant` que **apaga o token guardado** — aí a
+ * pessoa deixa de estar conectada por causa de um bug, e a correção passa a ser
+ * "conecte de novo", que é o que ela já fez duas vezes.
+ *
+ * Por isso o `renovado` é uma flag de uma ida só. O segundo `401` vira erro, sem
+ * tocar no token guardado.
+ *
+ * ## Só depois de um 401
+ *
+ * Um `403` **não** renova. Em Development Mode ele é a resposta normal de uma
+ * conta que não está na lista, e renovar o token não muda nada — só queima uma
+ * chamada e, no pior caso, invalida a sessão.
+ */
+async function chamarWebApi<T>(
+  sessionId: string,
+  caminhoEQuery: string,
+  init: RequestInit = {},
+): Promise<{ r: Response; tokenUsado: string }> {
+  const auth = await getValidAccessToken(sessionId);
+  if (!auth.ok) throw new Error(`spotify_sem_token:${auth.reason}`);
+
+  const fazer = async (token: string) =>
+    fetch(`https://api.spotify.com/v1${caminhoEQuery}`, {
+      ...init,
+      headers: { ...(init.headers ?? {}), authorization: `Bearer ${token}` },
+    });
+
+  let token = auth.token;
+  let r = await fazer(token);
+
+  if (r.status === 401) {
+    /*
+     * Invalida o token guardado e força a renovação pelo refresh token. Sem o
+     * `del`, `getValidAccessToken` devolveria o mesmo token — que é o que o
+     * Spotify acabou de recusar — e o retry seria idêntico ao primeiro.
+     */
+    await redis.del(TOKEN_KEY(sessionId));
+    const renovado = await getValidAccessToken(sessionId);
+    if (!renovado.ok) throw new Error(`spotify_sem_token:${renovado.reason}`);
+    token = renovado.token;
+    r = await fazer(token);
+  }
+
+  return { r, tokenUsado: token };
+}
+
 async function spotifyFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const r = await fetch(path, {
     ...init,
@@ -509,50 +566,127 @@ export interface SpotifySearchItem {
  * `market` e o `authorization` — e aí o log passaria a carregar segredo.
  */
 /**
- * Converte o status do Spotify em algo que a interface consiga mostrar.
+ * Converte a resposta de erro do Spotify em texto que a pessoa consiga agir.
  *
- * Sem isto, o painel mostrava `spotify_403` para a pessoa — que é o mesmo
- * número que o servidor registrou, e que não diz nada. A correção real de um
- * 403 é quase sempre配置 no dashboard do Spotify, e é exatamente o que a pessoa
- * precisa ler na tela para saber o que fazer.
+ * ## Por que o motivo do Spotify vem junto
+ *
+ * Um `400` do Spotify é quase sempre um pedido malformado, e o motivo está em
+ * `error.status` — que a documentação nomeia, e que ninguém consegue adivinhar.
+ * A primeira versão mostrava só "o Spotify respondeu 400. Tente de novo.", que
+ * manda a pessoa repetir exatamente o que já falhou.
+ *
+ * ## As causas conhecidas, e o que a pessoa faz com cada uma
+ *
+ *   400 INVALID_REDIRECT_URI   o redirect_uri enviado não está no app. A correção
+ *                              é no dashboard do Spotify, e nenhuma repetição
+ *                              resolve.
+ *   400 INVALID_CLIENT         client id ou secret não batem com o app. Mesmo
+ *                              caso: dashboard, e reconfigurar o Render.
+ *   401                        o token foi revogado. Reconectar resolve.
+ *   403 INSUFFICIENT_CLIENT_SCOPE  o consentimento não cobriu o escopo pedido.
+ *                              Desconectar e conectar de novo, autorizando tudo.
+ *   403 (sem status)            app em modo de desenvolvimento e o e-mail fora
+ *                              da lista, ou API não habilitada.
+ *   429                        limite de pedidos. Esperar.
+ *
+ * O `status` do Spotify vai junto porque ele é o campo que a documentação usa, e
+ * porque a página de erro da Spotify mostra o mesmo texto. A pessoa consegue
+ * comparar os dois.
  */
-function motivoDeErro(status: number): string {
-  switch (status) {
+function motivoDeErro(http: number, doSpotify: { status: string; mensagem: string }): string {
+  const codigo = doSpotify.status.toUpperCase();
+
+  if (codigo.includes('INVALID_REDIRECT_URI')) {
+    return (
+      'O Spotify recusou o endereço de redirecionamento. Confira em Settings, no ' +
+      'painel do Spotify, se a URL de redirecionamento é exatamente ' +
+      'https://juntos-watchparty.onrender.com/api/spotify/oauth/callback'
+    );
+  }
+  if (codigo.includes('INVALID_CLIENT')) {
+    return 'O Spotify recusou o Client ID ou o Client Secret deste app. Confira os dois no Render.';
+  }
+  if (codigo.includes('SCOPE')) {
+    return (
+      'A autorização não cobriu todos os escopos. Use "Trocar de conta" e ' +
+      'autorize o app de novo, aceitando todas as permissões.'
+    );
+  }
+  if (codigo.includes('INVALID_GRANT') || codigo.includes('INVALID_CODE')) {
+    return 'A autorização expirou. Use "Trocar de conta" para começar de novo.';
+  }
+
+  /*
+   * O 403 sem `status` do Spotify é o caso do Development Mode, e é o que esta
+   * integração mais vai encontrar: em modo de desenvolvimento, só as contas
+   * listadas em Settings → Users Management conseguem chamar a API, e o Spotify
+   * responde 403 sem dizer isso.
+   *
+   * A mensagem cita o caminho exato do painel porque a correção está lá, e dizer
+   * só "sem permissão" faz a pessoa procurar no lugar errado.
+   */
+  if (http === 403) {
+    return (
+      'Esta conta Spotify ainda não está autorizada a usar esta integração. ' +
+      'Em Development Mode, só as contas em Settings → Users Management, no painel ' +
+      'do Spotify, conseguem usar a API.'
+    );
+  }
+
+  switch (http) {
     case 401:
-      return 'A autorização do Spotify expirou. Conecte a conta de novo.';
-    case 403:
-      return (
-        'O Spotify recusou o acesso a este app. Confira no painel do Spotify se a ' +
-        'API Web está marcada nas APIs usadas e se o seu e-mail está na lista de ' +
-        'usuários do app.'
-      );
-    case 404:
-      return 'O Spotify não encontrou esse recurso.';
+      return 'A autorização do Spotify expirou. Use "Trocar de conta" para conectar de novo.';
     case 429:
       return 'O Spotify está limitando pedidos. Tente de novo em alguns minutos.';
     default:
-      return `O Spotify respondeu ${status}. Tente de novo.`;
+      return doSpotify.mensagem
+        ? `O Spotify respondeu ${http} (${doSpotify.mensagem}).`
+        : `O Spotify respondeu ${http}. Tente de novo.`;
   }
 }
 
-async function registrarErroSpotify(rotulo: string, r: Response): Promise<string> {
-  let detalhe = '';
+/**
+ * Lê o corpo de erro do Spotify e devolve o que ele diz.
+ *
+ * ## Por que isto é público
+ *
+ * A primeira versão escrevia o motivo no **log** do servidor. Isso exige abrir
+ * o painel do Render, e a pessoa que está com um 403 na frente precisa da
+ * resposta agora. Um diagnóstico que depende de acesso a deploy não é um
+ * diagnóstico, é uma tarefa.
+ *
+ * O corpo de erro do Spotify é texto de status da API, com o motivo em campo
+ * próprio (`error.status` e `error.message`). Não tem token nem credencial, e o
+ * que se devolve é o mesmo que já vai para o log.
+ */
+async function registrarErroSpotify(rotulo: string, r: Response): Promise<{ status: string; mensagem: string }> {
+  let status = '';
+  let mensagem = '';
+  let reason = '';
+  let corpoCru = '';
   try {
-    const corpo = (await r.json()) as { error?: { status?: unknown; message?: unknown } };
-    const status = typeof corpo.error?.status === 'string' ? corpo.error.status : null;
-    const mensagem = typeof corpo.error?.message === 'string' ? corpo.error.message : null;
-    /*
-     * Os dois juntos, e na ordem `status: mensagem`. O `status` é o que a
-     * documentação do Spotify usa paraearch, e a mensagem é o que a pessoa
-     * entende. Escolher um e descartar o outro era o erro da primeira versão
-     * deste trecho: `status ?? mensagem` nunca chega na mensagem.
-     */
-    detalhe = [status, mensagem].filter(Boolean).join(': ');
+    const texto = await r.text();
+    corpoCru = texto.slice(0, 400);
+    const corpo = JSON.parse(texto) as {
+      error?: { status?: unknown; message?: unknown; reason?: unknown };
+    };
+    status = typeof corpo.error?.status === 'string' ? corpo.error.status : '';
+    mensagem = typeof corpo.error?.message === 'string' ? corpo.error.message : '';
+    // `reason` existe em resposta de reprodução e é onde o Spotify nomeia a causa
+    // quando o `status` vem genérico. Nos dois casos é informação, e o registro
+    // inteiro cabe numa linha.
+    reason = typeof corpo.error?.reason === 'string' ? corpo.error.reason : '';
   } catch {
-    // O Spotify devolveu algo que não é JSON. O status sozinho já está no log.
+    // O Spotify devolveu algo que não é JSON. O código e o corpo truncado já
+    // bastam, e o corpo bruto está na linha seguinte.
   }
-  console.warn(`[spotify] ${rotulo} -> ${r.status}${detalhe ? ` (${detalhe})` : ''}`);
-  return detalhe;
+  const detalhe = [status, reason, mensagem].filter(Boolean).join(' | ');
+  console.warn(
+    `[spotify] ${rotulo} -> ${r.status}` +
+      `${detalhe ? ` | ${detalhe}` : ''}` +
+      `${corpoCru && !detalhe ? ` | body=${corpoCru}` : ''}`,
+  );
+  return { status, mensagem };
 }
 
 interface SearchResponse {
@@ -586,29 +720,77 @@ interface SearchResponse {
   };
 }
 
+/** O Spotify aceita no máximo 50, mas o app pede 10: é o que a tela mostra. */
+const LIMITE_BUSCA = 10;
+
+/**
+ * Falta de token, com texto que a pessoa leia.
+ *
+ * São diferentes de `not_connected` e `revoked`, que são estados internos: o
+ * painel precisa dizer "conecte a conta" e "o Spotify recusou sua autorização",
+ * que têm ações opostas — a primeira se resolve conectando, a segunda
+ * desconectando e conectando de novo.
+ */
+const TOKEN_AUSENTE =
+  'Nenhuma conta do Spotify conectada nesta sessão. Use "Conectar Spotify" no painel.';
+const TOKEN_REVOGADO =
+  'O Spotify revogou a autorização desta conta. Use "Trocar de conta" para autorizar de novo.';
+
 /**
  * Busca por termo, em faixas, álbuns e playlists.
  *
+ * ## Por que `type=track,album,playlist` numa chamada só
+ *
  * O Spotify indexa por relevância, e a diferença entre os três é o que muda a
- * intenção de quem procura: `album` traz o disco para dar play em sequência,
- * `playlist` traz a curadoria de alguém, e `track` traz a música.
+ * intenção de quem procura: `album` traz o disco, `playlist` traz a curadoria de
+ * alguém, e `track` traz a música. Uma chamada só evita que o painel faça três
+ * pedidos e intercale os resultados — e em Development Mode cada requisição
+ * conta para uma cota que é baixa.
+ *
+ * ## Um pedido por termo, com o termo validado
+ *
+ * `q` vazio é `400` no Spotify, e a validação acontece **antes** do fetch: uma
+ * busca com um espaço só não deve custar uma chamada de rede para descobrir
+ * algo que já se sabe. `trim` e o piso de 2 caracteres são do próprio endpoint de
+ * busca, e é por isso que a rota devolve `items: []` nesse caso.
+ *
+ * ## `limit=10`, e não mais
+ *
+ * O Spotify aceita até 50, e 12 funcionava. Mas `limit` acima do que a tela
+ * mostra só aumenta o custo de um Development Mode, que tem cota baixa, e o
+ * scroll do painel é curto. O valor é uma constante nomeada porque volta em
+ * lugar: a lista de faixas de um álbum usa outro, e misturar os dois é como
+ * "12" acabou no lugar errado.
  */
 export async function search(
   sessionId: string,
   term: string,
-): Promise<{ ok: true; items: SpotifySearchItem[] } | { ok: false; reason: string }> {
-  const auth = await getValidAccessToken(sessionId);
-  if (!auth.ok) return { ok: false, reason: auth.reason };
+): Promise<{ ok: true; items: SpotifySearchItem[] } | { ok: false; reason: string; status?: number }> {
+  const limpo = term.trim();
+  if (limpo.length < 2) return { ok: true, items: [] };
 
   const url = new URL(`${API}/search`);
-  url.searchParams.set('q', term);
+  url.searchParams.set('q', limpo);
   url.searchParams.set('type', 'track,album,playlist');
-  url.searchParams.set('limit', '12');
+  url.searchParams.set('limit', String(LIMITE_BUSCA));
 
-  const r = await fetch(url, { headers: { authorization: `Bearer ${auth.token}` } });
+  let r: Response;
+  try {
+    ({ r } = await chamarWebApi<SearchResponse>(sessionId, `/search?${url.searchParams.toString()}`));
+  } catch (err) {
+    /*
+     * `spotify_sem_token:<motivo>` é o único erro que `chamarWebApi` lança: não
+     * há token para a pessoa, e isso **não** é erro do Spotify. A rota precisa
+     * receber isso como `{ok:false}` e não como exceção, senão um clique sem conta
+     * conectada viraria 500.
+     */
+    const motivo = String((err as Error).message).split(':')[1] ?? 'not_connected';
+    return { ok: false, reason: motivo === 'revoked' ? TOKEN_REVOGADO : TOKEN_AUSENTE, status: 401 };
+  }
+
   if (!r.ok) {
-    await registrarErroSpotify('busca', r);
-    return { ok: false, reason: motivoDeErro(r.status) };
+    const doSpotify = await registrarErroSpotify('busca GET /search', r);
+    return { ok: false, reason: motivoDeErro(r.status, doSpotify), status: r.status };
   }
   const data = (await r.json()) as SearchResponse;
 
@@ -656,16 +838,22 @@ export async function search(
 export async function listTracks(
   sessionId: string,
   uri: string,
-): Promise<{ ok: true; items: SpotifySearchItem[] } | { ok: false; reason: string }> {
-  const auth = await getValidAccessToken(sessionId);
-  if (!auth.ok) return { ok: false, reason: auth.reason };
-
-  const r = await fetch(`${API}/${uri.replace(/^spotify:/, '')}/tracks?limit=50`, {
-    headers: { authorization: `Bearer ${auth.token}` },
-  });
+): Promise<
+  { ok: true; items: SpotifySearchItem[] } | { ok: false; reason: string; status?: number }
+> {
+  // `50` aqui e não `LIMITE_BUSCA`: aqui a lista inteira é o conteúdo, e a tela
+  // rola. São dois limites com finalidades diferentes, e por isso dois nomes.
+  const alvo = uri.replace(/^spotify:/, '');
+  let r: Response;
+  try {
+    ({ r } = await chamarWebApi(sessionId, `/${alvo}/tracks?limit=50`));
+  } catch (err) {
+    const motivo = String((err as Error).message).split(':')[1] ?? 'not_connected';
+    return { ok: false, reason: motivo === 'revoked' ? TOKEN_REVOGADO : TOKEN_AUSENTE, status: 401 };
+  }
   if (!r.ok) {
-    await registrarErroSpotify('faixas de um album/playlist', r);
-    return { ok: false, reason: motivoDeErro(r.status) };
+    const doSpotify = await registrarErroSpotify(`faixas GET /${alvo}/tracks`, r);
+    return { ok: false, reason: motivoDeErro(r.status, doSpotify), status: r.status };
   }
   const data = (await r.json()) as {
     items?: Array<{

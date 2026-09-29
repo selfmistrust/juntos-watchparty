@@ -79,27 +79,48 @@ export interface SpotifyItem {
   durationMs?: number;
 }
 
+/**
+ * Erro do servidor, com o status do Spotify quando ele vem.
+ *
+ * O `statusDoSpotify` é o que separa "o Spotify disse 401" de "o Spotify disse
+ * 400", e o painel usa isso para oferecer a ação certa: um `401` pede reconectar,
+ * um `429` pede esperar, e um `403` de Development Mode pede uma coisa no painel
+ * do Spotify que **ninguém** consegue adivinhar. Sem o status, os três viravam a
+ * mesma frase e a pessoa ficava tentando a mesma coisa três vezes.
+ */
+export class SpotifyErro extends Error {
+  readonly status: number;
+  readonly statusDoSpotify?: number;
+
+  constructor(mensagem: string, status: number, statusDoSpotify?: number) {
+    super(mensagem);
+    this.name = 'SpotifyErro';
+    this.status = status;
+    this.statusDoSpotify = statusDoSpotify;
+  }
+}
+
 async function get<T>(caminho: string, params?: Record<string, string>): Promise<T> {
   const url = new URL(`${SERVER_URL}${caminho}`);
-  for (const [k, v] of Object.entries(params ?? {})) url.searchParams.set(k, v);
+  for (const [k, v] of Object.entries(params ?? {})) {
+    // Parâmetro vazio não vai: o Spotify responde 400 para `q=` sem termo, e a
+    // validação do servidor já pegou o caso — mandar o vazio seria pedir um erro
+    // que já sabemos que vem.
+    if (v) url.searchParams.set(k, v);
+  }
   const r = await fetch(url, { credentials: 'include' });
   if (!r.ok) {
-    /*
-     * O corpo do erro é a mensagem que a pessoa lê, e o servidor já a escreve
-     * como frase em português com o status do Spotify em mãos.
-     *
-     * O fallback para `spotify_<status>` existe para quando o corpo não é JSON —
-     * uma indisponibilidade do Render chega como HTML, e perder o status ali
-     * seria perder a única pista.
-     */
-    let texto = `spotify_${r.status}`;
+    let mensagem = `A busca não respondeu. Tente de novo. (${r.status})`;
+    let statusDoSpotify: number | undefined;
     try {
-      const corpo = (await r.json()) as { error?: unknown };
-      if (typeof corpo?.error === 'string' && corpo.error) texto = corpo.error;
+      const corpo = (await r.json()) as { error?: unknown; statusDoSpotify?: unknown };
+      if (typeof corpo?.error === 'string' && corpo.error) mensagem = corpo.error;
+      if (typeof corpo?.statusDoSpotify === 'number') statusDoSpotify = corpo.statusDoSpotify;
     } catch {
-      // Corpo não-JSON: fica o código, que o painel converte em texto genérico.
+      // Corpo não-JSON: uma indisponibilidade do Render chega como HTML, e
+      // perder o status ali seria perder a única pista.
     }
-    throw new Error(texto);
+    throw new SpotifyErro(mensagem, r.status, statusDoSpotify);
   }
   return (await r.json()) as T;
 }

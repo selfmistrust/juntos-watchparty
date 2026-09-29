@@ -6,7 +6,12 @@ import { Portal } from '@/components/ui/Portal';
 import { Button } from '@/components/ui/Button';
 import { TruncatedText } from '@/components/ui/TruncatedText';
 import { SourceAccountRow } from '@/components/media/SourceAccountRow';
-import { listSpotifyTracks, searchSpotify, type SpotifyItem } from '@/lib/spotifyAccount';
+import {
+  listSpotifyTracks,
+  searchSpotify,
+  SpotifyErro,
+  type SpotifyItem,
+} from '@/lib/spotifyAccount';
 import { textoDoMotivo, type MotivoDoAudio } from '@/lib/spotifyPlayback';
 import type { MediaSourceAccount, MediaSourceContext } from '@/lib/mediaSources';
 
@@ -68,15 +73,27 @@ export function SpotifyPanel({ open, onClose, context, account, motivo }: Props)
     } catch (e) {
       /*
        * A mensagem do servidor já é uma frase em português, escrita com o status
-       * do Spotify em mãos. A primeira versão mostrava `spotify_403` na tela, que
-       * é o mesmo número do log e não ajuda a pessoa a saber o que fazer — e o
-       * 403 do Spotify tem três causas com três correções diferentes no painel.
+       * do Spotify em mãos. O que este bloco acrescenta é a **ação**, e ela
+       * depende do status:
        *
-       * O `spotify_` ainda cai para o caso de a resposta não ser do Spotify
-       * (rede, servidor fora), onde o texto técnico é a única pista.
+       *   401  o token foi recusado. "Tente de novo" não resolve: é preciso
+       *        reconectar, porque o refresh token também foi rejeitado.
+       *   429  limite de requisições. Repetir agora é o que gasta a cota.
+       *
+       * Sem isso, os dois viravam "tente de novo" e a pessoa clicava de novo sem
+       * chance de o resultado mudar.
        */
-      const bruto = e instanceof Error ? e.message : 'A busca não respondeu. Tente de novo.';
-      setError(bruto.startsWith('spotify_') ? 'A busca não respondeu. Tente de novo.' : bruto);
+      if (e instanceof SpotifyErro) {
+        setError(
+          e.statusDoSpotify === 401
+            ? `${e.message} Use "Trocar de conta" para autorizar de novo.`
+            : e.statusDoSpotify === 429
+              ? `${e.message} Espere alguns minutos antes de buscar de novo.`
+              : e.message,
+        );
+      } else {
+        setError('A busca não respondeu. Tente de novo.');
+      }
     } finally {
       setLoading(false);
     }
