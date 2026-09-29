@@ -66,6 +66,22 @@ const PENDING_TTL_SEC = 10 * 60;
  * som **continua** sendo entregue pelo player no navegador, e o corpo da
  * requisição é um uri, não áudio.
  *
+ * ## Os dois conjuntos, e por que são dois
+ *
+ * `SCOPES_DO_SDK` são os três que o próprio Web Playback SDK exige para
+ * instanciar o player — a validação de Premium usa os dados de perfil, e é por
+ * isso que `user-read-email` e `user-read-private` entram.
+ *
+ * `SCOPES_DE_REPRODUCAO` é o escopo do **endpoint** que carrega a faixa, e não do
+ * SDK. Ele não é opcional e também não é do SDK: sem ele o
+ * `PUT /v1/me/player/play` volta 403, porque é aquele endpoint que exige
+ * `user-modify-playback-state`.
+ *
+ * Manter os dois separados é o que permite responder a duas perguntas diferentes
+ * com precisão: "o player instancia?" olha `SCOPES_DO_SDK`, e "a faixa carrega?"
+ * olha todos. Uma lista só não distingue as duas falhas, e elas precisam de
+ * mensagens diferentes — uma se resolve com Premium, a outra com autorização.
+ *
  * ## O custo: quem já autorizou vai ter de autorizar de novo
  *
  * Token granted não cresce. Quem conectou antes desta mudança tem um token sem
@@ -74,13 +90,24 @@ const PENDING_TTL_SEC = 10 * 60;
  * a quem precisa, em vez de "Premium insuficiente" a quem não tem nada a ver com
  * Premium.
  */
-const SCOPE = [
-  'streaming',
-  'user-read-email',
-  'user-read-private',
-  'user-modify-playback-state',
-].join(' ');
+const SCOPES_DO_SDK = ['streaming', 'user-read-email', 'user-read-private'];
+const SCOPES_DE_REPRODUCAO = ['user-modify-playback-state'];
+const SCOPE = [...SCOPES_DO_SDK, ...SCOPES_DE_REPRODUCAO].join(' ');
 
+/**
+ * O motivo de recusa quando o token nao pode reproduzir por escopo.
+ *
+ * E uma **frase**, nao um codigo, e essa e a decisao: o motivo vai para o corpo
+ * da resposta e chega a tela da pessoa. Um `spotify_scope_faltando` obrigaria o
+ * cliente a carregar a traducao, e a traducao e o lugar onde um texto quase
+ * sempre acerta o codigo e erra a situacao -- foi assim que o palco chegou a
+ * dizer "conecte sua conta" para quem ja estava conectado.
+ *
+ * A frase e propositalmente curta e nao cita Premium nem escopo: quem le nao tem
+ * o vocabulario para saber qual dos dois e, mais importante, a acao -- autorizar
+ * de novo -- e a mesma nos dois casos.
+ */
+const REAUTORIZAR = 'Sua autorizacao do Spotify precisa ser renovada.';
 const AUTH_URL = 'https://accounts.spotify.com/authorize';
 const TOKEN_URL = 'https://accounts.spotify.com/api/token';
 const API = 'https://api.spotify.com/v1';
@@ -167,6 +194,23 @@ interface TokenRecord {
   refreshToken: string;
   accessExpiresAt: number;
   connectedAt: number;
+  /**
+   * O que o Spotify **concedeu**, guardado no momento em que o token nasceu.
+   *
+   * Veio do campo `scope` da resposta de `POST /api/token`, e não de decodificar
+   * o access token. A versão anterior lia o `scope` de dentro do JWT — o token é
+   * um valor **opaco** por contrato, e a forma do seu payload não é promessa da
+   * Spotify sobre o que a API devolve. Registrar o que a API respondeu é
+   * verificável; inferir o que o token "deve" conter é palpite.
+   *
+   * Também é mais direto: a resposta do endpoint de token diz o que foi
+   * concedido, e é isso que decide se o áudio pode tocar.
+   *
+   * Ausente num registro significa registro antigo, gravado antes deste campo
+   * existir. **Não** significa "sem escopos" e **não** pode ser tratado como
+   * tal: ver `escoposConhecidos`.
+   */
+  scopes?: string[];
   product: string | null;
   displayName: string | null;
   email: string | null;
@@ -213,39 +257,61 @@ export const SCOPES_NECESSARIOS: string[] = SCOPE.split(' ');
  * A rota `/api/spotify/token-info` precisa disto para responder mesmo quando o
  * token está expirado: é justamente o caso em que a busca falha e o painel
  * precisa dizer por quê. `getValidAccessToken` renova, o que esconderia a causa.
+/**
+ * Le o registro sem renovar nada.
+ *
+ * Serve aos diagnosticos -- `/status`, `/token-info` e a checagem de escopo antes
+ * de carregar uma faixa. Nenhum deles precisa de um access token novo para
+ * responder, e renovar dentro de um diagnostico gastaria uma renovacao de hora em
+ * hora so para olhar um registro que ja esta no Redis.
  */
 export async function peekTokens(sessionId: string): Promise<TokenRecord | null> {
   return loadTokens(sessionId);
 }
 
 /**
- * Escopos efetivamente concedidos, lidos do JWT.
+ * Os escopos que este token tem, ou `null` quando o registro **nao sabe**.
  *
- * ## Por que ler o token e não confiar no `/me`
+ * ## Por que `null` existe
  *
- * O `product` do `/me` e o nome do e-mail continuam válidos quando o consentimento
- * muda, porque o Spotify devolve um `/me` para o token antigo. A busca usa o token
- * **novo**, e é por isso que o painel dizia "conectado" enquanto a busca recebia
- * 403. O campo `scope` do JWT é a única fonte que diz o que este token pode
- * fazer.
+ * A versao anterior decodificava o access token como JWT para ler o `scope`, e
+ * devolvia `[]` em qualquer falha. `[]` e indistinguivel de "concederam zero
+ * escopos", entao um registro que nao pode ser lido saia como "sem escopo" -- e a
+ * pessoa recebia "reconecte" quando o problema era nosso.
  *
- * A assinatura **não** é verificada, e isso é proposital: isto é leitura de
- * diagnóstico, não validação. O valor não sai daqui — só a lista de escopos, que
- * é pública e está na URL de autorização que a pessoa já aceitou.
+ * ## Por que o token nao e lido
  *
- * JWT sem padding de base64url: `atob` exige que o comprimento seja múltiplo de 4.
+ * O Spotify entrega o `scope` na resposta de `POST /api/token`. Esse campo e o
+ * que a propria API declarou ter concedido, e ele e gravado junto com o token.
+ *
+ * O token em si e **opaco** por contrato. A forma do seu payload nao e promessa
+ * da Spotify sobre o que a API devolve, e inferir escopo a partir dela e o tipo
+ * de palpite que aqui ja custou um `spotify_scope_ilegivel` e um dia de
+ * reconexoes que nao resolviam nada. Nada de `split('.')`, nada de `atob`.
+ *
+ * O `product` do `/me` e o e-mail continuam validos quando o consentimento muda,
+ * porque o Spotify devolve um `/me` para o token antigo -- e sao eles que dizem
+ * "conectado". Quem diz o que o token **pode** fazer e o `scope` da concessao, e
+ * nao o `/me` nem o token.
+ *
+ * ## Registros antigos
+ *
+ * `null` cobre o que sobrou de verdade: registros gravados antes do campo
+ * existir. A resposta correta para eles e uma reconexao -- e nao assumir que tem
+ * os escopos, porque isso seria dar como certo o que nao se sabe, nem afirmar que
+ * nao tem, porque isso seria o mesmo palpite pelo outro lado.
  */
-export function scopesDoToken(accessToken: string): string[] {
-  try {
-    const [, payload] = accessToken.split('.');
-    if (!payload) return [];
-    const normalizado = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const comPadding = normalizado.padEnd(normalizado.length + ((4 - (normalizado.length % 4)) % 4), '=');
-    const decodificado = JSON.parse(atob(comPadding)) as { scope?: unknown };
-    return typeof decodificado.scope === 'string' ? decodificado.scope.split(' ') : [];
-  } catch {
-    return [];
-  }
+export function escoposConhecidos(record: { scopes?: string[] } | null): string[] | null {
+  if (!record) return null;
+  if (!Array.isArray(record.scopes)) return null;
+  return record.scopes.filter((s) => typeof s === 'string' && s !== '');
+}
+
+/** O que falta para este registro tocar, ou a lista toda quando ele nao sabe. */
+export function escoposFaltandoDoRegistro(record: { scopes?: string[] } | null): string[] {
+  const concedidos = escoposConhecidos(record);
+  if (concedidos === null) return [...SCOPES_NECESSARIOS];
+  return SCOPES_NECESSARIOS.filter((s) => !concedidos.includes(s));
 }
 
 export interface SpotifyStatus {
@@ -297,19 +363,16 @@ export async function getStatus(sessionId: string | null): Promise<SpotifyStatus
    * isso que os escopos faltando viajam no mesmo objeto.
    *
    * Sem este campo a interface só descobria o problema tarde — depois de a pessoa
-   * escolher a música, ouvir silêncio e ler um aviso. A busca funciona com três
-   * escopos, então nada no painel denunciaria o problema antes, e o card poderia
-   * dizer "a busca funciona; o áudio exige Premium" a uma conta que tem Premium
-   * e apenas precisa autorizar de novo.
+   * escolher a música, ouvir silêncio e ler um aviso. A busca funciona com menos
+   * escopos, então nada no painel denunciaria o problema antes.
    */
-  const concedidos = scopesDoToken(record.accessToken);
   return {
     configured,
     connected: true,
     product: record.product,
     displayName: record.displayName,
     email: record.email,
-    escoposFaltando: SCOPES_NECESSARIOS.filter((s) => !concedidos.includes(s)),
+    escoposFaltando: escoposFaltandoDoRegistro(record),
   };
 }
 
@@ -618,6 +681,16 @@ export async function completeOAuth(params: {
       refreshToken: token.refresh_token,
       accessExpiresAt: Date.now() + token.expires_in * 1000,
       connectedAt: Date.now(),
+      /*
+       * O `scope` que o Spotify devolveu agora, e não o que pedimos. A diferença
+       * entre os dois é informação: quando eles divergem, foi a pessoa — ou o
+       * plano dela — que não conceded tudo, e é isso que o `403` do
+       * `PUT /me/player/play` vai confirmar.
+       *
+       * Guardar o pedido em vez da concessão seria assumir sucesso antes de
+       * sabê-lo, que é o oposto de diagnóstico.
+       */
+      scopes: (token.scope ?? '').split(' ').map((x) => x.trim()).filter(Boolean),
       product: me?.product ?? null,
       displayName: me?.display_name ?? null,
       email: me?.email ?? null,
@@ -678,6 +751,17 @@ export async function getValidAccessToken(
       accessToken: token.access_token,
       accessExpiresAt: Date.now() + token.expires_in * 1000,
       refreshToken: token.refresh_token ?? record.refreshToken,
+      /*
+       * Renovação não volta a ser autorização. O Spotify pode omitir `scope`
+       * numa renovação — o token novo nasce com exatamente os mesmos escopos do
+       * antigo — e tratá-lo como lista vazia apagaria, a cada hora, a informação
+       * de escopo de uma conta perfeitamente autorizada.
+       *
+       * Só se sobrescreve quando o Spotify diz algo. Silêncio não é revogação.
+       */
+      scopes: token.scope
+        ? token.scope.split(' ').map((x) => x.trim()).filter(Boolean)
+        : record.scopes,
     };
     await saveTokens(sessionId, refreshed);
     return { ok: true, token: refreshed.accessToken };
@@ -1292,52 +1376,49 @@ export async function iniciarReproducao(
   const caminho = `/me/player/play?device_id=${encodeURIComponent(deviceId)}`;
 
   /*
-   * O scope falta aqui em quase todos os primeiros dias: quem conectou antes de
-   * `user-modify-playback-state` existir tem um token granted que não cresce. O
-   * Spotify responde 403, e sem esta checagem a pessoa receberia "Premium
-   * insuficiente" — que é falso, e a empurraria para comprar um plano que ela
-   * já tem.
+   * A checagem de escopo e local, e usa o que o Spotify concedeu.
    *
-   * ## A distinção que o log tem que fazer
+   * Token granted nao cresce: quem conectou antes de `user-modify-playback-state`
+   * existir tem um token valido que nao reproduz, e o `PUT` voltaria 403 do lado
+   * do Spotify. Sem esta checagem a pessoa receberia "Premium insuficiente", que e
+   * falso, e a empurraria para comprar um plano que ela ja tem.
    *
-   * `scopesDoToken` devolve `[]` quando não consegue ler o JWT — e `[]` é
-   * indistinguível de "concederam zero escopos". Sem separar as duas coisas, uma
-   * falha de leitura do nosso lado sai como `spotify_scope_faltando`, que diz à
-   * pessoa "reconecte", e reconectar não conserta um decodificador quebrado. É a
-   * mesma mentira com outro texto: a ação sugerida não resolve a causa.
+   * ## Um motivo so, e o log separando os dois casos
    *
-   * Por isso o log traz os **concedidos** junto dos **faltando**, e o motivo é
-   * outro quando não leu nada.
+   * Ha dois jeitos de faltar escopo, e a acao e a mesma nos dois: autorizar de
+   * novo. O que muda e o diagnostico, e ele vai para o log:
+   *
+   *   registro antigo  gravado antes do campo `scopes` existir. Nao sabemos o que
+   *                    ele tem. Uma reconexao preenche, e e a unica coisa que
+   *                    preenche.
+   *   escopo ausente   sabemos o que foi concedido, e falta este. A reconexao
+   *                    so resolve se a pessoa nao o concedeu; se concedeu e o
+   *                    Spotify recusou, o proximo passo e outro -- e o log mostra
+   *                    os concedidos para dar para ver.
+   *
+   * A versao anterior ainda tinha um terceiro caminho, `spotify_scope_ilegivel`,
+   * para quando a leitura do token falhava. Ele desapareceu junto com a leitura:
+   * o token e opaco, e nao ha mais nada para falhar.
    */
-  const peek = await peekTokens(sessionId);
-  if (!peek) return { ok: false, reason: 'not_connected', status: 401 };
-  const concedidos = scopesDoToken(peek.accessToken);
-  if (concedidos.length === 0) {
-    /*
-     * A forma do token é calculada **fora** do template, e não por estética: um
-     * `${...}` com o token dentro de um log é uma linha de distância de vazar o
-     * token, e o teste que vela por isso não consegue distinguir
-     * `${token.length}` de `${token}`. Fora do template, o log só contém
-     * `jwt` ou `nao-jwt`, e não há ambiguidade.
-     *
-     * O comprimento do token não entra. Não ajuda a diagnosticar nada, e seria o
-     * único ponto em que ele tocaria um log.
-     */
-    const jwt = peek.accessToken.split('.').length === 3;
-    console.error(
-      `[spotify] play: nao consegui ler nenhum escopo do token ` +
-        `sessao=${hashDeSessao(sessionId)} formato=${jwt ? 'jwt' : 'nao-jwt'}`,
+  const record = await peekTokens(sessionId);
+  if (!record) return { ok: false, reason: 'not_connected', status: 401 };
+
+  const concedidos = escoposConhecidos(record);
+  if (concedidos === null) {
+    console.log(
+      `[spotify] play: registro sem escopos gravados (anterior ao campo); ` +
+        `reautorizacao necessaria sessao=${hashDeSessao(sessionId)}`,
     );
-    return { ok: false, reason: 'spotify_scope_ilegivel', status: 502 };
+    return { ok: false, reason: REAUTORIZAR, status: 403 };
   }
 
   const faltando = SCOPES_NECESSARIOS.filter((s) => !concedidos.includes(s));
   if (faltando.length > 0) {
     console.log(
-      `[spotify] play recusado: faltam [${faltando.join(', ')}] ` +
+      `[spotify] play: faltam [${faltando.join(', ')}] ` +
         `concedidos=[${concedidos.join(', ')}] sessao=${hashDeSessao(sessionId)}`,
     );
-    return { ok: false, reason: 'spotify_scope_faltando', status: 403 };
+    return { ok: false, reason: REAUTORIZAR, status: 403 };
   }
 
   let r: Response;

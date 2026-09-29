@@ -39,10 +39,19 @@ interface Props {
   artwork?: string;
   /** O estado que o player do SDK realmente está. */
   estado: EstadoDoPlayer;
+  /**
+   * A frase do servidor, quando ele tem uma.
+   *
+   * "Sua autorização do Spotify precisa ser renovada." vem do endpoint de
+   * reprodução, que é quem sabe o que houve. O palco não reescreve: quem recusa
+   * é quem descreve, e um texto reescrito no cliente é um texto que pode
+   * discordar da situação.
+   */
+  aviso?: string | null;
 }
 
-export function SpotifyStage({ title, artwork, estado }: Props) {
-  const aviso = textoDoEstado(estado);
+export function SpotifyStage({ title, artwork, estado, aviso: avisoDoServidor }: Props) {
+  const aviso = avisoDoServidor ?? textoDoEstado(estado);
 
   return (
     <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center">
@@ -113,8 +122,14 @@ export function usePlayerSpotify(opts: {
   faixa?: string | null;
   /** O que a sala acredita: play ou pause. */
   tocando: boolean;
-}): { estado: EstadoDoPlayer; tocar: (uri: string) => void } {
+}): { estado: EstadoDoPlayer; aviso: string | null; tocar: (uri: string) => void } {
   const [estado, setEstado] = useState<EstadoDoPlayer>('sem_conta');
+  /*
+   * A frase do servidor quando ele tem uma. Vive no estado em vez de vir de
+   * 	extoDoEstado porque o texto do servidor ja e uma frase escrita para a
+   * pessoa, e reescreve-lo aqui seria um segundo lugar para errar.
+   */
+  const [aviso, setAviso] = useState<string | null>(null);
 
   /*
    * O player vive num ref, e não no estado, porque é o que o `tocar` de baixo
@@ -133,16 +148,21 @@ export function usePlayerSpotify(opts: {
     void playerRef.current?.tocar(uri).catch((err) => {
       /*
        * `tocar` avanca por `PUT /me/player/play`, e o erro que chega aqui e do
-       * servidor. Um 403 com `spotify_scope_faltando` tem um significado proprio
-       * e precisa virar estado: a pessoa esta conectada, o consentimento so
-       * precisa ser refeito, e sem isso o palco ficaria mudo com a faixa na tela
-       * -- que e o mesmo silencio do defeito original, com outro formato.
+       * servidor.
+       *
+       * Um 403 com "autorizacao" no corpo e a frase que o **servidor** escreveu:
+       * "Sua autorizacao do Spotify precisa ser renovada." Ela vai no estado
+       * em vez de vir de `textoDoEstado`, porque quem sabe o que aconteceu e
+       * quem recusou. Traduzir de volta no cliente seria um segundo lugar onde
+       * o texto pode acertar o codigo e errar a situacao.
        *
        * Nada aqui vira `premium`. Quem decide isso e o `account_error` do SDK.
        */
       const e = err as { status?: number; message?: string };
-      if (e?.status === 403 && typeof e.message === 'string' && e.message.includes('scope')) {
+      const mensagem = typeof e?.message === 'string' ? e.message : '';
+      if (e?.status === 403 && /autoriza|escopo/i.test(mensagem)) {
         setEstado('sem_escopo');
+        setAviso(mensagem);
         return;
       }
       console.warn('[spotify] Spotify recusou carregar a faixa:', err);
@@ -158,6 +178,7 @@ export function usePlayerSpotify(opts: {
      */
     if (!opts.conectado) {
       setEstado('sem_conta');
+      setAviso(null);
       return;
     }
 
@@ -291,5 +312,5 @@ export function usePlayerSpotify(opts: {
     });
   }, [estado, opts.tocando]);
 
-  return { estado, tocar };
+  return { estado, aviso, tocar };
 }

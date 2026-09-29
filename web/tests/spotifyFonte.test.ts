@@ -257,12 +257,28 @@ test('os scopes nao permitem escrever na biblioteca da pessoa', () => {
    * impossivel para este codigo tocar na biblioteca.
    */
   const c = semComentario(oauth);
-  const linhaScope = c.match(/const SCOPE = \[[^\]]*\]/);
-  assert.ok(linhaScope, 'a lista de scopes precisa ser explicita, e nao uma string solta');
+  /*
+   * A lista passou a ser duas, e a distinção é o que a sustenta: os escopos que o
+   * SDK exige para instanciar o player, e o que o *endpoint* de reprodução exige.
+   * Uma lista só não separa "o player nem instancia" de "a faixa não carrega", e
+   * as duas falhas precisam de mensagens diferentes — uma se resolve com
+   * Premium, a outra com autorização.
+   */
+  const sdk = c.match(/const SCOPES_DO_SDK = \[[^\]]*\]/);
+  const reproducao = c.match(/const SCOPES_DE_REPRODUCAO = \[[^\]]*\]/);
+  assert.ok(sdk, 'a lista de escopos do SDK precisa ser explicita, e nao uma string solta');
+  assert.ok(reproducao, 'e a de reproducao tambem, porque sao perguntas diferentes');
+  assert.match(
+    c,
+    /const SCOPE = \[\.\.\.SCOPES_DO_SDK, \.\.\.SCOPES_DE_REPRODUCAO\]\.join\(' '\)/,
+    'e o pedido manda as duas, que e o que o Spotify avalia',
+  );
   assert.ok(!/playlist-modify/.test(c), 'sem permissao de modificar playlist');
   assert.ok(!/user-library-modify/.test(c), 'sem permissao de modificar a biblioteca');
   assert.ok(!/user-follow-modify/.test(c), 'e sem seguir gente em nome da pessoa');
-  assert.match(linhaScope[0], /streaming/, 'com `streaming`, que e o que reproduz');
+  assert.match(sdk[0], /streaming/, 'com `streaming`, que e o que reproduz');
+  assert.match(sdk[0], /user-read-email/, 'e os dois de perfil, que o SDK usa para validar Premium');
+  assert.match(reproducao[0], /user-modify-playback-state/, 'e a reproducao traz o escopo do endpoint');
 });
 
 test('o refresh token nao sai do servidor', () => {
@@ -297,16 +313,24 @@ test('o refresh token nao sai do servidor', () => {
 test('a rota de diagnostico devolve a forma do token, nunca o token', () => {
   /*
    * Existe porque um 403 do Spotify não aparece em lugar nenhum: o navegador
-   * mostra só o status, o painel dizia "conectado", e o `/me` mente porque
-   * responde para o token antigo. Os escopos do JWT são a única fonte que diz o
-   * que este token pode fazer.
+   * mostra só o status, e o painel dizia "conectado" porque o `/me` responde
+   * para o token antigo mesmo quando o consentimento mudou.
+   *
+   * Os escopos vêm do `scope` que o Spotify devolveu no endpoint de token, e
+   * foram gravados no registro. Antes eles eram lidos decodificando o access
+   * token como JWT — que é tratar um valor opaco por contrato como se a forma
+   * dele fosse parte da API.
    *
    * A rota é pública — como todas as outras —, então a linha que a segura é esta:
    * o valor do access token não pode sair daqui, nem em parte.
    */
   const c = semComentario(rotas);
   const rota = c.slice(c.indexOf("'/api/spotify/token-info'"));
-  assert.match(rota, /scopesDoToken\(record\.accessToken\)/, 'le os escopos do token');
+  assert.match(rota, /escoposConhecidos\(record\)/, 'le os escopos do registro, e nao decodifica o token');
+  assert.ok(
+    !/atob|split\('\.'\)|scopesDoToken/.test(rota),
+    'e nenhum acesso ao access token para descobrir escopo',
+  );
   assert.ok(
     !/res\.json\(\{[^}]*token:\s*record\.accessToken/.test(rota),
     'e nunca responde com o access token da pessoa',
@@ -403,11 +427,7 @@ test('o palco nunca pede login para quem ja esta conectado', () => {
     'e nenhum reproduz={false} fixo, que era o outro literal',
   );
   assert.match(c, /estado=\{estadoDoPlayer\}/, 'o palco recebe o estado do player');
-  assert.match(
-    c,
-    /const \{ estado: estadoDoPlayer \} = usePlayerSpotify\(\{/,
-    'e o estado vem do hook, que e quem conversa com o SDK',
-  );
+  assert.match(c, /const \{ estado: estadoDoPlayer[^}]*\} = usePlayerSpotify\(\{/, 'e o estado vem do hook, que e quem conversa com o SDK');
   assert.match(
     c,
     /conectado: spotifyConectado/,
@@ -729,13 +749,38 @@ test('carregar a faixa exige o scope que so foi adicionado agora', () => {
   const play = oauthC.slice(oauthC.indexOf('export async function iniciarReproducao'));
   assert.match(
     play,
-    /faltando\.length > 0[\s\S]{0,400}?spotify_scope_faltando/,
-    'e a falta de scope tem um motivo proprio, que nao e Premium nem Spotify',
+    /const faltando = SCOPES_NECESSARIOS\.filter\([\s\S]{0,200}?faltando\.length > 0/,
+    'e a falta de scope e conferida contra o que o Spotify concedeu, nao contra o que pedimos',
   );
   assert.match(
     play,
-    /reason: 'spotify_scope_faltando', status: 403/,
+    /escoposConhecidos\(record\)/,
+    'e a fonte dos escopos e o registro, nunca o access token',
+  );
+  assert.match(
+    play,
+    /reason: REAUTORIZAR, status: 403/,
     'devolvendo 403 sem passar pelo Spotify, porque a checagem e nossa',
+  );
+  /*
+   * A recusa chega à tela como a frase que o servidor escreveu, e não como um
+   * código traduzido no cliente. Traduzir de volta é um segundo lugar onde o
+   * texto pode acertar o código e errar a situação — foi assim que o palco disse
+   * "conecte sua conta" para quem já estava conectado.
+   */
+  assert.match(
+    oauthC,
+    /const REAUTORIZAR = 'Sua autoriza.{1,3}o do Spotify precisa ser renovada\.'/,
+    'e o motivo e a frase que a pessoa le, escrita aqui e nao no cliente',
+  );
+  const palco = semComentario(
+    readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8'),
+  );
+  const fn = palco.slice(palco.indexOf('const tocar = useCallback'));
+  assert.match(
+    fn.slice(0, fn.indexOf('}, []);')),
+    /setEstado\('sem_escopo'\)[\s\S]{0,80}?setAviso\(mensagem\)/,
+    'e o cliente usa a frase do servidor em vez de reescrever',
   );
 });
 
@@ -951,52 +996,55 @@ test('script bloqueado e DRM sao estados diferentes', () => {
   );
 });
 
-test('token ilegivel e escopo faltando sao motivos diferentes', () => {
+test('o token e opaco, e nao ha mais o que falhar ao le-lo', () => {
   /*
-   * `scopesDoToken` devolve `[]` quando não consegue ler o JWT, e `[]` é
-   * indistinguível de "concederam zero escopos". Sem separar, uma falha de
-   * leitura do nosso lado sai como `spotify_scope_faltando`, que diz "reconecte"
-   * — e reconectar não conserta um decodificador quebrado.
+   * `spotify_scope_ilegivel` existia porque os escopos vinham de decodificar o
+   * access token como JWT, e a decodificação podia falhar. A falha de leitura
+   * virava `[]`, que é indistinguível de "concederam zero escopos", e a pessoa
+   * recebia "reconecte" quando o problema era nosso.
    *
-   * A ação sugerida não resolver a causa é a mesma mentira com outro texto, e é
-   * por isso que este teste existe: os dois caminhos precisam de motivos
-   * próprios, e só um deles pode virar "reconecte".
+   * O Spotify já devolve o que concedeu no `scope` de `POST /api/token`, e esse
+   * campo é gravado no registro. Não há mais nada para ler, e portanto não há mais
+   * o que falhar: o motivo sumiu com a causa.
+   *
+   * Este teste afirma a **ausência** do motivo, e não o resultado. Um teste que
+   * verificasse a saída deixaria passar a reintrodução do defeito desde que a
+   * linha antiga voltasse ao mesmo lugar.
    */
   const c = semComentario(oauth);
-  const play = c.slice(c.indexOf('export async function iniciarReproducao'));
+  const rotasC = semComentario(rotas);
+  const palcoC = semComentario(
+    readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8'),
+  );
 
+  for (const [onde, fonte] of [
+    ['spotifyOAuth', c],
+    ['spotifyRoutes', rotasC],
+    ['SpotifyStage', palcoC],
+  ] as const) {
+    assert.ok(
+      !fonte.includes('spotify_scope_ilegivel'),
+      `${onde} nao pode mencionar spotify_scope_ilegivel: a causa dele nao existe mais`,
+    );
+  }
+
+  // E o que substituiu: os escopos vêm do registro, e o "não sei" é `null`.
+  assert.match(c, /export function escoposConhecidos\(/, 'a leitura do registro existe');
+  assert.match(
+    c,
+    /escoposConhecidos\([^)]*\): string\[\] \| null/,
+    'e ela pode devolver null, que e o estado do conhecimento e nao uma lista vazia',
+  );
+  const play = c.slice(c.indexOf('export async function iniciarReproducao'));
   assert.match(
     play,
-    /concedidos\.length === 0[\s\S]{0,600}?spotify_scope_ilegivel/,
-    'nao leu escopo nenhum e um motivo nosso, com codigo proprio',
-  );
-  assert.match(
-    play,
-    /spotify_scope_ilegivel', status: 502/,
-    'e 502: nao e recusa do Spotify e nao e escopo faltando',
-  );
-  assert.ok(
-    play.indexOf('spotify_scope_ilegivel') < play.indexOf('faltando.length > 0'),
-    'e o caso ilegivel e decidido antes do caso faltando',
+    /concedidos === null[\s\S]{0,300}?REAUTORIZAR/,
+    'e o registro antigo pede a reconexao que o preenche, sem assumir que tem os escopos',
   );
   assert.match(
     play,
     /concedidos=\[\$\{concedidos\.join\('\, '\)\}\]/,
     'e o log traz os concedidos, sem os quais o log nao responde a pergunta',
-  );
-
-  /*
-   * No cliente, um 403 com "scope" vira `sem_escopo`, que manda reconectar. O
-   * 502 de token ilegível não pode cair nesse texto: reconectar não conserta.
-   */
-  const palco = semComentario(
-    readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8'),
-  );
-  const fn = palco.slice(palco.indexOf('const tocar = useCallback'));
-  assert.match(
-    fn.slice(0, fn.indexOf('}, []);')),
-    /status === 403[\s\S]{0,200}?includes\('scope'\)/,
-    'e so o 403 vira sem_escopo, porque so ele significa "reconecte"',
   );
 });
 
@@ -1012,8 +1060,8 @@ test('o status avisa os escopos faltando antes de a pessoa escolher a musica', (
   const status = c.slice(c.indexOf('export async function getStatus'), c.indexOf('function pkce'));
   assert.match(
     status,
-    /escoposFaltando: SCOPES_NECESSARIOS\.filter\(/,
-    'o status carrega os escopos que o token nao tem',
+    /escoposFaltando: escoposFaltandoDoRegistro\(record\)/,
+    'o status carrega os escopos que faltam, lidos do registro',
   );
   assert.match(
     status,

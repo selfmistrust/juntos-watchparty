@@ -145,7 +145,7 @@ export function VideoStage({
    * Sem os dois, o player conectava e a sala ficava em silêncio sem que nada
    * dissesse por quê.
    */
-  const { estado: estadoDoPlayer } = usePlayerSpotify({
+  const { estado: estadoDoPlayer, aviso: avisoDoPlayer } = usePlayerSpotify({
     conectado: spotifyConectado,
     faixa: currentItem?.kind === 'spotify' ? currentItem.spotifyUri : null,
     tocando: isPlaying,
@@ -404,6 +404,7 @@ export function VideoStage({
             title={currentItem.title}
             artwork={currentItem.thumbnail}
             estado={estadoDoPlayer}
+            aviso={avisoDoPlayer}
           />
         ) : currentItem.kind === 'drive' && currentItem.driveFileId ? (
           /*

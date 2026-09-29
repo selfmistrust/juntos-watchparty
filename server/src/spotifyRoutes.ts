@@ -12,6 +12,8 @@ import {
   completeOAuth,
   createAuthUrl,
   disconnect,
+  escoposConhecidos,
+  escoposFaltandoDoRegistro,
   jaUsadoPorEstaSessao,
   marcarPendingUsado,
   getStatus,
@@ -20,9 +22,7 @@ import {
   iniciarReproducao,
   listTracks,
   peekTokens,
-  scopesDoToken,
   search,
-  SCOPES_NECESSARIOS,
   spotifyConfigured,
   takePending,
 } from './spotifyOAuth.js';
@@ -408,16 +408,22 @@ export function registerSpotifyRoutes(app: Express): void {
       if (!record) return res.json({ temToken: false });
 
       const expiradoEm = Math.max(0, Math.round((record.accessExpiresAt - Date.now()) / 1000));
-      const concedidos = scopesDoToken(record.accessToken);
+      const concedidos = escoposConhecidos(record) ?? [];
 
       res.json({
         temToken: true,
         expiradoEm,
         temRefreshToken: Boolean(record.refreshToken),
         scopes: concedidos,
-        // O que pedimos e o que veio. A diferença é a causa de um 403 que
-        // ninguém consegue explicar olhando o painel.
-        escoposFaltando: SCOPES_NECESSARIOS.filter((s) => !concedidos.includes(s)),
+        /*
+         * `temEscopoRegistrado` diz se o `scopes` acima é o que o Spotify
+         * concedeu ou se o registro é anterior ao campo existir. Sem essa
+         * distinção, `escoposFaltando` cheio parece uma pessoa que negou tudo,
+         * quando é um registro que a gente não sabe o que tem — e a ação certa
+         * é uma única reconexão.
+         */
+        temEscopoRegistrado: escoposConhecidos(record) !== null,
+        escoposFaltando: escoposFaltandoDoRegistro(record),
         produto: record.product,
       });
     } catch (err) {
