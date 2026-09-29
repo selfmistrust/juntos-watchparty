@@ -657,8 +657,14 @@ export function textoDoEstado(estado: EstadoDoPlayer): string | null {
        * recusou o áudio porque ninguém tinha interagido com a aba ainda — a faixa
        * vira mídia current na sala sem ninguém clicar em nada, então isto é o
        * caso comum, não o raro.
+       *
+       * O texto diz "em qualquer lugar" e não "aperte Tocar" porque o gesto
+       * escutado é um `pointerdown` em qualquer elemento da janela, inclusive o
+       * campo de chat. Mandar a pessoa procurar um botão específico que não é o
+       * que o código escuta é uma instrução falsa — e foi o que a primeira versão
+       * dizia.
        */
-      return 'O navegador segurou o áudio até você interagir com a página. Aperte Tocar para liberar.';
+      return 'O navegador segurou o áudio. Clique ou toque em qualquer lugar da página para liberar.';
     default:
       /*
        * `pronto` e `tocando` **não** têm texto aqui, e a ausência é o ponto.

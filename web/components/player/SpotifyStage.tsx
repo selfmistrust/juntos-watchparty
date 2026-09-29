@@ -262,9 +262,22 @@ export function usePlayerSpotify(opts: {
    * pelo inicio. A sala voltou a tocar **a mesma** faixa que ela mesma mandou
    * pausar, e o que se quer e retomar -- recarregar aqui jogaria a pessoa para os
    * primeiros segundos toda vez que ela desse play.
+   *
+   * ## `autoplay` tambem autoriza a carga
+   *
+   * O device existe nos dois estados, e o audio bloqueado nao muda isso: a faixa
+   * esta carregada no device, o que o navegador recusou foi o som. Deixar
+   * `autoplay` de fora faria o botao de play da sala ficar morto justo quando a
+   * pessoa esta tentando destravar -- ela apertaria e nada aconteceria, sem
+   * nenhuma mensagem nova para explicar.
+   *
+   * A dependencia continua sendo readiness, e nao `tocando`: `tocando` e a leitura
+   * do `player_state_changed`, e depender dele aqui criaria um laco em que cada
+   * estado novo recarrega a faixa.
    */
   useEffect(() => {
-    if (estado !== 'pronto' || !opts.faixa || !opts.tocando) return;
+    const devicePronto = estado === 'pronto' || estado === 'autoplay';
+    if (!devicePronto || !opts.faixa || !opts.tocando) return;
     if (ultimaFaixa.current === opts.faixa) {
       void playerRef.current?.play().catch(() => {
         /* Retomar o que ja esta tocando nao e erro que a pessoa precise ver. */
@@ -277,17 +290,29 @@ export function usePlayerSpotify(opts: {
   }, [estado, opts.faixa, opts.tocando, tocar]);
 
   /*
-   * O `autoplay_failed` só se resolve com um gesto real da pessoa.
+   * O `autoplay_failed` se resolve em dois passos, e a versao anterior so fazia o
+   * primeiro.
    *
-   * A referência do SDK diz que `activateElement` precisa ser chamado de dentro
-   * de um gesto, e é por isso que chamá-lo no `ready` não resolvia: o `ready`
-   * acontece sem ninguém ter tocado em nada. Na sala isso é o caso comum, não o
-   * raro — a faixa vira mídia atual por decisão de outra pessoa, e o áudio é
-   * recusado.
+   * A referencia do SDK diz que `activateElement` precisa ser chamado de dentro de
+   * um gesto. Por isso chama-lo no `ready` nao resolvia: o `ready` acontece sem
+   * ninguem ter tocado em nada. Na sala isso e o caso comum, nao o raro -- a faixa
+   * vira midia atual por decisao de outra pessoa.
    *
-   * Qualquer gesto serve, e por isso o listener é na janela inteira: a pessoa
-   * pode estar digitando no chat, e isso também é um gesto. Ouvir só o botão de
-   * play deixaria quem só lê a sala sem saída.
+   * ## O segundo passo e o que estava faltando
+   *
+   * `activateElement` **libera** o elemento de midia. Ele nao **inicia** a
+   * reproducao que o navegador recusou. A chamada ao `PUT /me/player/play` ja foi
+   * feita, a faixa ja esta carregada no device, e o estado do SDK e
+   * `tocando=false` -- recusado pelo navegador, nao pelo Spotify.
+   *
+   * Entao depois do gesto e preciso pedir o play de novo. E o efeito de carga,
+   * logo abaixo, e quem faz: por isso este handler volta o estado para `pronto`,
+   * e nao chama `play` por conta propria. Um unico caminho para iniciar, e o
+   * estado depois conta a verdade sobre o que o SDK respondeu.
+   *
+   * Qualquer gesto serve, e por isso o listener e na janela inteira: a pessoa
+   * pode estar digitando no chat, e isso tambem e um gesto. Ouvir so o botao de
+   * play deixaria quem so le a sala sem saida.
    */
   const semPlayer = estado === 'sem_conta' || estado === 'sem_token';
   useEffect(() => {
@@ -296,15 +321,29 @@ export function usePlayerSpotify(opts: {
       const p = playerRef.current;
       if (!p) {
         /*
-         * O player ainda não existe — o `ready` não chegou. O listener fica, e o
-         * próximo gesto tenta de novo. Sairem na primeira tentativa sem ativar
-         * nada deixaria a pessoa sem áudio e sem nenhuma forma de destravar.
+         * O player ainda nao existe -- o `ready` nao chegou. O listener fica, e o
+         * proximo gesto tenta de novo. Sair na primeira tentativa sem ativar nada
+         * deixaria a pessoa sem audio e sem nenhuma forma de destravar.
          */
         return;
       }
-      void p.ativar().catch(() => {
-        /* Sem áudio liberado não há como melhorar daqui. */
-      });
+      void p
+        .ativar()
+        .then(() => {
+          /*
+           * `pronto` e o estado honesto aqui: o device existe e o audio esta
+           * liberado, mas ninguem confirmou que a musica comecou. Quem confirma e
+           * o `player_state_changed`.
+           *
+           * Voltar direto para `tocando` seria afirmar reproducao que ainda nao
+           * aconteceu -- e foi exatamente esse o defeito que o `ready` ja causou
+           * uma vez, com "Tocando pelo Spotify" e `0:00 / 0:00` na tela.
+           */
+          setEstado('pronto');
+        })
+        .catch(() => {
+          /* Sem audio liberado nao ha como melhorar daqui. */
+        });
       window.removeEventListener('pointerdown', liberar);
       window.removeEventListener('keydown', liberar);
     };

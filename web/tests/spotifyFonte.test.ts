@@ -544,9 +544,7 @@ test('a faixa so comeca depois do ready', () => {
   const c = semComentario(palco);
   const hook = c.slice(c.indexOf('export function usePlayerSpotify'));
 
-  const efeito = hook.slice(
-    hook.indexOf("if (estado !== 'pronto' || !opts.faixa || !opts.tocando) return;"),
-  );
+  const efeito = hook.slice(hook.indexOf("if (!devicePronto || !opts.faixa || !opts.tocando) return;"));
   assert.match(
     efeito.slice(0, efeito.indexOf('}, [estado')),
     /tocar\(opts\.faixa\)/,
@@ -860,14 +858,41 @@ test('o audio preso por autoplay tem estado proprio e um caminho de saida', () =
     /window\.addEventListener\('pointerdown', liberar[\s\S]{0,200}?window\.addEventListener\('keydown', liberar/,
     'e o gesto e escutado na janela: digitar no chat tambem e um gesto',
   );
-  assert.match(palcoC, /p\.ativar\(\)/, 'chamando activateElement por dentro do gesto');
+  assert.match(palcoC, /p\s*\n?\s*\.ativar\(\)/, 'chamando activateElement por dentro do gesto');
+  /*
+   * O segundo passo: liberar o elemento não é iniciar a reprodução.
+   *
+   * O `autoplay_failed` chega **depois** de a faixa já estar carregada no device
+   * pelo `PUT /me/player/play`. O que o navegador recusou foi o som, não o
+   * Spotify. `activateElement` destrava o elemento de mídia; a reprodução precisa
+   * ser pedida de novo depois do gesto, e sem isso a pessoa clicava, o aviso sumia
+   * e continuava tudo em silêncio.
+   *
+   * O handler volta o estado para `pronto` e deixa o efeito de carga pedir o play
+   * — um caminho só para iniciar, e o `player_state_changed` é quem confirma.
+   */
+  const liberar = palcoC.slice(palcoC.indexOf('const liberar ='), palcoC.indexOf('}, [semPlayer]'));
+  assert.match(
+    liberar,
+    /\.ativar\(\)[\s\S]{0,300}?setEstado\('pronto'\)/,
+    'e depois do gesto o estado volta a pronto, para o play ser pedido de novo',
+  );
+  assert.ok(
+    !/liber[\s\S]{0,600}?\bplay\(\)/.test(liberar),
+    'e o handler nao chama play por conta propria: seria um segundo caminho para iniciar',
+  );
+  assert.match(
+    palcoC,
+    /const devicePronto = estado === 'pronto' \|\| estado === 'autoplay'/,
+    'e o efeito de carga aceita autoplay: o device existe, e o botao de play da sala nao pode ficar morto',
+  );
   const texto = semComentario(playback).slice(
     semComentario(playback).indexOf('export function textoDoEstado'),
   );
   assert.match(
     texto,
-    /case 'autoplay':[\s\S]{0,200}?interagir com a página/,
-    'e o texto diz o que a pessoa pode fazer, em vez de culpar a conta',
+    /case 'autoplay':[\s\S]{0,300}?qualquer lugar da página/,
+    'e o texto diz que qualquer gesto serve, em vez de mandar procurar um botao que o codigo nao escuta',
   );
 });
 
