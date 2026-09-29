@@ -64,6 +64,13 @@ export interface SpotifyStatus {
   product?: string | null;
   displayName?: string | null;
   email?: string | null;
+  /**
+   * Escopos que o token não tem. Vem do servidor porque **token granted não
+   * cresce**: só uma nova autorização inclui escopo novo, e é a lista que separa
+   * "reconecte" de "falta Premium" — duas coisas que a busca não denuncia, já que
+   * ela funciona com menos escopos.
+   */
+  escoposFaltando?: string[];
 }
 
 export type SpotifyItemKind = 'track' | 'album' | 'playlist';

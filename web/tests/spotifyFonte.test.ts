@@ -951,6 +951,93 @@ test('script bloqueado e DRM sao estados diferentes', () => {
   );
 });
 
+test('token ilegivel e escopo faltando sao motivos diferentes', () => {
+  /*
+   * `scopesDoToken` devolve `[]` quando não consegue ler o JWT, e `[]` é
+   * indistinguível de "concederam zero escopos". Sem separar, uma falha de
+   * leitura do nosso lado sai como `spotify_scope_faltando`, que diz "reconecte"
+   * — e reconectar não conserta um decodificador quebrado.
+   *
+   * A ação sugerida não resolver a causa é a mesma mentira com outro texto, e é
+   * por isso que este teste existe: os dois caminhos precisam de motivos
+   * próprios, e só um deles pode virar "reconecte".
+   */
+  const c = semComentario(oauth);
+  const play = c.slice(c.indexOf('export async function iniciarReproducao'));
+
+  assert.match(
+    play,
+    /concedidos\.length === 0[\s\S]{0,600}?spotify_scope_ilegivel/,
+    'nao leu escopo nenhum e um motivo nosso, com codigo proprio',
+  );
+  assert.match(
+    play,
+    /spotify_scope_ilegivel', status: 502/,
+    'e 502: nao e recusa do Spotify e nao e escopo faltando',
+  );
+  assert.ok(
+    play.indexOf('spotify_scope_ilegivel') < play.indexOf('faltando.length > 0'),
+    'e o caso ilegivel e decidido antes do caso faltando',
+  );
+  assert.match(
+    play,
+    /concedidos=\[\$\{concedidos\.join\('\, '\)\}\]/,
+    'e o log traz os concedidos, sem os quais o log nao responde a pergunta',
+  );
+
+  /*
+   * No cliente, um 403 com "scope" vira `sem_escopo`, que manda reconectar. O
+   * 502 de token ilegível não pode cair nesse texto: reconectar não conserta.
+   */
+  const palco = semComentario(
+    readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8'),
+  );
+  const fn = palco.slice(palco.indexOf('const tocar = useCallback'));
+  assert.match(
+    fn.slice(0, fn.indexOf('}, []);')),
+    /status === 403[\s\S]{0,200}?includes\('scope'\)/,
+    'e so o 403 vira sem_escopo, porque so ele significa "reconecte"',
+  );
+});
+
+test('o status avisa os escopos faltando antes de a pessoa escolher a musica', () => {
+  /*
+   * A busca funciona com três escopos, então nada no painel denunciava o
+   * problema antes de a pessoa escolher a música, ouvir silêncio e ler um aviso.
+   *
+   * E o card dizia "o áudio exige Spotify Premium" a uma conta que tem Premium e
+   * só precisa autorizar de novo — o empurrão errado, na direção cara.
+   */
+  const c = semComentario(oauth);
+  const status = c.slice(c.indexOf('export async function getStatus'), c.indexOf('function pkce'));
+  assert.match(
+    status,
+    /escoposFaltando: SCOPES_NECESSARIOS\.filter\(/,
+    'o status carrega os escopos que o token nao tem',
+  );
+  assert.match(
+    status,
+    /connected: true/,
+    'e connected continua significando so "ha token guardado", sem virar "consegue tocar"',
+  );
+
+  const fonte = semComentario(
+    readFileSync(resolve(process.cwd(), '../web/lib/mediaSources/useSpotifySource.tsx'), 'utf8'),
+  );
+  const iEscopo = fonte.indexOf('escoposFaltando');
+  const iPremium = fonte.indexOf("status.product === 'free'");
+  assert.ok(iEscopo > 0, 'o card olha os escopos faltando');
+  assert.ok(
+    iEscopo < iPremium,
+    'e olha antes do Premium: sem escopo e a causa mais comum, e Premium nao e culpa de ninguem aqui',
+  );
+  assert.match(
+    fonte,
+    /nova autorização/,
+    'e o texto do card oferece a acao que resolve -- autorizar de novo',
+  );
+});
+
 test('o log da sessao usa hash e nunca o valor do cookie', () => {
   /*
    * "A busca funciona e o player não" é quase sempre uma divisão de sessão, e

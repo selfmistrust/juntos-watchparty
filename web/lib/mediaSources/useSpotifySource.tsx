@@ -71,9 +71,21 @@ export function useSpotifySource(): {
       ? `${spotifyProvider.description} A integração não está configurada no servidor.`
       : !status.connected
         ? `${spotifyProvider.description} Conecte a sua conta no painel para buscar.`
-        : status.product === 'free'
-          ? `${spotifyProvider.description} A busca funciona; o áudio exige Spotify Premium.`
-          : spotifyProvider.description;
+        : /*
+         * O escopo faltando vem **antes** do Premium, e a ordem não é
+         * decorativa.
+         *
+         * `product === 'free'` só prova que o Spotify diz "free". A causa mais
+         * comum de não tocar não é plano: é um token autorizado antes de
+         * `user-modify-playback-state` existir, e token granted não cresce. Dizer
+         * "o áudio exige Premium" a essa pessoa a empurra para comprar um plano
+         * que ela já tem, e o texto seguinte — "Reconecte a conta" — resolve.
+         */
+        (status.escoposFaltando?.length ?? 0) > 0
+          ? `${spotifyProvider.description} A busca funciona; o áudio precisa de uma nova autorização.`
+          : status.product === 'free'
+            ? `${spotifyProvider.description} A busca funciona; o áudio exige Spotify Premium.`
+            : spotifyProvider.description;
 
     return {
       ...spotifyProvider,

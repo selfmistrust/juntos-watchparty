@@ -255,6 +255,15 @@ export interface SpotifyStatus {
   product?: string | null;
   displayName?: string | null;
   email?: string | null;
+  /**
+   * Escopos que este token não tem, e que o Spotify não vai conceder agora.
+   *
+   * Não é dívida do Spotify: **token granted não cresce**. Só uma nova
+   * autorização inclui escopo novo, e é por isso que a lista é a informação que
+   * permite dizer "reconecte" a quem precisa, em vez de "Premium insuficiente" a
+   * quem não tem nada a ver com Premium.
+   */
+  escoposFaltando?: string[];
 }
 
 /**
@@ -282,12 +291,25 @@ export async function getStatus(sessionId: string | null): Promise<SpotifyStatus
   if (!configured || !sessionId) return { configured, connected: false };
   const record = await loadTokens(sessionId);
   if (!record) return { configured, connected: false };
+  /*
+   * `connected` continua significando exatamente o que significava: há token
+   * guardado nesta sessão. Ele **não** passa a significar "conseguir tocar", e é por
+   * isso que os escopos faltando viajam no mesmo objeto.
+   *
+   * Sem este campo a interface só descobria o problema tarde — depois de a pessoa
+   * escolher a música, ouvir silêncio e ler um aviso. A busca funciona com três
+   * escopos, então nada no painel denunciaria o problema antes, e o card poderia
+   * dizer "a busca funciona; o áudio exige Premium" a uma conta que tem Premium
+   * e apenas precisa autorizar de novo.
+   */
+  const concedidos = scopesDoToken(record.accessToken);
   return {
     configured,
     connected: true,
     product: record.product,
     displayName: record.displayName,
     email: record.email,
+    escoposFaltando: SCOPES_NECESSARIOS.filter((s) => !concedidos.includes(s)),
   };
 }
 
@@ -1275,14 +1297,45 @@ export async function iniciarReproducao(
    * Spotify responde 403, e sem esta checagem a pessoa receberia "Premium
    * insuficiente" — que é falso, e a empurraria para comprar um plano que ela
    * já tem.
+   *
+   * ## A distinção que o log tem que fazer
+   *
+   * `scopesDoToken` devolve `[]` quando não consegue ler o JWT — e `[]` é
+   * indistinguível de "concederam zero escopos". Sem separar as duas coisas, uma
+   * falha de leitura do nosso lado sai como `spotify_scope_faltando`, que diz à
+   * pessoa "reconecte", e reconectar não conserta um decodificador quebrado. É a
+   * mesma mentira com outro texto: a ação sugerida não resolve a causa.
+   *
+   * Por isso o log traz os **concedidos** junto dos **faltando**, e o motivo é
+   * outro quando não leu nada.
    */
   const peek = await peekTokens(sessionId);
   if (!peek) return { ok: false, reason: 'not_connected', status: 401 };
-  const faltando = SCOPES_NECESSARIOS.filter((s) => !scopesDoToken(peek.accessToken).includes(s));
+  const concedidos = scopesDoToken(peek.accessToken);
+  if (concedidos.length === 0) {
+    /*
+     * A forma do token é calculada **fora** do template, e não por estética: um
+     * `${...}` com o token dentro de um log é uma linha de distância de vazar o
+     * token, e o teste que vela por isso não consegue distinguir
+     * `${token.length}` de `${token}`. Fora do template, o log só contém
+     * `jwt` ou `nao-jwt`, e não há ambiguidade.
+     *
+     * O comprimento do token não entra. Não ajuda a diagnosticar nada, e seria o
+     * único ponto em que ele tocaria um log.
+     */
+    const jwt = peek.accessToken.split('.').length === 3;
+    console.error(
+      `[spotify] play: nao consegui ler nenhum escopo do token ` +
+        `sessao=${hashDeSessao(sessionId)} formato=${jwt ? 'jwt' : 'nao-jwt'}`,
+    );
+    return { ok: false, reason: 'spotify_scope_ilegivel', status: 502 };
+  }
+
+  const faltando = SCOPES_NECESSARIOS.filter((s) => !concedidos.includes(s));
   if (faltando.length > 0) {
     console.log(
-      `[spotify] play recusado antes de chamar a API: faltam scopes [${faltando.join(', ')}] ` +
-        `sessao=${hashDeSessao(sessionId)}`,
+      `[spotify] play recusado: faltam [${faltando.join(', ')}] ` +
+        `concedidos=[${concedidos.join(', ')}] sessao=${hashDeSessao(sessionId)}`,
     );
     return { ok: false, reason: 'spotify_scope_faltando', status: 403 };
   }

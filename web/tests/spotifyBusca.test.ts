@@ -421,28 +421,63 @@ test('o log registra endpoint, status e o corpo do Spotify', () => {
   );
 });
 
-test('nenhum log do Spotify escreve token, em nenhuma funcao', () => {
+test('nenhum log do Spotify escreve o token, em nenhuma funcao', () => {
   /*
-   * A verificação acima é por função, e por isso não cobre o arquivo inteiro. Esta
-   * cobre os dois: para cada `console.*` do módulo, o trecho até o fim da
-   * instrução não pode mencionar token nem `Authorization`.
+   * A verificação por função acima não cobre o arquivo inteiro. Esta cobre os dois,
+   * porque o vazamento que importa é o que ninguém procurou: o
+   * `pending.sessionId.slice(0, 8)` que estava no log do callback apareceu por
+   * leitura, não por teste.
    *
-   * Vale a redundância porque o vazamento que importa é justamente o que
-   * ninguém procurou: o `pending.sessionId.slice(0, 8)` que estava no log do
-   * callback foi encontrado por leitura, não por teste.
+   * E mede a coisa certa. A versão anterior proibia a **palavra** `accessToken` em
+   * qualquer `console.*`, e reprovou um log legítimo que usa o token só para
+   * descobrir o formato dele (`accessToken.split('.').length`). Um teste que
+   * reprova o certo costuma ser afrouxado depois — e afrouxado sem querer é como
+   * teste de segurança deixa de proteger.
+   *
+   * O que vaza é o **valor**: interpolado num template, ou passado como argumento
+   * inteiro. Derivar um booleano ou uma contagem a partir dele não vaza nada.
    */
   const c = semComentario(oauth);
-  for (const m of c.matchAll(/console\.(?:log|warn|error)\(([\s\S]{0,400}?)\);/g)) {
+
+  for (const m of c.matchAll(/console\.(?:log|warn|error)\(([\s\S]{0,500}?)\);/g)) {
+    const corpo = m[1];
+    // Interpolação do token dentro de um template.
     assert.ok(
-      !/accessToken|refreshToken|Authorization|Bearer/.test(m[1]),
-      `um log do Spotify escreve token: ${m[1].slice(0, 90)}`,
+      !/\$\{[^}]*\baccessToken\b[^}]*\}/.test(corpo),
+      `um log interpola o access token: ${corpo.slice(0, 100)}`,
     );
+    // O token (ou algo que o contém) passado como argumento.
+    assert.ok(
+      !/[(,]\s*(?:[A-Za-z_$][\w$]*\.)?accessToken\s*[,)]/.test(corpo),
+      `um log passa o access token como argumento: ${corpo.slice(0, 100)}`,
+    );
+    assert.ok(
+      !/[(,]\s*(?:[A-Za-z_$][\w$]*\.)?refreshToken\s*[,)]/.test(corpo),
+      `um log passa o refresh token como argumento: ${corpo.slice(0, 100)}`,
+    );
+    assert.ok(!/Bearer\s+/.test(corpo), `um log escreve um header de autorizacao: ${corpo.slice(0, 100)}`);
   }
-  for (const m of c.matchAll(/console\.(?:log|warn|error)\(`([^`]{0,300})`/g)) {
-    assert.ok(
-      !/\$\{(?:auth|result|peek|record)\.accessToken\}/.test(m[1]),
-      `um log do Spotify interpola o access token: ${m[1].slice(0, 90)}`,
-    );
+
+  // A sessão entra só por hash, em qualquer canto do arquivo.
+  for (const m of c.matchAll(/console\.(?:log|warn|error)\(([\s\S]{0,500}?)\);/g)) {
+    const corpo = m[1];
+    for (const interp of corpo.matchAll(/\$\{([^}]*)\}/g)) {
+      const valor = interp[1].trim();
+      /*
+       * `${hashDeSessao(sessionId)}` é o que se quer. `${sessionId}` e
+       * `${x.sessionId}` são o que não pode acontecer.
+       *
+       * A checagem não é a palavra "sessionId": o hash **recebe** a sessão como
+       * argumento, e um teste que proibisse a palavra reprovaria exatamente a
+       * linha que resolve o problema. O que se mede é o que a interpolação
+       * **produz**.
+       */
+      const crua = /^(?:[A-Za-z_$][\w$]*\.)?sessionId$/.test(valor);
+      assert.ok(
+        !crua,
+        `um log interpola a sessao crua: \${${valor}}`,
+      );
+    }
   }
 });
 
