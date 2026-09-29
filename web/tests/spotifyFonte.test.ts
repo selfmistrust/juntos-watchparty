@@ -433,7 +433,7 @@ test('o palco nunca pede login para quem ja esta conectado', () => {
   for (const [estado, marca] of [
     ['sem_token', 'Reconecte'],
     ['premium', 'Premium é necessário'],
-    ['ambiente', 'não é compatível'],
+    ['drm', 'não reproduz áudio'],
   ] as const) {
     assert.match(
       texto,
@@ -481,7 +481,7 @@ test('os eventos do SDK sao tratados com estados proprios', () => {
     ['ready', "'pronto'"],
     ['authentication_error', "'sem_token'"],
     ['account_error', "'premium'"],
-    ['initialization_error', "'ambiente'"],
+    ['initialization_error', "'drm'"],
     ['autoplay_failed', "'autoplay'"],
   ] as const) {
     const bloco = c.slice(c.indexOf(`escutar('${evento}'`));
@@ -589,7 +589,7 @@ test('o painel nao inventa o estado do player', () => {
   const fonteC = semComentario(fonte);
   assert.match(fonteC, /useSpotifyPanel\(conta\)/, 'e o provider passa so a conta');
   assert.ok(
-    !/useSpotifyPanel\([^)]*'(sem_conta|sem_token|premium|ambiente|tocando)'/.test(fonteC),
+    !/useSpotifyPanel\([^)]*'(sem_conta|sem_token|premium|ambiente|sdk_bloqueado|drm|autoplay|pronto|tocando)'/.test(fonteC),
     'e nao um estado derivado da conta, que seria outra forma de inventar',
   );
 
@@ -854,6 +854,100 @@ test('quem autorizou antes do scope novo recebe um estado proprio', () => {
   assert.ok(
     !/setEstado\('premium'\)/.test(fn),
     'e nenhum 403 vira premium: so o account_error do SDK decide isso',
+  );
+});
+
+test('o device_id do SDK nao e validado por formato', () => {
+  /*
+   * Regressao minha, vista na tela.
+   *
+   * O `ready` passou a exigir 32 caracteres hex, e a referencia do Spotify da
+   * como exemplo `c349add90ccf047f4e737492b69ba912bdc55f6a` -- **40**. O id real
+   * passou, o palco passou a dizer "Este ambiente nao e compativel com o Spotify
+   * Connect" numa conta que funcionava, com a faixa na tela e nenhum som.
+   *
+   * E a mesma classe do `playTrack`: um formato escrito de imaginacao, que o
+   * TypeScript aceita e o Spotify nunca pediu. A documentacao nao especifica
+   * comprimento nem alfabeto, e por isso nao ha formato a checar.
+   *
+   * O teste usa o exemplo da propria referencia como caso de teste. Se o Spotify
+   * mudar o formato do id, este teste avisa -- e nao a conta da pessoa.
+   */
+  const EXEMPLO_DA_REFERENCIA = 'c349add90ccf047f4e737492b69ba912bdc55f6a';
+  assert.equal(EXEMPLO_DA_REFERENCIA.length, 40, 'o exemplo da referencia tem 40 caracteres');
+
+  const c = semComentario(playback);
+  const ready = c.slice(c.indexOf("escutar('ready'"), c.indexOf("escutar('player_state_changed'"));
+  assert.ok(
+    !/\^\[A-Fa-f0-9\]/.test(ready),
+    'o ready nao exige hex: o comprimento do device_id nao esta especificado',
+  );
+  assert.match(
+    ready,
+    /deviceId\.trim\(\) === ''/,
+    'e so recusa quando nao ha id nenhum, que e o unico caso sem saida',
+  );
+
+  /*
+   * O exemplo da referencia tem que passar pela regra do servidor. Extrair o
+   * regex do fonte e testa-lo e mais honesto do que reescrever a regra aqui: uma
+   * copia no teste passaria mesmo se o codigo mudasse.
+   */
+  const oauthC = semComentario(oauth);
+  const def = oauthC.slice(oauthC.indexOf('const DEVICE_ID')).match(/\/\^[^/]+\//);
+  assert.ok(def, 'a regra do device_id existe no servidor');
+  // Sem as barras: `new RegExp('/a/')` casa a string "/a/", e nao o padrao.
+  const fonteDaRegra = def![0].slice(1, -1);
+  assert.ok(
+    new RegExp(fonteDaRegra).test(EXEMPLO_DA_REFERENCIA),
+    'e o exemplo de 40 caracteres da referencia passa nela',
+  );
+  assert.ok(
+    !/\{32\}/.test(fonteDaRegra),
+    'o limite nao e 32: foi o que quebrou na tela',
+  );
+
+  const play = oauthC.slice(oauthC.indexOf('export async function iniciarReproducao'));
+  assert.match(play, /DEVICE_ID\.test\(deviceId\)/, 'o servidor valida o device_id');
+  assert.match(play, /encodeURIComponent\(deviceId\)/, 'e o que protege a query e o encode');
+});
+
+test('script bloqueado e DRM sao estados diferentes', () => {
+  /*
+   * `ambiente` significava quatro coisas: o script não carregou, `window.Spotify`
+   * não apareceu, o `device_id` não passou no meu regex, e o `initialization_error`
+   * de EME. Quatro causas com textos e ações diferentes, uma palavra.
+   *
+   * Foi por isso que a regressão do `device_id` ficou invisível: ela publicava
+   * `ambiente`, e `ambiente` dizia "nao e compativel", que e uma afirmacao
+   * plausivel demais para chamar atencao.
+   */
+  const c = semComentario(playback);
+  assert.ok(!/\|\s*'ambiente'/.test(c), 'o estado ambiente some: ele nao significa nada');
+  assert.match(c, /\| 'sdk_bloqueado'/, 'o script que nao carregou e culpa nossa');
+  assert.match(c, /\| 'drm'/, 'e a falta de EME e do dispositivo');
+
+  // O script nao carregou -> nosso, nao da pessoa.
+  const carregou = c.slice(c.indexOf('const carregou = await carregarSdkSpotify()'));
+  assert.match(
+    carregou.slice(0, carregou.indexOf('const w = window')),
+    /onEstado\('sdk_bloqueado'\)/,
+    'e o script ausente aponta para sdk_bloqueado',
+  );
+  // EME -> do dispositivo.
+  const init = c.slice(c.indexOf("escutar('initialization_error'"));
+  assert.match(init.slice(0, init.indexOf('});')), /onEstado\('drm'\)/, 'e o EME aponta para drm');
+
+  const texto = c.slice(c.indexOf('export function textoDoEstado'));
+  assert.match(
+    texto,
+    /case 'sdk_bloqueado':[\s\S]{0,300}?não conseguiu carregar o player[\s\S]{0,120}?Recarregue/,
+    'e cada um diz o que a pessoa pode fazer, em vez de "ambiente incompativel"',
+  );
+  assert.match(
+    texto,
+    /case 'drm':[\s\S]{0,400}?não reproduz áudio/,
+    'o de DRM aceita a limitação, sem mandar comprar plano nem reconectar',
   );
 });
 

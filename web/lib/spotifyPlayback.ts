@@ -89,8 +89,12 @@ export function carregarSdkSpotify(): Promise<boolean> {
  *               a unica saida e autorizar de novo. Nao e Premium, e nao e a conta.
  *   premium     a conta conectou e o Spotify recusou a reproducao. So o SDK sabe
  *               disto, e o `/me` nao.
- *   ambiente    o SDK nao rodou aqui: contexto sem TLS, script bloqueado, ou
- *               Electron — que o Spotify Connect nao reconhece.
+ *   sdk_bloqueado  o script do SDK nao carregou, ou window.Spotify nao
+ *               apareceu. E falha **nosso**: rede, CSP ou o script. Nao e a
+ *               pessoa, e a acao e outra.
+ *   drm         o SDK carregou e recusou instanciar o player. A referencia
+ *               atribui isso a falta de suporte a EME, que e o que impede o
+ *               app de desktop de tocar. Aqui nao ha o que fazer.
  *   autoplay    o navegador bloqueou o audio por regra de autoplay. O device esta
  *               pronto; so falta um clique da pessoa. E um evento real do SDK.
  *   pronto      o device conectou, recebeu `device_id`, e NAO esta tocando.
@@ -112,7 +116,8 @@ export type EstadoDoPlayer =
   | 'sem_token'
   | 'sem_escopo'
   | 'premium'
-  | 'ambiente'
+  | 'sdk_bloqueado'
+  | 'drm'
   | 'autoplay'
   | 'pronto'
   | 'tocando';
@@ -246,13 +251,21 @@ export async function conectarPlayerSpotify(opts: {
 }): Promise<PlayerSpotify | null> {
   const carregou = await carregarSdkSpotify();
   if (!carregou) {
-    opts.onEstado('ambiente');
+    /*
+     * O script nao chegou. E falha **nosso** -- rede, CSP, o proprio Spotify --
+     * e nao da conta nem do dispositivo da pessoa. Dizer "ambiente incompativel"
+     * aqui seria atribuir a ela um problema nosso, e a unica pista, o `onerror`
+     * do script, morre aqui dentro.
+     */
+    console.warn('[spotify] o script do SDK nao carregou');
+    opts.onEstado('sdk_bloqueado');
     return null;
   }
 
   const w = window as unknown as PlayerWindow;
   if (!w.Spotify) {
-    opts.onEstado('ambiente');
+    console.warn('[spotify] o script carregou mas window.Spotify nao apareceu');
+    opts.onEstado('sdk_bloqueado');
     return null;
   }
 
@@ -292,15 +305,27 @@ export async function conectarPlayerSpotify(opts: {
 
     escutar('ready', (arg) => {
       const deviceId = (arg as WebPlaybackPlayer | undefined)?.device_id ?? '';
-      if (!/^[A-Fa-f0-9]{32}$/.test(deviceId)) {
-        /*
-         * Sem `device_id` nao ha `PUT /me/player/play` possivel, e sem ele o
-         * Spotify miraria no dispositivo ativo da conta no celular da pessoa --
-         * o oposto do que a sala quer. E o palco nao pode dizer "pronto" sem
-         * isso, porque "pronto" sem destino nao e nada.
-         */
-        console.warn(`[spotify] ready sem device_id utilizavel (${deviceId.length} chars)`);
-        opts.onEstado('ambiente');
+      /*
+       * O `device_id` é usado **como veio**, sem teste de formato.
+       *
+       * A versão anterior exigia 32 caracteres hex, e a referência dá como exemplo
+       * `c349add90ccf047f4e737492b69ba912bdc55f6a` — 40. O id real foi rejeitado,
+       * e o palco passou a dizer "Este ambiente não é compatível com o Spotify
+       * Connect" numa conta que funcionava perfeitamente.
+       *
+       * É a mesma classe de erro do `playTrack`: um formato inventado, que o
+       * TypeScript aceita e o Spotify nunca pediu. A documentação **não** especifica
+       * o comprimento, e um valor cujo formato não está especificado não pode ser
+       * validado por formato — só o uso é seguro, e o único uso daqui é
+       * `encodeURIComponent` do lado do servidor.
+       *
+       * O que sobra de checagem é o mínimo que protege a interface: existe, e é
+       * texto. Sem isso, um `ready` sem id_publicaria um player que não pode
+       * carregar faixa nenhuma, e o palco diria "pronto" sem ter para onde mandar.
+       */
+      if (typeof deviceId !== 'string' || deviceId.trim() === '') {
+        console.warn('[spotify] ready sem device_id; nao ha para onde carregar a faixa');
+        opts.onEstado('drm');
         finalizar(null);
         return;
       }
@@ -437,14 +462,14 @@ export async function conectarPlayerSpotify(opts: {
     });
 
     /*
-     * Ambiente ou DRM. O SDK não diz qual dos dois, e essa é a informação que
-     * falta: dentro do Electron o player se anuncia como dispositivo que o
-     * Spotify não reconhece, e o erro é o mesmo de uma incompatibilidade de DRM.
+     * A referência atribui este erro à falta de suporte a EME, e é a única pista
+     * que temos. Separar isto de `sdk_bloqueado` importa porque os dois Ramo do
+     * mesmo sintoma — silêncio — e só um deles é culpa nossa.
      */
     escutar('initialization_error', (arg) => {
       const mensagem = (arg as { message?: string } | undefined)?.message ?? '';
       console.warn(`[spotify] initialization_error: ${mensagem}`);
-      opts.onEstado('ambiente');
+      opts.onEstado('drm');
       finalizar(null);
     });
 
@@ -503,8 +528,20 @@ export function textoDoEstado(estado: EstadoDoPlayer): string | null {
       return 'O Spotify precisa de uma nova autorização para tocar nesta sala. Reconecte a conta.';
     case 'premium':
       return 'Spotify Premium é necessário para reproduzir nesta aplicação.';
-    case 'ambiente':
-      return 'Este ambiente não é compatível com o Spotify Connect. A faixa está na fila.';
+    case 'sdk_bloqueado':
+      /*
+       * Aqui a culpa é nossa, e o texto diz isso. "Ambiente incompatível" puniria
+       * a pessoa por uma rede que falhou ou um script que não veio — e ela não
+       * tem como consertar nada disso.
+       */
+      return 'O Juntos não conseguiu carregar o player do Spotify. Recarregue a página.';
+    case 'drm':
+      /*
+       * Aqui não há o que a pessoa possa fazer, e ela não deve ser mandada comprar
+       * plano nem reconectar a conta. O texto aceita a limitação em vez de
+       * disfarçar de erro temporário.
+       */
+      return 'Este dispositivo não reproduz áudio do Spotify. A faixa fica na fila e a busca continua funcionando.';
     case 'autoplay':
       /*
        * O único estado que pede um clique, e o clique resolve mesmo. O navegador

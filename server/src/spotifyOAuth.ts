@@ -1212,8 +1212,27 @@ export async function listTracks(
 
 /** `spotify:track:` seguido de 22 caracteres base62 — o formato real do id. */
 const URI_DE_TRACK = /^spotify:track:[A-Za-z0-9]{1,64}$/;
-/** O `device_id` do SDK é um hex de 32; aceitar só isso evita forjar device alheio. */
-const DEVICE_ID = /^[A-Fa-f0-9]{32}$/;
+/**
+ * O `device_id` que o `ready` do SDK entrega.
+ *
+ * ## Por que a validação é quase nenhuma
+ *
+ * A versão anterior exigia 32 caracteres hex, e a referência do Spotify dá como
+ * exemplo `c349add90ccf047f4e737492b69ba912bdc55f6a` — 40. O id real foi
+ * rejeitado e a tela passou a dizer que o ambiente não era compatível, numa conta
+ * que funcionava.
+ *
+ * A documentação **não** especifica o comprimento nem o alfabeto. Um valor cujo
+ * formato não está especificado não pode ser validado por formato: qualquer
+ * limite aqui é um palpite que vira portão. O que protege de verdade é o
+ * `encodeURIComponent` na montagem da query — o id nunca sai do formato que a
+ * URL aceita, qualquer que ele seja — e o 400 do Spotify para um id que ele não
+ * reconhece.
+ *
+ * O limite de tamanho existe só para não haver entrada absurda; é largo de
+ * propósito, e mudar de comprimento de id não deve quebrar o áudio.
+ */
+const DEVICE_ID = /^[A-Za-z0-9_-]{8,128}$/;
 
 /**
  * Carrega uma faixa no device do Web Playback SDK desta pessoa.
