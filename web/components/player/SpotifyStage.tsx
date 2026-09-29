@@ -8,6 +8,7 @@ import {
   textoDoEstado,
   type EstadoDoPlayer,
   type PlayerSpotify,
+  type RelogioDoPlayer,
 } from '@/lib/spotifyPlayback';
 
 /**
@@ -122,7 +123,12 @@ export function usePlayerSpotify(opts: {
   faixa?: string | null;
   /** O que a sala acredita: play ou pause. */
   tocando: boolean;
-}): { estado: EstadoDoPlayer; aviso: string | null; tocar: (uri: string) => void } {
+}): {
+  estado: EstadoDoPlayer;
+  aviso: string | null;
+  relogio: RelogioDoPlayer;
+  tocar: (uri: string) => void;
+} {
   const [estado, setEstado] = useState<EstadoDoPlayer>('sem_conta');
   /*
    * A frase do servidor quando ele tem uma. Vive no estado em vez de vir de
@@ -130,7 +136,21 @@ export function usePlayerSpotify(opts: {
    * pessoa, e reescreve-lo aqui seria um segundo lugar para errar.
    */
   const [aviso, setAviso] = useState<string | null>(null);
-
+  /*
+   * O relogio que a barra de progresso mostra.
+   *
+   * Vive no estado, e nao e lido direto do player no render, porque a interface
+   * precisa **redesenhar** para mostrar o segundo certo. Quem atualiza e o efeito
+   * de 250ms abaixo, no mesmo periodo que o video usa.
+   *
+   * Comeca zerado de proposito: enquanto nao ha faixa carregada, `0:00 / 0:00` e
+   * a leitura correta, e nao um valor inventado.
+   */
+  const [relogio, setRelogio] = useState<RelogioDoPlayer>({
+    posicaoMs: 0,
+    duracaoMs: 0,
+    tocando: false,
+  });
   /*
    * O player vive num ref, e não no estado, porque é o que o `tocar` de baixo
    * alcança sem re-renderizar a árvore. E **precisa** ser um ref: a versão
@@ -179,6 +199,7 @@ export function usePlayerSpotify(opts: {
     if (!opts.conectado) {
       setEstado('sem_conta');
       setAviso(null);
+      setRelogio({ posicaoMs: 0, duracaoMs: 0, tocando: false });
       return;
     }
 
@@ -251,6 +272,7 @@ export function usePlayerSpotify(opts: {
       return;
     }
     ultimaFaixa.current = opts.faixa;
+    setRelogio({ posicaoMs: 0, duracaoMs: 0, tocando: false });
     tocar(opts.faixa);
   }, [estado, opts.faixa, opts.tocando, tocar]);
 
@@ -312,5 +334,22 @@ export function usePlayerSpotify(opts: {
     });
   }, [estado, opts.tocando]);
 
-  return { estado, aviso, tocar };
+  /*
+   * O relogio anda a cada 250ms, no mesmo periodo que o video usa.
+   *
+   * So roda quando ha player. Fora disso o estado ficaria em zero e a interface
+   * redesenhando sem nenhuma informacao nova, que e trabalho de grafica a toa.
+   */
+  const temPlayer = playerRef.current !== null;
+  useEffect(() => {
+    if (!temPlayer) return;
+    const id = setInterval(() => {
+      const p = playerRef.current;
+      if (!p) return;
+      setRelogio(p.relogio());
+    }, 250);
+    return () => clearInterval(id);
+  }, [temPlayer, estado]);
+
+  return { estado, aviso, relogio, tocar };
 }

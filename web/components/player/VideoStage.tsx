@@ -145,11 +145,12 @@ export function VideoStage({
    * Sem os dois, o player conectava e a sala ficava em silêncio sem que nada
    * dissesse por quê.
    */
-  const { estado: estadoDoPlayer, aviso: avisoDoPlayer } = usePlayerSpotify({
+  const { estado: estadoDoPlayer, aviso: avisoDoPlayer, relogio: relogioDoPlayer } = usePlayerSpotify({
     conectado: spotifyConectado,
     faixa: currentItem?.kind === 'spotify' ? currentItem.spotifyUri : null,
     tocando: isPlaying,
   });
+  const ehSpotify = currentItem?.kind === 'spotify';
   const hasNext = Boolean(state && state.currentIndex < state.playlist.length - 1);
 
   /** Troca de faixa: zera o relógio local e espera o novo player avisar que carregou. */
@@ -226,6 +227,24 @@ export function VideoStage({
 
   /** Relógio de UI. */
   useEffect(() => {
+    /*
+     * O relógio do Spotify vem do SDK, e não do `<video>`.
+     *
+     * Não existe `PlayerHandle` para uma faixa do Spotify — o áudio sai do Web
+     * Playback SDK, na conta de cada pessoa — então o `getCurrentTime()` do vídeo
+     * não tem o que ler. Era daí que vinha o `0:00 / 0:00` com a música tocando:
+     * não um relógio parado, um relógio que nunca recebeu nada.
+     *
+     * O relógio do SDK é projetado a partir da última posição que ele confirmou,
+     * e vem em milissegundos. A conversão para segundos acontece aqui, num só
+     * lugar, para o resto da interface continuar trabalhando em segundos como
+     * toda a aplicação.
+     */
+    if (ehSpotify) {
+      setCurrent(relogioDoPlayer.posicaoMs / 1000);
+      setDuration(relogioDoPlayer.duracaoMs / 1000);
+      return;
+    }
     // Ao vivo o relógio mostraria uma posição que não corresponde a nada, já que
     // a barra de progresso some.
     if (isStream) return;
@@ -237,7 +256,7 @@ export function VideoStage({
       if (d && Math.abs(d - duration) > 0.5) setDuration(d);
     }, 250);
     return () => clearInterval(id);
-  }, [duration, isStream]);
+  }, [duration, isStream, ehSpotify, relogioDoPlayer]);
 
   /**
    * Correção de deriva. Diferenças grandes viram seek; pequenas viram uma
@@ -588,6 +607,7 @@ export function VideoStage({
           sidebarOpen={sidebarOpen}
           captionsOn={currentItem?.kind === 'youtube' ? captionsOn : undefined}
           live={isStream}
+          pessoal={ehSpotify}
           onTogglePlay={togglePlay}
           onSeek={handleSeek}
           onNext={() => state && actions.selectTrack(state.currentIndex + 1)}

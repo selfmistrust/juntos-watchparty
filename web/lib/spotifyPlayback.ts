@@ -129,6 +129,24 @@ export interface PlayerSpotify {
   /** O `device_id` que o `ready` entregou. É o destino do `PUT /me/player/play`. */
   deviceId: string;
   /**
+   * Onde a faixa está, agora.
+   *
+   * ## Por que isto é projeção e não leitura
+   *
+   * O `player_state_changed` chega em "intervalos aleatórios", como diz a
+   * referência. Ler o relógio só quando o evento chega produziria um contador que
+   * avança aos trancos e fica parado entre um evento e outro.
+   *
+   * Então o último `position` do SDK vira uma âncora com a hora em que chegou, e
+   * a posição é projetada com o tempo que passou desde então — exatamente o que um
+   * `<video>` faz quando ninguém está a cada quadro. Quando o SDK avisa, a âncora
+   * é trocada e a projeção recomeça dali; enquanto isso, ela é a leitura.
+   *
+   * O teto é a duração, porque a faixa acaba e o SDK pode não emitir nada ao
+   * terminar: sem o teto, o relógio correria para dentro do silêncio.
+   */
+  relogio: () => RelogioDoPlayer;
+  /**
    * Carrega uma faixa pelo uri.
    *
    * A fila guarda **faixas**, uma a uma: quem escolhe um disco na busca percorre
@@ -147,6 +165,20 @@ export interface PlayerSpotify {
   ativar: () => Promise<void>;
   destruir: () => void;
   on: (evento: 'player_state_changed' | 'not_ready', fn: () => void) => void;
+}
+
+/**
+ * Onde a faixa está, em milissegundos.
+ *
+ * Vem do Web Playback SDK e nunca do servidor. O servidor conduz o vídeo e o
+ * stream porque o áudio sai do mesmo lugar em todas as máquinas; o Spotify não
+ * tem esse caminho, então a posição de cada pessoa é a posição do player da conta
+ * dela, e só o SDK dela sabe.
+ */
+export interface RelogioDoPlayer {
+  posicaoMs: number;
+  duracaoMs: number;
+  tocando: boolean;
 }
 
 /**
@@ -286,6 +318,22 @@ export async function conectarPlayerSpotify(opts: {
      * registrado depois de a tela fechar, chamando `onMotivo` em um componente
      * que já saiu.
      */
+    /*
+     * A ultima posicao que o SDK confirmou, com a hora em que confirmou.
+     *
+     * O `player_state_changed` chega em "intervalos aleatorios", como diz a
+     * referencia, entao ler o relogio so no evento produziria um contador que
+     * avanca aos trancos. A ancora + tempo de parede e o que faz o relogio correr
+     * de forma continua, e o evento serve para trocar a ancora -- nunca para
+     * zera-la, que zerar e zera-la em `tocar`.
+     */
+    let ancora: { posicao: number; duracao: number; tocando: boolean; em: number } = {
+      posicao: 0,
+      duracao: 0,
+      tocando: false,
+      em: Date.now(),
+    };
+
     const registrados: Array<[string, (arg?: unknown) => void]> = [];
     const escutar = (evento: string, fn: (arg?: unknown) => void) => {
       player.addListener(evento, fn);
@@ -381,7 +429,37 @@ export async function conectarPlayerSpotify(opts: {
           if (!/^spotify:track:[A-Za-z0-9]{1,64}$/.test(trackUri)) {
             throw new Error(`spotify_uri_invalida:${trackUri.slice(0, 40)}`);
           }
+          /*
+           * A âncora zera aqui, e não quando o `player_state_changed` chega.
+           *
+           * A faixa é outra, e a posição da anterior não pode vazar para a nova:
+           * sem isto, o relógio mostraria o resto da música que acabou de sair e
+           * o contador apareceria em 2:41 numa faixa que começou agora.
+           */
+          ancora = { posicao: 0, duracao: 0, tocando: false, em: Date.now() };
           await opts.carregar(deviceId, trackUri);
+        },
+        relogio: () => {
+          /*
+           * A projeção só anda quando o SDK disse que está tocando. Se ele
+           * pausou, a posição é a última conhecida e fica parada — projetar mesmo
+           * assim é um relógio correndo sem som, que é pior que um relógio parado
+           * porque parece vivo.
+           */
+          if (!ancora.tocando) {
+            return { posicaoMs: ancora.posicao, duracaoMs: ancora.duracao, tocando: false };
+          }
+          const decorrido = Date.now() - ancora.em;
+          const bruto = ancora.posicao + Math.max(0, decorrido);
+          return {
+            /*
+             * O teto é a duração porque a faixa acaba sem o SDK emitir nada: sem
+             * isto o contador seguiria contando dentro do silêncio.
+             */
+            posicaoMs: ancora.duracao > 0 ? Math.min(bruto, ancora.duracao) : bruto,
+            duracaoMs: ancora.duracao,
+            tocando: true,
+          };
         },
         destruir: () => {
           for (const [evento, fn] of registrados) player.removeListener(evento, fn);
@@ -405,8 +483,39 @@ export async function conectarPlayerSpotify(opts: {
       const tocando = s.is_playing ?? (s.paused === undefined ? undefined : !s.paused);
       if (tocando === undefined) return;
       const faixaAtual = s.track_window?.current_track?.uri ?? null;
+
+      /*
+       * A âncora do relógio é trocada aqui, e é o único lugar onde isso acontece.
+       *
+       * A referência documenta `position` e `duration` no evento, mas não promete
+       * que-os em toda emissão. Quando faltam, o `getCurrentState` é consultado:
+       * é a mesma leitura, outra rota. Sem isso, uma emissão sem posição
+       * zeraria o relógio no meio da faixa — e o sintoma é o contador voltando a
+       * 0:00 a cada poucos segundos, que é pior que nunca ter tido contador.
+       */
+      const temPosicao = typeof s.position === 'number' && typeof s.duration === 'number';
+      if (temPosicao) {
+        ancora = {
+          posicao: s.position as number,
+          duracao: s.duration as number,
+          tocando,
+          em: Date.now(),
+        };
+      } else {
+        void player.getCurrentState().then((st) => {
+          if (!st) return;
+          ancora = {
+            posicao: st.position ?? ancora.posicao,
+            duracao: st.duration ?? ancora.duracao,
+            tocando,
+            em: Date.now(),
+          };
+        });
+      }
+
       console.log(
-        `[spotify] player_state_changed tocando=${tocando} faixa=${faixaAtual ?? 'nenhuma'}`,
+        `[spotify] player_state_changed tocando=${tocando} ` +
+          `posicao=${temPosicao ? s.position : 'via-estado'} faixa=${faixaAtual ?? 'nenhuma'}`,
       );
       opts.onEstado(tocando ? 'tocando' : 'pronto');
     });

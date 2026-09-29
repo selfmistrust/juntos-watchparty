@@ -799,9 +799,12 @@ test('pronto e tocando sao estados diferentes, e so o segundo afirma audio', () 
     'e nao publica tocando: device conectado nao e musica tocando',
   );
 
-  const mudou = c.slice(c.indexOf("escutar('player_state_changed'"));
+  const mudou = c.slice(
+    c.indexOf("escutar('player_state_changed'"),
+    c.indexOf("escutar('autoplay_failed'"),
+  );
   assert.match(
-    mudou.slice(0, mudou.indexOf('});')),
+    mudou,
     /onEstado\(tocando \? 'tocando' : 'pronto'\)/,
     'e quem publica tocando e o player_state_changed, que e quem sabe',
   );
@@ -1083,6 +1086,128 @@ test('o status avisa os escopos faltando antes de a pessoa escolher a musica', (
     fonte,
     /nova autorização/,
     'e o texto do card oferece a acao que resolve -- autorizar de novo',
+  );
+});
+
+test('o relogio vem do SDK, e nao do elemento de video', () => {
+  /*
+   * O sintoma era `0:00 / 0:00` com a música tocando. Não era um relógio
+   * parado: era um relógio que nunca recebeu nada.
+   *
+   * `current` e `duration` saem de `playerRef.current.getCurrentTime()`, e o
+   * `PlayerHandle` é criado por `FilePlayer`, `DriveVideo` e `YoutubePlayer`. Para
+   * uma faixa do Spotify **nenhum** deles é renderizado — o áudio sai do Web
+   * Playback SDK, na conta da pessoa — então o `playerRef` fica `null` e a
+   * interface lia zero de um relógio que não existe.
+   *
+   * A posição do Spotify é do SDK, é por conta e é por dispositivo. O servidor
+   * conduz o vídeo porque o áudio sai do mesmo lugar em todas as máquinas; aqui
+   * não tem por que ele saber.
+   */
+  const palco = readFileSync(resolve(process.cwd(), '../web/components/player/VideoStage.tsx'), 'utf8');
+  const c = semComentario(palco);
+  const efeito = c.slice(
+    c.indexOf('if (ehSpotify) {'),
+    c.indexOf('}, [duration, isStream, ehSpotify, relogioDoPlayer]);'),
+  );
+
+  assert.match(
+    efeito,
+    /setCurrent\(relogioDoPlayer\.posicaoMs \/ 1000\)/,
+    'o relogio do Spotify vem do SDK',
+  );
+  assert.match(
+    efeito,
+    /setDuration\(relogioDoPlayer\.duracaoMs \/ 1000\)/,
+    'e a duracao tambem, que e o que fazia o total aparecer como 0:00',
+  );
+  assert.match(efeito, /return;/, 'e ele nao cai no caminho do video, que leria zero');
+  assert.match(
+    c,
+    /relogio: relogioDoPlayer \} = usePlayerSpotify\(/,
+    'o hook entrega o relogio, e o palco consome',
+  );
+});
+
+test('o relogio do SDK e projetado, e a ancora zera na troca de faixa', () => {
+  /*
+   * A referência diz que o `player_state_changed` vem em "intervalos aleatórios".
+   * Ler o relógio só quando ele chega produziria um contador que avança aos
+   * trancos e fica parado no meio da faixa.
+   *
+   * Então a última posição confirmada vira uma âncora com a hora, e a posição é
+   * projetada pelo tempo que passou — como um `<video>` faz sem ninguém perguntar a
+   * cada quadro.
+   */
+  const c = semComentario(playback);
+  assert.match(
+    c,
+    /interface PlayerSpotify \{[\s\S]{0,400}?relogio: \(\) => RelogioDoPlayer/,
+    'o player expoe o relogio',
+  );
+  assert.match(
+    c,
+    /relogio: \(\) => \{[\s\S]{0,400}?ancora\.posicao \+ Math\.max\(0, decorrido\)/,
+    'que projeta a posicao pelo tempo decorrido desde a ultima confirmacao',
+  );
+  assert.match(
+    c,
+    /posicaoMs: ancora\.duracao > 0 \? Math\.min\(bruto, ancora\.duracao\) : bruto/,
+    'e tem teto na duracao: a faixa acaba sem o SDK emitir nada, e sem teto o',
+  );
+  assert.match(
+    c,
+    /if \(!ancora\.tocando\) \{[\s\S]{0,200}?tocando: false/,
+    'a projecao so anda quando o SDK disse que toca: parado e melhor que correndo no silencio',
+  );
+  assert.match(
+    c,
+    /tocar: async \(trackUri\) => \{[\s\S]{0,400}?ancora = \{ posicao: 0/,
+    'e a ancora zera em `tocar`, senao o contador mostraria o resto da musica anterior',
+  );
+});
+
+test('a barra do Spotify mostra a sua posicao e diz que e sua', () => {
+  /*
+   * O vídeo tem uma posição só: o servidor a guarda e todos puxam dela. O Spotify
+   * não tem posição compartilhada — o áudio sai do SDK na conta e no dispositivo
+   * de cada pessoa, e o servidor não tem como saber onde cada uma está.
+   *
+   * Arrastar a barra e ver o contador andar só na sua máquina ensinaria que a sala
+   * está sincronizada, e ela não está: a faixa seguinte começa do zero para cada
+   * pessoa. A barra desabilitada com o motivo no `title` diz a verdade e não
+   * ocupa espaço.
+   */
+  const palco = semComentario(
+    readFileSync(resolve(process.cwd(), '../web/components/player/VideoStage.tsx'), 'utf8'),
+  );
+  assert.match(palco, /pessoal=\{ehSpotify\}/, 'o palco diz quando a barra e pessoal');
+
+  const controles = readFileSync(resolve(process.cwd(), '../web/components/player/PlayerControls.tsx'), 'utf8');
+  const c = semComentario(controles);
+  assert.match(
+    c,
+    /disabled=\{!canControl \|\| duration === 0 \|\| pessoal\}/,
+    'a barra fica desabilitada quando a posicao e pessoal',
+  );
+  assert.match(
+    c,
+    /A posição é só a da sua conta/,
+    'e o title diz por que, em vez de deixar parecer defeito',
+  );
+  assert.match(
+    c,
+    /pessoal \? \([\s\S]{0,400}?na sua conta/,
+    'e o selo no lugar do tempo avisa que o numero e o da conta de quem assiste',
+  );
+  /*
+   * O tempo continua sendo mostrado: esconder o relógio seria trocar um relógio
+   * errado por nenhum, e a faixa está tocando de verdade.
+   */
+  assert.match(
+    c.slice(c.indexOf('pessoal ? ('), c.indexOf(') : (')),
+    /formatTime\(current\)[\s\S]{0,200}?formatTime\(duration\)/,
+    'e o tempo real aparece, com o aviso do que ele significa',
   );
 });
 
