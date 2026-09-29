@@ -73,17 +73,29 @@ export function carregarSdkSpotify(): Promise<boolean> {
   return scriptCarregando;
 }
 
-export type MotivoDoAudio =
-  /** Ainda não sabemos; o card não diz nada. */
-  | 'desconhecido'
-  /** O SDK carregou e o player conectou. */
-  | 'ok'
-  /** O SDK não carregou, ou o contexto não é seguro, ou estamos no Electron. */
-  | 'indisponivel'
-  /** A conta conectou mas não pode reproduzir. É o caso do Premium que falta. */
-  | 'premium_necessario'
-  /** O token foi recusado pelo Spotify. */
-  | 'token_recusado';
+/**
+ * Os quatro estados que nao podem virar um so.
+ *
+ * A versao anterior tinha um motivo unico, e a interface traduzia tudo para
+ * "Conecte sua conta do Spotify" — inclusive os casos em que a conta **estava**
+ * conectada. Um texto que acerta um quarto dos casos e nega os outros tres e
+ * pior que nenhum: a pessoa desconecta uma conta boa e regrava, achando que o
+ * problema era dela.
+ *
+ *   sem_conta   nao ha autorizacao. A pessoa nao conectou.
+ *   sem_token   ha conta, e o token nao pode ser emitido. Reconectar resolve.
+ *   premium     a conta conectou e o Spotify recusou a reproducao. So o SDK sabe
+ *               disto, e o `/me` nao.
+ *   ambiente    o SDK nao rodou aqui: contexto sem TLS, script bloqueado, ou
+ *               Electron — que o Spotify Connect nao reconhece.
+ *   tocando     o player esta pronto e ha `device_id`.
+ */
+export type EstadoDoPlayer =
+  | 'sem_conta'
+  | 'sem_token'
+  | 'premium'
+  | 'ambiente'
+  | 'tocando';
 
 export interface PlayerSpotify {
   play: () => Promise<void>;
@@ -138,17 +150,17 @@ interface PlayerWindow extends Window {
 export async function conectarPlayerSpotify(opts: {
   nomeDoPlayer: string;
   pedirToken: () => Promise<string | null>;
-  onMotivo: (motivo: MotivoDoAudio) => void;
+  onEstado: (estado: EstadoDoPlayer) => void;
 }): Promise<PlayerSpotify | null> {
   const carregou = await carregarSdkSpotify();
   if (!carregou) {
-    opts.onMotivo('indisponivel');
+    opts.onEstado('ambiente');
     return null;
   }
 
   const w = window as unknown as PlayerWindow;
   if (!w.Spotify) {
-    opts.onMotivo('indisponivel');
+    opts.onEstado('ambiente');
     return null;
   }
 
@@ -181,7 +193,7 @@ export async function conectarPlayerSpotify(opts: {
       getOAuthToken: (cb) => {
         void opts.pedirToken().then((token) => {
           if (token) cb(token);
-          else opts.onMotivo('token_recusado');
+          else opts.onEstado('sem_token');
         });
       },
     });
@@ -193,7 +205,7 @@ export async function conectarPlayerSpotify(opts: {
        * em outro lugar — e o sintoma (silêncio) não aponta para cá.
        */
       void player.activateElement();
-      opts.onMotivo('ok');
+      opts.onEstado('tocando');
       finalizar({
         play: async () => {
           await player.resume();
@@ -230,59 +242,99 @@ export async function conectarPlayerSpotify(opts: {
       });
     });
 
+    /*
+     * `not_ready` **não** vira estado.
+     *
+     * Ele dispara quando o navegador suspende a aba, e o player volta sozinho em
+     * alguns segundos. Traduzir isso para "não funciona neste dispositivo" faz
+     * a interface mentir durante uma pausa de cinco segundos, e a pessoa takeaway
+     * a conclusão errada. Só o `ready` de volta muda o estado.
+     */
     escutar('not_ready', () => {
-      opts.onMotivo('indisponivel');
-      /*
-       * Não resolve `null` aqui: `not_ready` também dispara quando a aba é
-       * suspensa pelo navegador e o player volta sozinho. Resolver `null`
-       * transformaria uma pausa de cinco segundos em "o Spotify não funciona
-       * neste dispositivo", e o card passaria a mentir.
-       */
+      console.warn('[spotify] not_ready: o navegador suspendeu o player; aguardando ready');
     });
 
+    /*
+     * `account_error` é o **único** lugar onde "falta Premium" pode ser dito.
+     *
+     * O `/me` devolve `product: "premium"` para Spotify Lite e Premium Mini, que
+     * são planos só de celular e não reproduzem. Nenhuma chamada à Web API
+     * distingue os dois. Então a interface não pode afirmar "Premium" a partir do
+     * `/me`, e o `account_error` é a evidência.
+     */
     escutar('account_error', (arg) => {
       const mensagem = (arg as { message?: string } | undefined)?.message ?? '';
-      opts.onMotivo('premium_necessario');
-      if (mensagem) console.warn('[spotify] account_error:', mensagem);
+      console.warn(`[spotify] account_error: ${mensagem}`);
+      opts.onEstado('premium');
       finalizar(null);
     });
 
+    /* Token recusado: reconectar resolve, e é o que o texto diz. */
     escutar('authentication_error', (arg) => {
       const mensagem = (arg as { message?: string } | undefined)?.message ?? '';
-      console.warn('[spotify] authentication_error:', mensagem);
-      opts.onMotivo('token_recusado');
+      console.warn(`[spotify] authentication_error: ${mensagem}`);
+      opts.onEstado('sem_token');
       finalizar(null);
     });
 
+    /*
+     * Ambiente ou DRM. O SDK não diz qual dos dois, e essa é a informação que
+     * falta: dentro do Electron o player se anuncia como dispositivo que o
+     * Spotify não reconhece, e o erro é o mesmo de uma incompatibilidade de DRM.
+     */
     escutar('initialization_error', (arg) => {
       const mensagem = (arg as { message?: string } | undefined)?.message ?? '';
-      console.warn('[spotify] initialization_error:', mensagem);
-      opts.onMotivo('indisponivel');
+      console.warn(`[spotify] initialization_error: ${mensagem}`);
+      opts.onEstado('ambiente');
       finalizar(null);
+    });
+
+    /*
+     * Falha ao tocar uma faixa específica. Não derruba a sessão: a conta segue
+     * conectada e as outras faixas tocam. Por isso não chama `finalizar`.
+     */
+    escutar('playback_error', (arg) => {
+      const mensagem = (arg as { message?: string } | undefined)?.message ?? '';
+      console.warn(`[spotify] playback_error: ${mensagem}`);
     });
 
     void player.connect().then((ok) => {
       if (!ok) {
-        opts.onMotivo('indisponivel');
+        console.warn('[spotify] connect() devolveu false');
+        opts.onEstado('sem_token');
         finalizar(null);
       }
       // `ok === true` não é "pronto": é só que a conexão foi aceita. O `ready`
-      // acima é o que diz que o player existe de fato, e é por isso que aqui
-      // não se resolve nada.
+      // é o que diz que o player existe de fato, e é por isso que aqui não se
+      // muda o estado nem se resolve nada.
     });
   });
 }
 
-/** Texto que o card e o painel mostram para cada motivo. */
-export function textoDoMotivo(motivo: MotivoDoAudio, conectado: boolean): string | null {
-  if (!conectado) return null;
-  switch (motivo) {
-    case 'premium_necessario':
-      return 'A conta está conectada, mas o Spotify Premium é necessário para o áudio tocar aqui.';
-    case 'indisponivel':
-      return 'O Spotify não reproduz neste dispositivo. A busca e a fila continuam funcionando.';
-    case 'token_recusado':
-      return 'O Spotify recusou a autorização desta conta. Conecte de novo.';
+/**
+ * O texto que cada estado merece.
+ *
+ * ## Por que a mensagem de "sem conta" é rara
+ *
+ * Este é o defeito que a pessoa encontrou: a faixa tocava e o palco dizia
+ * "Conecte sua conta do Spotify para ouvir", com a conta conectada. A causa era o
+ * palco receber `conectado={false}` fixo — a mensagem estava certa para o código,
+ * e errada para a situação.
+ *
+ * Por isso `sem_conta` só aparece quando o servidor realmente não tem
+ * autorização. Toda outra situação tem texto próprio, e nenhum deles pede para
+ * conectar uma conta que já está conectada.
+ */
+export function textoDoEstado(estado: EstadoDoPlayer): string | null {
+  switch (estado) {
+    case 'sem_conta':
+      return 'Conecte sua conta do Spotify para ouvir. Cada pessoa ouve com a conta dela.';
+    case 'sem_token':
+      return 'Sua sessão do Spotify expirou. Reconecte para continuar ouvindo.';
+    case 'premium':
+      return 'Spotify Premium é necessário para reproduzir nesta aplicação.';
+    case 'ambiente':
+      return 'Este ambiente não é compatível com o Spotify Connect. A faixa está na fila.';
     default:
       return null;
   }

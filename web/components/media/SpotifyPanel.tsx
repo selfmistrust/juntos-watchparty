@@ -12,7 +12,6 @@ import {
   SpotifyErro,
   type SpotifyItem,
 } from '@/lib/spotifyAccount';
-import { textoDoMotivo, type MotivoDoAudio } from '@/lib/spotifyPlayback';
 import type { MediaSourceAccount, MediaSourceContext } from '@/lib/mediaSources';
 
 interface Props {
@@ -28,7 +27,6 @@ interface Props {
    * só vê que o silêncio continua. Dizer no painel é a diferença entre "isto
    * aqui não vai tocar" e "isto aqui está quebrado".
    */
-  motivo: MotivoDoAudio;
 }
 
 /**
@@ -55,7 +53,7 @@ interface Props {
  * outro. A diferença real entre as duas fontes é o que acontece com o resultado
  * escolhido, e isso não é layout.
  */
-export function SpotifyPanel({ open, onClose, context, account, motivo }: Props) {
+export function SpotifyPanel({ open, onClose, context, account }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SpotifyItem[]>([]);
   const [container, setContainer] = useState<{ item: SpotifyItem; faixas: SpotifyItem[] } | null>(null);
@@ -159,8 +157,6 @@ export function SpotifyPanel({ open, onClose, context, account, motivo }: Props)
   if (!open) return null;
 
   const podeBuscar = account.configured && account.connected;
-  const aviso = textoDoMotivo(motivo, account.connected);
-
   return (
     <Portal>
       <div
@@ -208,18 +204,21 @@ export function SpotifyPanel({ open, onClose, context, account, motivo }: Props)
           <div className="border-b border-hairline p-3">
             <SourceAccountRow account={account} className="border-0 bg-transparent p-0" />
             {/*
-             * O aviso de plano fica **abaixo** da conta, e não no card do modal
-             * de Aplicações: o card tem duas linhas de descrição e uma delas é o
-             * estado da conta. Sobrar uma linha aqui é o que dá a este painel a
-             * responsabilidade de dizer "a busca funciona, o áudio não", que é
-             * a informação que decide se a pessoa vai usar a fonte.
+             * Aqui **nao** ha aviso de Premium, e a ausencia e deliberada.
+             *
+             * O aviso existia para dizer "a busca funciona, o audio nao", antes de
+             * a pessoa escolher a musica. So que essa frase nao pode ser dita aqui:
+             * o `account_error` do SDK so chega depois que uma faixa ja virou a
+             * midia atual, porque o player so conecta quando ha faixa tocando. Um
+             * aviso neste painel teria de inventar o estado -- e foi exatamente
+             * inventando que o palco chegou a dizer "conecte sua conta" para quem
+             * estava conectado.
+             *
+             * O que o painel sabe de verdade e o que ele ja diz: a conta conectada
+             * ou nao, e o resultado da propria busca, incluindo o 401 que prova
+             * que a sessao do Spotify expirou. O Premium aparece no palco, que e
+             * onde o SDK ja respondeu.
              */}
-            {aviso && (
-              <p className="mt-2 flex items-start gap-1.5 text-2xs leading-relaxed text-ink-faint">
-                <MusicNotes size={13} className="mt-px shrink-0 text-[#1DB954]" />
-                {aviso}
-              </p>
-            )}
           </div>
 
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">

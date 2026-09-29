@@ -16,6 +16,7 @@ import {
   marcarPendingUsado,
   getStatus,
   getValidAccessToken,
+  hashDeSessao,
   listTracks,
   peekTokens,
   scopesDoToken,
@@ -142,7 +143,15 @@ export function registerSpotifyRoutes(app: Express): void {
   app.get('/api/spotify/status', async (req, res) => {
     try {
       const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);
-      res.json(await getStatus(sessionId));
+      const status = await getStatus(sessionId);
+      /*
+       * O hash da sessão vai no log porque "a busca funciona e o player não" é
+       * quase sempre uma divisão de sessão: a rota que o player chama resolve
+       * para outra, e nenhuma das duas acusa nada. O `hashDeSessao` garante que
+       * o identificador do log não seja o valor do cookie.
+       */
+      console.log(`[spotify] status session=${hashDeSessao(sessionId)} connected=${status.connected}`);
+      res.json(status);
     } catch (err) {
       console.error('[spotify] status falhou', err);
       res.status(500).json({ error: 'spotify_status_failed' });
@@ -259,7 +268,9 @@ export function registerSpotifyRoutes(app: Express): void {
        * `state` casou e que a conta foi gravada. Sem ele, "funciona" e "não
        * funciona" são o mesmo silêncio.
        */
-      console.log(`[spotify] conta conectada, sessao ${pending.sessionId.slice(0, 8)}…`);
+      console.log(
+        `[spotify] conta conectada, sessao ${hashDeSessao(pending.sessionId)}`,
+      );
 
       /*
        * O `state` é marcado como usado em vez de ser apagado, para que a
@@ -302,6 +313,17 @@ export function registerSpotifyRoutes(app: Express): void {
       if (!sessionId) return jsonError(res, 400, 'session_required');
       const result = await getValidAccessToken(sessionId);
       if (!result.ok) return jsonError(res, result.reason === 'revoked' ? 401 : 403, result.reason);
+      /*
+       * `playback-token` é o que o Web Playback SDK consome, e o log existe para
+       * comparar com o da busca e o do status. Se os três derem prefixos
+       * diferentes, o token do player está sendo buscado para outra sessão — e
+       * isso produz exatamente o sintoma de "conectado, mas pede para conectar".
+       *
+       * Registra-se o **tamanho** do token, nunca o token.
+       */
+      console.log(
+        `[spotify] playback-token session=${hashDeSessao(sessionId)} ok=true tamanho=${result.token.length}`,
+      );
       res.json({ token: result.token });
     } catch (err) {
       console.error('[spotify] access-token falhou', err);

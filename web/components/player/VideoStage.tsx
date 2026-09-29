@@ -7,7 +7,7 @@ import { ReactionDock } from './ReactionDock';
 import { ReactionsOverlay } from './ReactionsOverlay';
 import { YoutubePlayer } from './YoutubePlayer';
 import { DriveVideo } from './DriveVideo';
-import { SpotifyStage } from './SpotifyStage';
+import { SpotifyStage, usePlayerSpotify } from './SpotifyStage';
 import { useFullscreenLandscape } from '@/hooks/useFullscreenLandscape';
 import type { RoomActions } from '@/hooks/useRoom';
 import type { FloatingReaction, PlaylistItem, PlayerHandle, ReactionEmoji, RoomSnapshot } from '@/types';
@@ -33,6 +33,15 @@ interface Props {
    * fecha, e é por isso que o palco precisa de um estado de espera próprio.
    */
   liveStream?: MediaStream | null;
+  /**
+   * A conta Spotify desta pessoa está conectada, segundo o servidor.
+   *
+   * Vem de `/api/spotify/status` e é a **única** coisa que pode virar o estado
+   * de "sem conta". Um erro do SDK não desconta ninguém: `account_error` deixa
+   * a conta conectada e muda só a reprodução, e é essa separação que impede o
+   * palco de pedir login para quem já está logado.
+   */
+  spotifyConectado?: boolean;
   /** A conexão com quem transmite está em andamento. */
   liveConnecting?: boolean;
   liveError?: string | null;
@@ -50,6 +59,7 @@ export function VideoStage({
   liveStream,
   liveConnecting,
   liveError,
+  spotifyConectado = false,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<PlayerHandle>(null);
@@ -120,6 +130,26 @@ export function VideoStage({
   const { isFullscreen, rotate, toggle: toggleFullscreen } = useFullscreenLandscape({ targetRef: stageRef });
 
   const isPlaying = Boolean(state?.isPlaying);
+
+  /*
+   * O estado do player do Spotify vem do hook, e não de um literal.
+   *
+   * A versão anterior passava `conectado={false}` fixo para o palco, e o texto
+   * que saía daí — "Conecte sua conta do Spotify para ouvir" — apareceu para uma
+   * pessoa que tinha acabado de buscar e enfileirar uma música com a conta
+   * conectada. O literal estava certo sobre o que o componente sabia, que era
+   * nada, e errado sobre o mundo.
+   *
+   * `faixa` e `tocando` entram aqui para fechar a ordem do item 6: conta
+   * conectada → faixa vira mídia atual → token → SDK conecta → `ready` → toca.
+   * Sem os dois, o player conectava e a sala ficava em silêncio sem que nada
+   * dissesse por quê.
+   */
+  const { estado: estadoDoPlayer } = usePlayerSpotify({
+    conectado: spotifyConectado,
+    faixa: currentItem?.kind === 'spotify' ? currentItem.spotifyUri : null,
+    tocando: isPlaying,
+  });
   const hasNext = Boolean(state && state.currentIndex < state.playlist.length - 1);
 
   /** Troca de faixa: zera o relógio local e espera o novo player avisar que carregou. */
@@ -362,13 +392,18 @@ export function VideoStage({
            *
            * O palco mostra quem vai ouvir, que é a informação que o silêncio
            * sozinho não dá. Ver `SpotifyStage`.
+           *
+           * `estadoDoPlayer` vem do hook, que é quem conversa com o SDK. A
+           * versão anterior passava `conectado={false}` **fixo**, e o palco
+           * respondia "Conecte sua conta do Spotify" para quem tinha acabado de
+           * buscar com a conta conectada: a mensagem estava certa para o código e
+           * errada para a situação.
            */
           <SpotifyStage
             key={currentItem.id}
             title={currentItem.title}
             artwork={currentItem.thumbnail}
-            conectado={false}
-            reproduz={false}
+            estado={estadoDoPlayer}
           />
         ) : currentItem.kind === 'drive' && currentItem.driveFileId ? (
           /*

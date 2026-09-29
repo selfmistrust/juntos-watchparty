@@ -1,4 +1,5 @@
 import { useRouter } from 'next/router';
+import { useSpotifyAccount } from '@/hooks/useSpotifyAccount';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { JoinGate } from '@/components/JoinGate';
 import { PasswordGate } from '@/components/PasswordGate';
@@ -151,6 +152,16 @@ export default function RoomPage() {
      */
     limparNaoLidasRef.current();
   }, []);
+
+  /*
+   * O estado da conta Spotify, lido do servidor.
+   *
+   * Fica na página e não dentro do palco porque é o **mesmo** objeto que o painel
+   * de busca usa: calcular nos dois lugares seria o caminho para o palco dizer
+   * "conecte" enquanto o painel diz "conta conectada", que é exatamente o
+   * desacordo que a pessoa viu.
+   */
+  const spotify = useSpotifyAccount();
 
   const mencoes = useMencoes({
     meuSessionId: me?.sessionId,
@@ -325,6 +336,13 @@ export default function RoomPage() {
             liveStream={liveStream}
             liveConnecting={liveConectando}
             liveError={streamBridge.erro}
+            /*
+             * Vem de `mencoes`? Não: o estado do Spotify é do `useSpotifyAccount`,
+             * que é quem pergunta `/api/spotify/status`. Passar o booleano errado
+             * aqui é o que fazia o palco pedir login para quem já estava
+             * conectado.
+             */
+            spotifyConectado={spotify.status.connected}
           />
           {currentItem && (
             <div className="shrink-0 px-1 pt-3 lg:px-5 lg:pb-4">

@@ -229,6 +229,26 @@ export interface SpotifyStatus {
   email?: string | null;
 }
 
+/**
+ * Identificador de sessão para o log, sem ser a sessão.
+ *
+ * ## Por que um hash
+ *
+ * O defeito que este registro existe para achar é "a busca funciona e o player
+ * não", e a causa mais provável dessa divisão é a pessoa estar resolvendo para
+ * **duas sessões diferentes** em rotas diferentes. Para provar que são a mesma,
+ * os dois precisam aparecer no log com o mesmo identificador.
+ *
+ * A `sessionId` não pode ser registrada: ela é o valor do cookie de sessão, e o
+ * log fica num deploy com acesso de leitura. Um hash de 8 caracteres de SHA-256
+ * serve para comparar — duas chamadas da mesma pessoa dão o mesmo prefixo, duas
+ * pessoas dão prefixos diferentes — e não serve para forjar nada.
+ */
+export function hashDeSessao(sessionId: string | null): string {
+  if (!sessionId) return 'sem-sessao';
+  return crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 8);
+}
+
 export async function getStatus(sessionId: string | null): Promise<SpotifyStatus> {
   const configured = spotifyConfigured();
   if (!configured || !sessionId) return { configured, connected: false };
@@ -931,6 +951,8 @@ export async function search(
 ): Promise<{ ok: true; items: SpotifySearchItem[] } | { ok: false; reason: string; status?: number }> {
   const limpo = term.trim();
   if (limpo.length < 2) return { ok: true, items: [] };
+
+  console.log(`[spotify] search session=${hashDeSessao(sessionId)} q="${limpo.slice(0, 40)}"`);
 
   const url = new URL(`${API}/search`);
   url.searchParams.set('q', limpo);

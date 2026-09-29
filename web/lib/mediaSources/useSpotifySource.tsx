@@ -29,13 +29,13 @@ import { READY, unavailable } from './types';
  * Lite e Premium Mini, que são planos só de celular e não reproduzem — então
  * dizer "áudio disponível" a partir de `/me` seria prometer algo que a conta não
  * pode cumprir. Por isso a frase conectada é neutra sobre áudio, e quem diz se o
- * som toca é o `account_error` do SDK, no painel.
+ * som toca é o `account_error` do SDK — no palco, que é onde o player roda.
  */
 export function useSpotifySource(): {
   provider: MediaSourceProvider;
   panel: React.ReactNode;
 } {
-  const { status, loading, busy, message, error, reproduz, connect, disconnect } = useSpotifyAccount();
+  const { status, loading, busy, message, error, connect, disconnect } = useSpotifyAccount();
 
   const conta = useMemo<MediaSourceAccount>(
     () => ({
@@ -51,7 +51,20 @@ export function useSpotifySource(): {
     [status, busy, message, error, connect, disconnect],
   );
 
-  const { open, panel, openFor } = useSpotifyPanel(conta, reproduz === 'indisponivel' ? 'indisponivel' : 'desconhecido');
+  /*
+   * O painel recebe só a conta, e não um estado de player.
+   *
+   * A versão anterior derivava um "motivo" do ambiente (`reproduz`), que é
+   * informação de dispositivo e não de conta, e a seguinte versão derivava do
+   * simples fato de a conta estar conectada. As duas inventavam o estado para
+   * preencher um campo que o painel não consegue conhecer: o `account_error`
+   * do SDK só chega depois que uma faixa já virou a mídia atual, porque o player
+   * só conecta quando há faixa tocando.
+   *
+   * Dizer "Reconecte" para uma conta recién conectada seria a mesma mentira do
+   * palco, com o texto trocado.
+   */
+  const { open, panel, openFor } = useSpotifyPanel(conta);
 
   const provider = useMemo<MediaSourceProvider>(() => {
     const descricao = !status.configured

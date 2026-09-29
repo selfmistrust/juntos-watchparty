@@ -333,12 +333,12 @@ test('o premium nao e decidido pelo /me', () => {
   const cPlayback = semComentario(playback);
   assert.match(
     cPlayback,
-    /premium_necessario/,
-    'o motivo premium_necessario existe e vem do SDK',
+    /\| 'premium'/,
+    'o estado premium existe, e e distinto dos outros quatro',
   );
   assert.match(
     cPlayback,
-    /escutar\('account_error'/,
+    /escutar\('account_error',[\s\S]{0,200}?onEstado\('premium'\)/,
     'e ele e disparado pelo account_error do player, nao pelo /me',
   );
   /*
@@ -351,5 +351,251 @@ test('o premium nao e decidido pelo /me', () => {
     bruto,
     /Não é prova de Premium/,
     'e o cliente registra em comentario que o product nao prova Premium',
+  );
+});
+
+test('o palco nunca pede login para quem ja esta conectado', () => {
+  /*
+   * O defeito que a pessoa encontrou, e ele era um literal.
+   *
+   * `VideoStage` passava `conectado={false}` **fixo** para o palco, e o palco
+   * respondia "Conecte sua conta do Spotify para ouvir" para alguém que tinha
+   * acabado de buscar e enfileirar uma música com a conta conectada.
+   *
+   * A mensagem estava certa sobre o que o componente sabia — que era nada — e
+   * errada sobre o mundo. É a forma mais cara de um texto fixo: mente com a
+   * confiança de quem está medindo.
+   */
+  const palco = readFileSync(resolve(process.cwd(), '../web/components/player/VideoStage.tsx'), 'utf8');
+  const c = semComentario(palco);
+
+  assert.ok(
+    !/conectado=\{false\}/.test(c),
+    'nenhum conectado={false} fixo: o palco recebe o estado real',
+  );
+  assert.ok(
+    !/reproduz=\{false\}/.test(c),
+    'e nenhum reproduz={false} fixo, que era o outro literal',
+  );
+  assert.match(c, /estado=\{estadoDoPlayer\}/, 'o palco recebe o estado do player');
+  assert.match(
+    c,
+    /const \{ estado: estadoDoPlayer \} = usePlayerSpotify\(\{/,
+    'e o estado vem do hook, que e quem conversa com o SDK',
+  );
+  assert.match(
+    c,
+    /conectado: spotifyConectado/,
+    'o hook recebe a conta do servidor, e nao um literal',
+  );
+  assert.match(
+    c,
+    /faixa: currentItem\?\.kind === 'spotify' \? currentItem\.spotifyUri : null/,
+    'e a faixa que a sala esta tocando, para a reproducao comecar no ready',
+  );
+  /*
+   * O texto de "conecte" só pode existir para o estado sem conta. Se a frase
+   * volta a aparecer em qualquer outro estado, o defeito volta junto com ela —
+   * e ele não volta sozinho, porque a tentação de simplificar os quatro
+   * estados em um só é exatamente a que produziu o bug.
+   */
+  const texto = semComentario(playback).slice(semComentario(playback).indexOf('export function textoDoEstado'));
+  assert.match(
+    texto,
+    /case 'sem_conta':[\s\S]{0,200}?Conecte sua conta do Spotify/,
+    '"conecte sua conta" pertence so a sem_conta',
+  );
+  for (const [estado, marca] of [
+    ['sem_token', 'Reconecte'],
+    ['premium', 'Premium é necessário'],
+    ['ambiente', 'não é compatível'],
+  ] as const) {
+    assert.match(
+      texto,
+      new RegExp(`case '${estado}':[\\s\\S]{0,200}?${marca}`),
+      `${estado} tem o seu proprio texto, e nao o de conectar`,
+    );
+  }
+});
+
+test('trocar de faixa nao desconta a conta', () => {
+  /*
+   * `usePlayerSpotify` monta o player uma vez, e só o `!conectado` — que vem de
+   * `/api/spotify/status` — derruba a sessão. Um `account_error` do SDK muda o
+   * estado de **reprodução** e mantém a conta conectada, e é essa separação que
+   * impede o palco de pedir login depois de um erro de reprodução.
+   */
+  const palco = readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8');
+  const c = semComentario(palco);
+  const hook = c.slice(c.indexOf('export function usePlayerSpotify'));
+  assert.match(
+    hook,
+    /if \(!opts\.conectado\) \{\s*setEstado\('sem_conta'\);/,
+    'sem_conta e o unico caminho para o estado de conta',
+  );
+  assert.match(
+    hook,
+    /\[opts\.conectado\]/,
+    'e a dependencia e a conta, nao a faixa nem a fila',
+  );
+  assert.ok(
+    !/onEstado\('sem_conta'\)/.test(c.slice(c.indexOf('onEstado:'), c.indexOf('}, [opts.conectado]'))),
+    'nenhum erro do SDK recai em sem_conta: premium e token tem estados proprios',
+  );
+});
+
+test('os cinco eventos do SDK sao tratados com estados proprios', () => {
+  const c = semComentario(playback);
+  for (const [evento, esperado] of [
+    ['ready', "'tocando'"],
+    ['authentication_error', "'sem_token'"],
+    ['account_error', "'premium'"],
+    ['initialization_error', "'ambiente'"],
+  ] as const) {
+    const bloco = c.slice(c.indexOf(`escutar('${evento}'`));
+    const corpo = bloco.slice(0, bloco.indexOf('});'));
+    assert.ok(corpo.length > 0, `${evento} precisa de um listener`);
+    assert.match(corpo, new RegExp(`onEstado\\(${esperado}\\)`), `${evento} leva a ${esperado}`);
+  }
+  for (const evento of ['not_ready', 'playback_error']) {
+    assert.ok(c.includes(`escutar('${evento}'`), `${evento} tem listener`);
+  }
+  /*
+   * `not_ready` também dispara quando o navegador suspende a aba, e o player
+   * volta sozinho em alguns segundos. Traduzir isso para "não funciona aqui"
+   * faria o palco mentir durante uma pausa de cinco segundos.
+   */
+  const nr = c.slice(c.indexOf("escutar('not_ready'"), c.indexOf("escutar('account_error'"));
+  assert.ok(!nr.includes('onEstado('), 'not_ready nao muda o estado: o player volta sozinho');
+  /*
+   * Uma faixa ruim não é conta ruim: `playback_error` não derruba a sessão, e as
+   * outras faixas da fila continuam tocando.
+   */
+  const pe = c.slice(c.indexOf("escutar('playback_error'"));
+  assert.ok(
+    !pe.slice(0, pe.indexOf('});')).includes('finalizar'),
+    'playback_error nao finaliza: as outras faixas ainda tocam',
+  );
+});
+
+test('a faixa so comeca depois do ready', () => {
+  /*
+   * O item 6 da correção: conta conectada -> faixa vira mídia atual -> obtém
+   * token -> SDK conecta -> `ready(device_id)` -> começa reprodução.
+   *
+   * O passo que faltava era o último. Sem ele o player conectava e a sala ficava
+   * em silêncio sem que nada dissesse por quê — e, pior, `playTrack` antes do
+   * `ready` é recusado pelo SDK, o que produz o pior dos dois: a sala mostra
+   * tocando, o palco não diz nada, e não sai som.
+   */
+  const palco = readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8');
+  const c = semComentario(palco);
+  const hook = c.slice(c.indexOf('export function usePlayerSpotify'));
+
+  const efeito = hook.slice(hook.indexOf("if (estado !== 'tocando' || !opts.faixa || !opts.tocando) return;"));
+  assert.match(
+    efeito.slice(0, efeito.indexOf('}, [estado')),
+    /tocar\(opts\.faixa\)/,
+    'a faixa nova e passada ao playTrack',
+  );
+  assert.match(
+    efeito.slice(0, efeito.indexOf('}, [estado')),
+    /playerRef\.current\?\.play\(\)/,
+    'e voltar a tocar a mesma faixa e um resume, nao um playTrack que recomeca',
+  );
+  assert.ok(
+    !/if \(estado !== 'tocando' \|\| !opts\.faixa\) return;\s*tocar/.test(c),
+    'e a faixa nao toca so com o ready: o play da sala tambem conta',
+  );
+});
+
+test('o pause da sala chega no Spotify', () => {
+  /*
+   * Sem isto o botão de play/pause da sala governa o vídeo e o stream, e a faixa
+   * do Spotify segue tocando: a sala em pausa com áudio correndo. É um defeito
+   * distinto do da mensagem, e silencioso.
+   */
+  const palco = readFileSync(resolve(process.cwd(), '../web/components/player/SpotifyStage.tsx'), 'utf8');
+  const c = semComentario(palco);
+  assert.match(
+    c,
+    /if \(estado !== 'tocando' \|\| opts\.tocando\) return;[\s\S]{0,120}?playerRef\.current\?\.pause\(\)/,
+    'a sala em pause pausa o player do SDK',
+  );
+});
+
+test('o painel nao inventa o estado do player', () => {
+  /*
+   * O painel tinha um aviso de Premium que aparecia **antes** de a pessoa
+   * escolher a música, e a única forma de preenchê-lo era o provider inventar um
+   * estado: o `account_error` do SDK só chega depois que uma faixa já virou a
+   * mídia atual, porque o player só conecta quando há faixa tocando.
+   *
+   * Dizer "Reconecte" para uma conta recém-conectada seria a mesma mentira do
+   * palco, com o texto trocado — e foi assim que o defeito se espalhou do palco
+   * para o painel na primeira correção.
+   */
+  const painelC = semComentario(painel);
+  assert.ok(
+    !/estado: EstadoDoPlayer/.test(painelC) && !/textoDoEstado/.test(painelC),
+    'o painel nao recebe nem traduz um estado de player',
+  );
+
+  const fonte = readFileSync(resolve(process.cwd(), '../web/lib/mediaSources/useSpotifySource.tsx'), 'utf8');
+  const fonteC = semComentario(fonte);
+  assert.match(fonteC, /useSpotifyPanel\(conta\)/, 'e o provider passa so a conta');
+  assert.ok(
+    !/useSpotifyPanel\([^)]*'(sem_conta|sem_token|premium|ambiente|tocando)'/.test(fonteC),
+    'e nao um estado derivado da conta, que seria outra forma de inventar',
+  );
+
+  /*
+   * O que o painel sabe de verdade continua sendo dito: a conta conectada ou
+   * não, e o resultado da própria busca, com o 401 que prova sessão expirada.
+   */
+  assert.match(
+    painelC,
+    /e\.statusDoSpotify === 401/,
+    'e o 401 da busca continua sendo tratado como sessao expirada',
+  );
+  assert.match(
+    painelC,
+    /cada pessoa usa a própria, e só ouve se tiver Spotify Premium/,
+    'e o texto de conta desconectada continua dizendo que o audio exige Premium',
+  );
+});
+
+test('o log da sessao usa hash e nunca o valor do cookie', () => {
+  /*
+   * "A busca funciona e o player não" é quase sempre uma divisão de sessão, e
+   * nenhuma das duas rotas acusa nada. Para provar que são a mesma, os dois
+   * precisam aparecer com o mesmo identificador — e o identificador não pode ser o
+   * valor do cookie, porque o log fica num deploy com acesso de leitura.
+   */
+  const rotasC = semComentario(rotas);
+  for (const [rotulo, fonte, padrao] of [
+    ['status', rotasC, /\[spotify\] status session=\$\{hashDeSessao\(sessionId\)\}/],
+    ['playback-token', rotasC, /\[spotify\] playback-token session=\$\{hashDeSessao\(sessionId\)\}/],
+    ['search', semComentario(oauth), /\[spotify\] search session=\$\{hashDeSessao\(sessionId\)\}/],
+  ] as const) {
+    assert.match(fonte, padrao, `${rotulo} registra a sessao por hash`);
+  }
+  const oauthC = semComentario(oauth);
+  const hash = oauthC.slice(oauthC.indexOf('export function hashDeSessao'));
+  assert.match(hash, /createHash\('sha256'\)/, 'e o hash e SHA-256');
+  assert.match(hash, /slice\(0, 8\)/, 'truncado: 8 caracteres bastam para comparar');
+  /*
+   * O prefixo cru já estava no log do callback, e é justamente a material de
+   * sessão que a convenção existe para não expor. Oito caracteres de um
+   * identificador de 32 não abrem nada por sorte — e um log não precisa ser
+   * adivinhado para ser um vazamento.
+   */
+  assert.ok(
+    !/sessionId\.slice\(0, 8\)/.test(rotasC),
+    'e nenhum registro escreve um prefixo da sessao crua no log',
+  );
+  assert.ok(
+    !/session=\$\{sessionId\}/.test(rotasC),
+    'e nenhum registro escreve o valor cru da sessao no log',
   );
 });
