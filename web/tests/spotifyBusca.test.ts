@@ -72,6 +72,110 @@ test('o status do Spotify passa adiante, em vez de virar 403 fixo', () => {
   );
 });
 
+test('o callback repetido da mesma sessao nao vira pagina de erro', () => {
+  /*
+   * O log do Render mostrou as duas coisas no mesmo segundo:
+   *
+   *   [spotify] conta conectada, sessao 45ce7b2v...
+   *   [spotify] callback sem registro valido: state de 22 caracteres...
+   *
+   * O login **funcionou** e a pessoa viu "a autorização expirou" logo em seguida,
+   * porque o navegador repete o callback e o registro já tinha sido consumido. Um
+   * aviso que contradiz o estado real é o pior resultado possível: a pessoa
+   * conclui que precisa refazer o login que acabou de dar certo.
+   *
+   * Repetir o callback é comum e não é erro de ninguém: `prefetch`, botão
+   * voltar, aba restaurada, proxy repetindo o pedido.
+   */
+  const c = semComentario(oauth);
+  assert.match(
+    c,
+    /export async function jaUsadoPorEstaSessao/,
+    'o registro de "ja usado" existe, e e consultado no callback sem registro',
+  );
+  const rotasC = semComentario(rotas);
+  assert.match(
+    rotasC,
+    /jaUsadoPorEstaSessao\(state, sessaoAtual/,
+    'e a consulta e feita com a sessao desta requisicao',
+  );
+  assert.match(
+    rotasC,
+    /const destino = await jaUsadoPorEstaSessao[\s\S]{0,300}?res\.redirect\(destino/,
+    'a repeticao responde com o mesmo destino, em vez da pagina de erro',
+  );
+  assert.match(
+    rotasC,
+    /marcarPendingUsado\(state, pending\.sessionId, pending\.returnTo\)/,
+    'e o state e marcado no sucesso, com a sessao que iniciou o fluxo',
+  );
+});
+
+test('o reaproveitamento so vale para a sessao que iniciou o fluxo', () => {
+  /*
+   * Isto é o que separa "corrigir o sintoma" de "abrir um buraco".
+   *
+   * O que a marca guarda é a **sessão**, e a comparação é feita contra a sessão
+   * do cookie atual. Um `state` de outra janela não aproveita nada: é recusado
+   * como sempre. É o mesmo princípio do `state` de CSRF — ele existe para ligar
+   * o callback a quem começou, e afrouxar isso seria permitir que uma janela
+   * herde o login de outra.
+   *
+   * E o que volta é apenas o destino, nada utilizável: nem `code`, nem token, nem
+   * a possibilidade de trocar código. A autorização já aconteceu, e quem a fez foi
+   * a pessoa desta sessão.
+   */
+  const c = semComentario(oauth);
+  const fn = c.slice(c.indexOf('export async function jaUsadoPorEstaSessao'));
+  assert.match(fn, /dono !== sessionId\) return null/, 'sessao diferente nao aproveita');
+  assert.match(
+    fn,
+    /redis\.set\(PENDENTE_USADO\(state\), sessionId, 'EX', PENDING_TTL_SEC\)/,
+    'a marca guarda a sessao que usou, com o mesmo prazo do registro',
+  );
+  /*
+   * O que não pode atravessar é o **corpo** da função, não o nome dela: o
+   * `codeVerifier` aparece no tipo e é justamente a prova de que o registro
+   * original foi apagado. Se algo utilizável voltasse aqui, uma segunda
+   * requisição poderia trocar um código.
+   */
+  const corpo = fn.slice(fn.indexOf('{'));
+  assert.ok(
+    !/redis\.get\(PENDING_KEY/.test(corpo),
+    'a funcao nao relê o registro original, que é o que guardava o codeVerifier',
+  );
+  assert.match(
+    corpo,
+    /redis\.get\(`\$\{chave\}:destino`\)/,
+    'e o que ela lê é só o destino guardado pela marca',
+  );
+  // O destino é servido uma vez e a marca some, para não virar um destino
+  // guardado por dez minutos.
+  assert.match(corpo, /await redis\.del\(chave\)/, 'o destino e servido uma vez so');
+});
+
+test('a marcacao do state nao substitui o consumo do registro', () => {
+  /*
+   * `consumirPending` continua existindo e continua sendo chamado: o registro com
+   * o `codeVerifier` é apagado no sucesso, porque é ele que permitiria trocar um
+   * código. O que fica é só a marca de sessão, que não tem nenhum poder.
+   */
+  const c = semComentario(oauth);
+  assert.match(c, /async function consumirPending/, 'o consumo do registro continua existindo');
+  assert.match(
+    c,
+    /await consumirPending\(params\.state\)/,
+    'e continua sendo chamado no sucesso da troca, pelo `state` do parametro',
+  );
+  // A ordem importa: apagar o registro antes de gravar a marca é o que garante
+  // que uma repetição não encontre nem um nem outro.
+  const bloco = c.slice(c.indexOf('const me = await fetchMe'));
+  assert.ok(
+    bloco.indexOf('consumirPending') < bloco.indexOf('saveTokens'),
+    'o registro com o verifier e apagado antes de a conta ser gravada',
+  );
+});
+
 test('a rota repassa o status que veio do Spotify', () => {
   const c = semComentario(rotas);
   assert.match(

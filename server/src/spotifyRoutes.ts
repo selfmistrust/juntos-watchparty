@@ -12,6 +12,8 @@ import {
   completeOAuth,
   createAuthUrl,
   disconnect,
+  jaUsadoPorEstaSessao,
+  marcarPendingUsado,
   getStatus,
   getValidAccessToken,
   listTracks,
@@ -187,25 +189,45 @@ export function registerSpotifyRoutes(app: Express): void {
       const state = String(req.query.state ?? '');
       const code = String(req.query.code ?? '');
       const erro = String(req.query.error ?? '');
+
+      /*
+       * A sessão desta requisição, antes de qualquer coisa.
+       *
+       * Ela é o que permite distinguir "o navegador repetiu o callback" de
+       * "veio o callback de outra janela": nos dois casos o registro já foi
+       * consumido, e só a sessão diz qual dos dois é.
+       */
+      const sessaoAtual = readSessionId(req);
+
       const pending = await takePending(state);
 
       if (!pending) {
         /*
-         * "state inválido" tem três causas que produzem a mesma resposta, e sem
-         * este log elas são indistinguíveis depois do deploy:
+         * Sem registro, mas com `state` reconhecido desta sessão: o navegador
+         * repetiu o pedido. A autorização já foi feita e a conta já está
+         * gravada — mostrar "expirou" aqui é dizer o contrário do que é o
+         * estado real, e foi exatamente o que aconteceu: a pessoa autorizou e
+         * viu a página de erro logo em seguida.
+         */
+        const destino = await jaUsadoPorEstaSessao(state, sessaoAtual ?? '');
+        if (destino !== null) {
+          console.warn('[spotify] callback repetido da mesma sessao; respondendo de novo');
+          res.redirect(destino || '/');
+          return;
+        }
+
+        /*
+         * Sem registro e de outra sessão (ou sem `state`): aqui a recusa é
+         * correta. As causas são três, e o log separa:
          *
          *   - o Spotify não devolveu `state` (o fluxo foi montado errado)
-         *   - o `state` chegou mas não há registro (expirou, ou foi consumido)
-         *   - a pessoa clicou em "conectar" duas vezes e voltou pelo fluxo velho
-         *
-         * As três respondem `400` e o JSON não diz qual é. O registro só existe
-         * por `PENDING_TTL_SEC`, então "esperou demais para autorizar" é a
-         * primeira hipótese quando a pessoa demorou.
+         *   - o `state` expirou: o registro vive só `PENDING_TTL_SEC`
+         *   - o `state` é de outra janela, e essa pessoa não pode herdar o login
          *
          * Só o formato, nunca o valor: o `state` é um token de uso único.
          */
         const motivo = state
-          ? `state de ${state.length} caracteres nao encontrado (expirou ou ja foi usado)`
+          ? `state de ${state.length} caracteres nao encontrado para esta sessao`
           : 'o Spotify nao devolveu o state';
         console.warn(`[spotify] callback sem registro valido: ${motivo}`);
         return paginaDeFalha(res, 'A autorização do Spotify expirou.');
@@ -233,11 +255,20 @@ export function registerSpotifyRoutes(app: Express): void {
       }
 
       /*
-       * O log de sucesso é o que fecha odiagnóstico: ele diz que o `code`
-       * chegou, que o `state` casou e que a conta foi gravada. Sem ele, "funciona"
-       * e "não funciona" são o mesmo silêncio.
+       * O log de sucesso fecha o diagnóstico: diz que o `code` chegou, que o
+       * `state` casou e que a conta foi gravada. Sem ele, "funciona" e "não
+       * funciona" são o mesmo silêncio.
        */
       console.log(`[spotify] conta conectada, sessao ${pending.sessionId.slice(0, 8)}…`);
+
+      /*
+       * O `state` é marcado como usado em vez de ser apagado, para que a
+       * repetição do callback seja reconhecida em vez de recusada. Ver
+       * `jaUsadoPorEstaSessao` — que devolve o registro **só** para a sessão que
+       * o usou.
+       */
+      await marcarPendingUsado(state, pending.sessionId, pending.returnTo);
+
       res.redirect(pending.returnTo || '/');
     } catch (err) {
       console.error('[spotify] callback falhou', err);

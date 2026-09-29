@@ -39,6 +39,8 @@ import { decryptSecret, encryptSecret } from './secretBox.js';
 
 const TOKEN_KEY = (sessionId: string) => `spotify:tok:${sessionId}`;
 const PENDING_KEY = (state: string) => `spotify:pend:${state}`;
+/** Marca de "`state` já usado", com a sessão que o usou. Ver `jaUsadoPorEstaSessao`. */
+const PENDENTE_USADO = (state: string) => `spotify:usado:${state}`;
 const PENDING_TTL_SEC = 10 * 60;
 
 /**
@@ -309,6 +311,51 @@ export async function takePending(state: string): Promise<PendingOAuth | null> {
 /** Consome o registro depois de uma troca bem-sucedida. */
 async function consumirPending(state: string): Promise<void> {
   await redis.del(PENDING_KEY(state));
+}
+
+/**
+ * O `state` já foi usado, e o registro sumiu com ele.
+ *
+ * ## Por que isso existe
+ *
+ * O navegador pede o **mesmo** callback mais de uma vez com frequência: um
+ * `prefetch`, o botão voltar, a aba restaurada, o proxy repetindo o pedido. No log
+ * apareceu exatamente isso — duas linhas no mesmo segundo, a primeira gravando a
+ * conta e a segunda recusando por não achar o registro.
+ *
+ * A pessoa autorizou, a conta ficou conectada, e ela viu "a autorização expirou".
+ * O pior resultado possível: um aviso que contradiz o estado real.
+ *
+ * ## Por que isto não é um buraco
+ *
+ * O que o registro devolvia não é o `code` — é a sessão de quem começou o fluxo
+ * e para onde voltar. E essa verificação é explícita: o chamador passa a sessão
+ * **atual**, e só reaproveita se ela for a mesma que abriu o fluxo.
+ *
+ * Um `state` de outra sessão continua sem registro e continua recusado, que é o
+ * comportamento certo: são duas pessoas, e a segunda não pode herdar o login da
+ * primeira. É o mesmo princípio do `state` de CSRF — ele existe justamente para
+ * ligar o callback a quem começou.
+ *
+ * O que **não** volta é nada de utilizável: nem `code`, nem token, nem a
+ * possibilidade de trocar código. A autorização já aconteceu, e quem a fez foi a
+ * pessoa que está nesta sessão.
+ */
+export async function jaUsadoPorEstaSessao(state: string, sessionId: string): Promise<string | null> {
+  if (!state || !sessionId) return null;
+  const chave = PENDENTE_USADO(state);
+  const dono = await redis.get(chave);
+  if (dono !== sessionId) return null;
+  // A segunda janela serve o destino uma vez e depois o registro vai embora,
+  // para não virar um destino guardado por dez minutos.
+  await redis.del(chave);
+  return (await redis.get(`${chave}:destino`)) ?? null;
+}
+
+/** Marca o `state` como usado por esta sessão, guardando o destino. */
+export async function marcarPendingUsado(state: string, sessionId: string, destino: string): Promise<void> {
+  await redis.set(PENDENTE_USADO(state), sessionId, 'EX', PENDING_TTL_SEC);
+  await redis.set(`${PENDENTE_USADO(state)}:destino`, destino, 'EX', PENDING_TTL_SEC);
 }
 
 /**
