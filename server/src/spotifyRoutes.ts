@@ -15,7 +15,10 @@ import {
   getStatus,
   getValidAccessToken,
   listTracks,
+  peekTokens,
+  scopesDoToken,
   search,
+  SCOPES_NECESSARIOS,
   spotifyConfigured,
   takePending,
 } from './spotifyOAuth.js';
@@ -200,6 +203,7 @@ export function registerSpotifyRoutes(app: Express): void {
 
       const result = await completeOAuth({
         sessionId: pending.sessionId,
+        state,
         code,
         codeVerifier: pending.codeVerifier,
       });
@@ -251,6 +255,58 @@ export function registerSpotifyRoutes(app: Express): void {
     } catch (err) {
       console.error('[spotify] access-token falhou', err);
       res.status(500).json({ error: 'spotify_token_failed' });
+    }
+  });
+
+  /*
+   * Diagnóstico do token, para quando a busca falha sem motivo aparente.
+   *
+   * ## Por que existe
+   *
+   * A busca deu `403` e o painel dizia só "conectado", que é o estado real do
+   * token no Redis — e mesmo assim a busca não funcionava. O `403` do Spotify
+   * chega ao console do navegador **só como status**: o corpo vive na resposta e
+   * o Chrome não o mostra no painel de Network como texto, o que deixa sem
+   * nenhum lugar de olhar o motivo.
+   *
+   * ## O que devolve
+   *
+   * Só a **forma** do token, nunca o token:
+   *
+   *   temToken      se existe token guardado para esta sessão
+   *   expiradoEm    quantos segundos até o token precisar de renovação
+   *   scopes        os escopos efetivamente concedidos, comparados com os pedidos
+   *
+   * Os escopos são a informação que decide o bug, porque é o `/me` que engana: o
+   * `product` vem do token antigo e a busca usa o token novo. Descobrir isso pelo
+   * JWTleva um segundo, e pelo log do servidor eram três deploys.
+   *
+   * O JWT é decodificado **aqui**, e só o campo `scope` sai. A assinatura não é
+   * verificada de propósito: isto não valida nada, é leitura de diagnóstico.
+   */
+  app.get('/api/spotify/token-info', async (req, res) => {
+    try {
+      const sessionId = sessionConfigured() ? ensureSessionId(req, res) : readSessionId(req);
+      if (!sessionId) return jsonError(res, 400, 'session_required');
+      const record = await peekTokens(sessionId);
+      if (!record) return res.json({ temToken: false });
+
+      const expiradoEm = Math.max(0, Math.round((record.accessExpiresAt - Date.now()) / 1000));
+      const concedidos = scopesDoToken(record.accessToken);
+
+      res.json({
+        temToken: true,
+        expiradoEm,
+        temRefreshToken: Boolean(record.refreshToken),
+        scopes: concedidos,
+        // O que pedimos e o que veio. A diferença é a causa de um 403 que
+        // ninguém consegue explicar olhando o painel.
+        escoposFaltando: SCOPES_NECESSARIOS.filter((s) => !concedidos.includes(s)),
+        produto: record.product,
+      });
+    } catch (err) {
+      console.error('[spotify] token-info falhou', err);
+      res.status(500).json({ error: 'spotify_token_info_failed' });
     }
   });
 

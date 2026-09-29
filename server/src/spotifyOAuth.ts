@@ -174,6 +174,50 @@ async function saveTokens(sessionId: string, record: TokenRecord): Promise<void>
   await redis.set(TOKEN_KEY(sessionId), encryptSecret(JSON.stringify(record)));
 }
 
+/** Os escopos que esta integração pede, na ordem do pedido de consentimento. */
+export const SCOPES_NECESSARIOS: string[] = SCOPE.split(' ');
+
+/**
+ * Lê o registro de token sem passar por renovação nem escrita.
+ *
+ * A rota `/api/spotify/token-info` precisa disto para responder mesmo quando o
+ * token está expirado: é justamente o caso em que a busca falha e o painel
+ * precisa dizer por quê. `getValidAccessToken` renova, o que esconderia a causa.
+ */
+export async function peekTokens(sessionId: string): Promise<TokenRecord | null> {
+  return loadTokens(sessionId);
+}
+
+/**
+ * Escopos efetivamente concedidos, lidos do JWT.
+ *
+ * ## Por que ler o token e não confiar no `/me`
+ *
+ * O `product` do `/me` e o nome do e-mail continuam válidos quando o consentimento
+ * muda, porque o Spotify devolve um `/me` para o token antigo. A busca usa o token
+ * **novo**, e é por isso que o painel dizia "conectado" enquanto a busca recebia
+ * 403. O campo `scope` do JWT é a única fonte que diz o que este token pode
+ * fazer.
+ *
+ * A assinatura **não** é verificada, e isso é proposital: isto é leitura de
+ * diagnóstico, não validação. O valor não sai daqui — só a lista de escopos, que
+ * é pública e está na URL de autorização que a pessoa já aceitou.
+ *
+ * JWT sem padding de base64url: `atob` exige que o comprimento seja múltiplo de 4.
+ */
+export function scopesDoToken(accessToken: string): string[] {
+  try {
+    const [, payload] = accessToken.split('.');
+    if (!payload) return [];
+    const normalizado = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const comPadding = normalizado.padEnd(normalizado.length + ((4 - (normalizado.length % 4)) % 4), '=');
+    const decodificado = JSON.parse(atob(comPadding)) as { scope?: unknown };
+    return typeof decodificado.scope === 'string' ? decodificado.scope.split(' ') : [];
+  } catch {
+    return [];
+  }
+}
+
 export interface SpotifyStatus {
   configured: boolean;
   connected: boolean;
@@ -229,15 +273,42 @@ export async function createAuthUrl(sessionId: string, returnTo: string): Promis
   return url.toString();
 }
 
+/**
+ * Lê o registro `pending` de um `state`, **sem consumir**.
+ *
+ * ## Por que não apaga aqui
+ *
+ * A primeira versão fazia `get` e `del` nesta função, o que tornava o `state`
+ * de uso único já no callback. O sintoma era uma conexão que às vezes não
+ * existia: clicar em "Conectar" duas vezes criava dois registros, o navegador
+ * voltava pelo `code` do fluxo antigo, e esse `state` já tinha sido apagado pelo
+ * `del` de uma tentativa anterior. O callback respondia `spotify_state_invalid`
+ * e a pessoa não tinha como saber que a culpa era de um clique a mais.
+ *
+ * O `state` do Spotify já é single-use por desenho — quem o repete é recusado
+ * pelo próprio Spotify. Então **não é preciso** apagar para impedir replay: o
+ * registro só é removido depois que a troca do `code` é feita, em `completeOAuth`.
+ *
+ * ## A janela de 10 minutos continua
+ *
+ * O TTL não muda. Um `state` guardado por 10 minutos é o que permite autorizar
+ * sem pressa, e oSpotify invalida o `code` sozinho depois disso.
+ */
 export async function takePending(state: string): Promise<PendingOAuth | null> {
+  if (!state) return null;
   const raw = await redis.get(PENDING_KEY(state));
   if (!raw) return null;
-  await redis.del(PENDING_KEY(state));
   try {
     return JSON.parse(raw) as PendingOAuth;
   } catch {
+    await redis.del(PENDING_KEY(state));
     return null;
   }
+}
+
+/** Consome o registro depois de uma troca bem-sucedida. */
+async function consumirPending(state: string): Promise<void> {
+  await redis.del(PENDING_KEY(state));
 }
 
 async function spotifyFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -271,6 +342,7 @@ interface MeResponse {
 
 export async function completeOAuth(params: {
   sessionId: string;
+  state: string;
   code: string;
   codeVerifier: string;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -291,10 +363,17 @@ export async function completeOAuth(params: {
     if (!token.refresh_token) {
       // Sem refresh token a conexão morre em uma hora, e a pessoa teria que
       // reconectar. Melhor recusar agora do que fingir que está tudo certo.
+      //
+      // O registro só é consumido **depois** deste ponto de sucesso, e não antes:
+      // uma falha aqui tem que deixar a porta aberta para a pessoa tentar de
+      // novo sem começar o login inteiro.
       return { ok: false, error: 'spotify_no_refresh_token' };
     }
 
     const me = await fetchMe(token.access_token);
+
+    // O token está guardado: agora o registro `pending` pode sumir.
+    await consumirPending(params.state);
 
     await saveTokens(params.sessionId, {
       accessToken: token.access_token,

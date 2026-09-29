@@ -248,16 +248,53 @@ test('o refresh token nao sai do servidor', () => {
    * `token`.
    */
   const cRotas = semComentario(rotas);
-  const rota = cRotas.slice(
-    cRotas.indexOf("'/api/spotify/access-token'"),
-    cRotas.indexOf("'/api/spotify/search'"),
-  );
+  /*
+   * O corte é pela próxima rota **declarada**, e não por um nome fixo. A primeira
+   * versão cortava em `'/api/spotify/search'`, e o teste passou a varrer a rota de
+   * diagnóstico que foi inserida entre as duas — que devolve `temRefreshToken`,
+   * uma variável booleana, e não o segredo. O teste acusou o acréscimo, não a
+   * rota: o nome do fim era um detalhe, e a partir de agora ele é derivado.
+   */
+  const inicio = cRotas.indexOf("'/api/spotify/access-token'");
+  assert.notEqual(inicio, -1, 'a rota de access-token precisa existir');
+  const resto = cRotas.slice(inicio);
+  const proxima = resto.slice(1).search(/\n\s*app\.(get|post)\(/);
+  const rota = proxima === -1 ? resto : resto.slice(0, proxima + 1);
+
   assert.match(rota, /res\.json\(\{ token: result\.token \}\)/, 'a rota devolve so o token');
   assert.ok(
     !/refreshToken/.test(rota),
     'e nenhum refresh token atravessa essa rota: ele fica em encryptSecret no Redis',
   );
   assert.match(oauth, /encryptSecret\(JSON\.stringify\(record\)\)/, 'o token e guardado cifrado');
+});
+
+test('a rota de diagnostico devolve a forma do token, nunca o token', () => {
+  /*
+   * Existe porque um 403 do Spotify não aparece em lugar nenhum: o navegador
+   * mostra só o status, o painel dizia "conectado", e o `/me` mente porque
+   * responde para o token antigo. Os escopos do JWT são a única fonte que diz o
+   * que este token pode fazer.
+   *
+   * A rota é pública — como todas as outras —, então a linha que a segura é esta:
+   * o valor do access token não pode sair daqui, nem em parte.
+   */
+  const c = semComentario(rotas);
+  const rota = c.slice(c.indexOf("'/api/spotify/token-info'"));
+  assert.match(rota, /scopesDoToken\(record\.accessToken\)/, 'le os escopos do token');
+  assert.ok(
+    !/res\.json\(\{[^}]*token:\s*record\.accessToken/.test(rota),
+    'e nunca responde com o access token da pessoa',
+  );
+  assert.ok(
+    !/res\.json\(\{[^}]*refreshToken:\s*record\.refreshToken/.test(rota),
+    'nem com o refresh token, mesmo que o nome do campo seja booleano em outro ponto',
+  );
+  assert.match(
+    rota,
+    /temRefreshToken:\s*Boolean\(record\.refreshToken\)/,
+    'o refresh token aparece so como booleano, para dizer se existe',
+  );
 });
 
 test('o uri do catalogo e validado antes de virar proxy', () => {
