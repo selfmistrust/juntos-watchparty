@@ -2,10 +2,12 @@ import { Check, Link as LinkIcon, LockSimple, SidebarSimple, Warning } from '@ph
 import clsx from 'clsx';
 import Link from 'next/link';
 import { useState } from 'react';
+import { MentionPreferences } from '@/components/chat/MentionPreferences';
 import { Avatar } from '@/components/ui/Avatar';
 import { IconButton } from '@/components/ui/Button';
 import { TruncatedText } from '@/components/ui/TruncatedText';
 import { copiarTexto, isDesktop } from '@/lib/desktop';
+import type { PreferenciasMencao } from '@/lib/mentionPreferences';
 import { SITE_URL } from '@/lib/site';
 import type { RoomSnapshot } from '@/types';
 
@@ -14,6 +16,21 @@ interface Props {
   connected: boolean;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  /**
+   * Preferências de menção, que moravam no cabeçalho do chat.
+   *
+   * O botão está aqui, e não no painel, por dois motivos. O primeiro é que as
+   * três preferências valem para a sala inteira — inclusive com o painel fechado,
+   * e era justamente com o painel fechado que "não me perturbe" importava. O
+   * segundo é descoberta: no cabeçalho do chat o sino aparecia só depois de
+   * abrir o painel, ou seja, nunca na hora em que a pessoa decide se quer
+   * interromper.
+   */
+  mentionPrefs?: PreferenciasMencao;
+  onMentionPrefs?: (patch: Partial<PreferenciasMencao>) => void;
+  aoPedirPermissaoNotificacao?: () => void;
+  jaPediuPermissaoNotificacao?: boolean;
+  pushDeMencaoAtivo?: boolean;
 }
 
 /**
@@ -36,7 +53,17 @@ function linkDeConvite(): string {
   return `${SITE_URL}${caminho}`;
 }
 
-export function RoomHeader({ state, connected, sidebarOpen, onToggleSidebar }: Props) {
+export function RoomHeader({
+  state,
+  connected,
+  sidebarOpen,
+  onToggleSidebar,
+  mentionPrefs,
+  onMentionPrefs,
+  aoPedirPermissaoNotificacao,
+  jaPediuPermissaoNotificacao,
+  pushDeMencaoAtivo,
+}: Props) {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
 
@@ -123,6 +150,27 @@ export function RoomHeader({ state, connected, sidebarOpen, onToggleSidebar }: P
             {copied ? 'Link copiado' : copyFailed ? 'Não consegui copiar' : 'Convidar'}
           </span>
         </button>
+
+        {/*
+         * O sino fica aqui, e o `z-30` no wrapper é o que garante isto.
+         *
+         * O popover abre para baixo, por padrão, a partir de um botão na barra de
+         * 56px — e desce por cima do palco. O palco usa `z-10`/`z-20` e o painel
+         * lateral não usa z nenhum, então um `z-30` no wrapper coloca o popover
+         * acima dos dois. A barra em si não precisa de `relative`: o popover é
+         * posicionado pelo `relative` que já existe dentro do `MentionPreferences`.
+         */}
+        {(mentionPrefs && onMentionPrefs) && (
+          <div className="z-30 flex shrink-0 items-center">
+            <MentionPreferences
+              prefs={mentionPrefs}
+              jaPediu={Boolean(jaPediuPermissaoNotificacao)}
+              onMudar={onMentionPrefs}
+              aoPedirPermissao={aoPedirPermissaoNotificacao ?? (() => undefined)}
+              pushAtivo={Boolean(pushDeMencaoAtivo)}
+            />
+          </div>
+        )}
 
         <IconButton
           label={sidebarOpen ? 'Ocultar painel' : 'Mostrar painel'}

@@ -5,7 +5,15 @@ import { PasswordGate } from '@/components/PasswordGate';
 import { RoomHeader } from '@/components/RoomHeader';
 import { RoomExpired } from '@/components/RoomExpired';
 import { Sidebar } from '@/components/Sidebar';
+import { SidebarResizer } from '@/components/player/SidebarResizer';
 import { VideoStage } from '@/components/player/VideoStage';
+import {
+  LARGURA_MAX_PAINEL,
+  LARGURA_MIN_PAINEL,
+  LARGURA_PADRAO_PAINEL,
+  gravaLarguraDoPainel,
+  lerLarguraDoPainel,
+} from '@/lib/larguraPainel';
 import { useRoom } from '@/hooks/useRoom';
 import { useMencoes } from '@/hooks/useMencoes';
 import { MentionBanner } from '@/components/chat/MentionBanner';
@@ -58,6 +66,42 @@ export default function RoomPage() {
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>();
   const [color, setColor] = useState<string | undefined>();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  /**
+   * A largura do painel, e a divisória que a ajusta.
+   *
+   * Os limites e a leitura do `localStorage` estão em `lib/larguraPainel`, e não
+   * aqui, porque os mesmos números precisam valer na página, na divisória e no
+   * `Sidebar` — um `min` em cada lugar é como o painel fica mais estreito que o
+   * mínimo num recarregamento.
+   */
+  const [larguraPainel, setLarguraPainel] = useState(LARGURA_PADRAO_PAINEL);
+
+  /**
+   * A largura guardada entra depois da montagem, e não no inicializador do
+   * `useState`.
+   *
+   * O inicializador roda no servidor, onde `localStorage` não existe, e a
+   * alternativa — `typeof window` dentro dele — produz dois valores diferentes
+   * entre o HTML do servidor e o primeiro render do cliente. O React descarta o
+   * HTML nesse caso e o usuário vê a sala piscar para a largura padrão e depois
+   * pular para a sua.
+   *
+   * E a gravação acontece só quando o valor lido difere do padrão, para não
+   * encher o `localStorage` de quem nunca tocou na divisória.
+   */
+  useEffect(() => {
+    const guardada = lerLarguraDoPainel();
+    if (guardada !== null) setLarguraPainel(guardada);
+  }, []);
+
+  const ajustarLargura = useCallback((nova: number) => {
+    setLarguraPainel((atual) => {
+      if (nova === atual) return atual;
+      gravaLarguraDoPainel(nova);
+      return nova;
+    });
+  }, []);
 
   /** Nome, avatar e cor ficam salvos para quem volta à mesma aba não escolher de novo. */
   useEffect(() => {
@@ -308,6 +352,19 @@ export default function RoomPage() {
         connected={connected}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        /*
+         * As preferências de menção moram no cabeçalho, e não no painel de chat.
+         *
+         * Elas valem para a sala inteira — inclusive com o painel fechado, que é
+         * quando "não me perturbe" mais importa — e o sino no topo aparece na
+         * hora em que a pessoa decide se quer ser interrompida, em vez de
+         * aparecer só depois de abrir o painel.
+         */
+        mentionPrefs={mencoes.prefs}
+        onMentionPrefs={mencoes.atualizarPrefs}
+        aoPedirPermissaoNotificacao={() => void mencoes.pedirPermissao()}
+        jaPediuPermissaoNotificacao={mencoes.jaPediuPermissao}
+        pushDeMencaoAtivo={mencoes.pushAtivo}
       />
 
       {/* Mobile: vídeo no topo, chat empilhado logo abaixo, página rola se precisar.
@@ -338,9 +395,31 @@ export default function RoomPage() {
           )}
         </main>
 
+        {/*
+          * A divisória fica entre o `main` e o `Sidebar`, e só no desktop.
+          *
+          * Abaixo de `lg` o layout é empilhado — vídeo em cima, painel embaixo — e
+          * não existe uma borda vertical para arrastar. Mostrar a alça ali seria
+          * um controle que não faz nada, e a única resposta que ela elicitaria é
+          * puxar e nada mexer.
+          *
+          * Ela também não aparece com o painel fechado: sem painel para
+          * redimensionar, a alça ficaria colada na borda da tela, e arrastá-la
+          * mudaria a largura de algo invisível.
+          */}
+        {sidebarOpen && (
+          <SidebarResizer
+            width={larguraPainel}
+            onChange={ajustarLargura}
+            min={LARGURA_MIN_PAINEL}
+            max={LARGURA_MAX_PAINEL}
+          />
+        )}
+
         <Sidebar
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
+          largura={larguraPainel}
           state={state}
           me={me}
           feed={feed}
@@ -350,11 +429,6 @@ export default function RoomPage() {
           isHost={isHost}
           replyingTo={replyingTo}
           streamBridge={streamBridge}
-          mentionPrefs={mencoes.prefs}
-          onMentionPrefs={mencoes.atualizarPrefs}
-          onPedirPermissaoNotificacao={() => void mencoes.pedirPermissao()}
-          jaPediuPermissaoNotificacao={mencoes.jaPediuPermissao}
-          pushDeMencaoAtivo={mencoes.pushAtivo}
         />
       </div>
 

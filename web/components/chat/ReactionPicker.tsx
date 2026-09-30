@@ -45,6 +45,16 @@ export function ReactionPicker({
 }: Props) {
   const [showFull, setShowFull] = useState(false);
   /**
+   * Se a barra rápida ancorou **para cima** do botão de reação.
+   *
+   * É estado, e não algo derivado do CSS, porque o menu expandido precisa saber
+   * para que lado crescer — e a âncora (`top`, em px, escrito por
+   * `updatePosition`) só existe depois do primeiro layout. Ler a posição aqui
+   * seria medir o DOM no render, que é o que a medição em `useLayoutEffect`
+   * existe para evitar.
+   */
+  const [acimaDoBotao, setAcimaDoBotao] = useState(true);
+  /**
    * O nó do container em `state`, e não em `useRef`, de propósito: o `Portal`
    * resolve o alvo num `useLayoutEffect` e só então monta os filhos, ou seja,
    * o div chega ao DOM um render depois de `isOpen` virar `true`. Com um ref
@@ -77,13 +87,40 @@ export function ReactionPicker({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen, onClose, anchorRef, container]);
 
-  // Recálculo dinâmico da posição em relação à âncora
+  /**
+   * O nó do menu expandido, medido para o cálculo de espaço.
+   *
+   * Está em `state` pelo mesmo motivo do `container`: o `Portal` monta os filhos
+   * um render depois de `isOpen`, e um ref comum mediria zero.
+   */
+  const [menu, setMenu] = useState<HTMLDivElement | null>(null);
+
+  /**
+   * Reposiciona o picker, medindo o que ele **realmente** ocupa.
+   *
+   * ## A medição anterior media metade do que era preciso
+   *
+   * O menu expandido é `absolute top-full`, ou seja, sai da caixa do container
+   * para baixo. O `containerRect.height` media só a barra rápida — o menu não
+   * contava. O cálculo dizia "cabe acima" com folga de 40px, posicionava, e o
+   * menu de 200px aparecia em cima da barra de escrever e do fim da viewport. Era
+   * o sintoma reportado: abre muito para baixo e fica cortado.
+   *
+   * Aqui a altura somada é a barra mais o menu mais a folga, e o `top` é
+   * calculado com o total. A barra também muda de lado, o que importa porque
+   * `bottom-full` e `top-full` são propriedades diferentes e precisam combinar
+   * com o `top` que o JS escreve.
+   */
   const updatePosition = useCallback(() => {
     const anchor = anchorRef.current;
     if (!anchor || !container) return;
 
     const rect = anchor.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
+    const alturaMenu = menu?.offsetHeight ?? 0;
+    const FOLGA = 8;
+    // `top-full mt-2` no menu vale 8px de distância entre a barra e ele.
+    const alturaTotal = containerRect.height + (alturaMenu > 0 ? alturaMenu + FOLGA : 0);
 
     // Limites horizontais/verticais: o painel do chat quando ele existe.
     // Usar só a viewport faria o picker "vazar" por cima do vídeo, já que o
@@ -93,13 +130,7 @@ export function ReactionPicker({
     const minX = (bounds ? bounds.left : 0) + 8;
     const maxX = (bounds ? bounds.right : window.innerWidth) - 8;
 
-    let top = rect.top - containerRect.height - 8;
     let left = rect.left + rect.width / 2 - containerRect.width / 2;
-
-    // Sem espaço acima, abre abaixo do botão.
-    if (top < 8) {
-      top = rect.bottom + 8;
-    }
 
     // Não deixa vazar para fora dos limites.
     if (left < minX) left = minX;
@@ -108,11 +139,59 @@ export function ReactionPicker({
     // na borda esquerda em vez de centralizar e empurrar para fora da tela.
     if (left < minX) left = minX;
 
-    container.style.top = `${top}px`;
-    container.style.left = `${left}px`;
-  }, [anchorRef, container]);
+    const MARGEM = 8;
+    const espacoAcima = rect.top - MARGEM;
+    const espacoAbaixo = window.innerHeight - rect.bottom - MARGEM;
 
-  // Atualiza posição no scroll, resize e quando abre/expande
+    /*
+     * A barra é quem ancora no botão, e o menu cresce **para longe** dela.
+     *
+     * A ordem aqui é: primeiro quem tem espaço para o **conjunto**, e só depois
+     * o lado. Abrir a barra para cima porque há espaço e o menu para baixo — que
+     * é o que a versão anterior fazia — põe o menu exatamente onde não há espaço.
+     */
+    const cabeAcima = espacoAcima >= alturaTotal;
+    const cabeAbaixo = espacoAbaixo >= alturaTotal;
+    /*
+     * Este `set` roda a cada `scroll` e a cada `resize`, e parece desperdício de
+     * render. Não é: o React descarta a atualização quando o estado é o mesmo, e
+     * `acimaDoBotao` só muda quando o picker **troca de lado** — o que numa
+     * rolagem de chat é raro. O guarda `!==` abaixo deixa isso explícito e evita
+     * o custo de um render por quadro durante o arraste da barra de rolagem.
+     */
+    const lado = cabeAcima || (!cabeAbaixo && espacoAcima >= espacoAbaixo);
+    if (lado !== acimaDoBotao) setAcimaDoBotao(lado);
+
+    let top: number;
+    if (cabeAcima) {
+      top = rect.top - alturaTotal;
+    } else if (cabeAbaixo) {
+      top = rect.bottom;
+    } else {
+      /*
+       * Não cabe inteiro em nenhum lado, e é o caso do painel de mensagens numa
+       * janela baixa com o menu aberto. Escolhe o lado com mais espaço e deixa o
+       * menu rolar dentro de si (`max-h` no grid), em vez de empurrar o picker
+       * para fora da viewport — que é o que escondia o botão de fechar.
+       */
+      top = espacoAcima >= espacoAbaixo ? MARGEM : rect.bottom;
+      if (top + alturaTotal > window.innerHeight - MARGEM) {
+        top = Math.max(MARGEM, window.innerHeight - alturaTotal - MARGEM);
+      }
+    }
+
+    container.style.top = `${Math.round(top)}px`;
+    container.style.left = `${Math.round(left)}px`;
+  }, [anchorRef, container, menu, acimaDoBotao]);
+
+  /**
+   * Reposiciona no scroll, no resize, e quando abre ou expande.
+   *
+   * `menu` entra na lista porque é ele que muda a altura total: sem ele na
+   * dependência, o primeiro `updatePosition` depois de `showFull` mediria um
+   * `menu` ainda `null` e voltaria a posicionar só pela barra — que é
+   * exatamente o defeito que a medição completa veio corrigir.
+   */
   useIsomorphicLayoutEffect(() => {
     if (!isOpen) return;
 
@@ -125,7 +204,7 @@ export function ReactionPicker({
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
     };
-  }, [isOpen, showFull, updatePosition]);
+  }, [isOpen, showFull, menu, updatePosition]);
 
   if (!isOpen) return null;
 
@@ -190,12 +269,34 @@ export function ReactionPicker({
         {/* Menu Expandido */}
         {showFull && (
           <div
-            className="absolute left-0 top-full mt-2 w-72 rounded-xl border border-hairline bg-surface shadow-lg overflow-hidden animate-fade-up z-50 p-2"
+            ref={setMenu}
+            /*
+             * `bottom-full` quando o picker ancorou **para cima** da âncora, e
+             * `top-full` quando ancorou para baixo.
+             *
+             * O sinal é a borda inferior do container em relação à âncora: com o
+             * menu para cima, o container termina acima do botão. Sem isto o menu
+             * desce por cima da barra rápida e do campo de escrever, que é o
+             * sintoma reportado.
+             *
+             * `mb-2`/`mt-2` dão os 8px de folga que o cálculo do `top` já
+             * assumiu, para os dois lados baterem.
+             */
+            className={`absolute left-0 w-72 rounded-xl border border-hairline bg-surface shadow-lg overflow-hidden animate-fade-up z-50 p-2 ${
+              acimaDoBotao ? 'bottom-full mb-2' : 'top-full mt-2'
+            }`}
             role="dialog"
             aria-label="Todas as reações"
           >
             <p className="text-xs font-medium text-ink-muted mb-2">Escolha uma reação</p>
-            <div className="grid grid-cols-6 gap-1 max-h-60 overflow-y-auto">
+            {/*
+             * `max-h` em `dvh` e não em px, porque o teto tem que acompanhar a
+             * janela: um `max-h-60` fixo num monitor de 600px de altura entrega
+             * um menu que não cabe em lugar nenhum, e o cálculo acima cai no caso
+             * "não cabe inteiro" e deixa o próprio menu rolável. Com `dvh`, o
+             * menu encolhe até caber na tela em vez de empurrar o picker para fora.
+             */}
+            <div className="grid grid-cols-6 gap-1 max-h-[min(15rem,42dvh)] overflow-y-auto">
               {CHAT_REACTION_EMOJIS.map((emoji) => {
                 const reaction = reactions.find((r) => r.emoji === emoji);
                 const count = reaction?.count ?? 0;

@@ -2,7 +2,6 @@ import { ChatCircle, ListPlus, Users, X } from '@phosphor-icons/react';
 import clsx from 'clsx';
 import { useEffect, useRef, useState } from 'react';
 import { ChatPanel } from '@/components/chat/ChatPanel';
-import type { PreferenciasMencao } from '@/lib/mentionPreferences';
 import { PeoplePanel } from '@/components/people/PeoplePanel';
 import { PlaylistPanel } from '@/components/playlist/PlaylistPanel';
 import { IconButton } from '@/components/ui/Button';
@@ -24,21 +23,16 @@ interface Props {
   canControl: boolean;
   isHost: boolean;
   replyingTo?: ChatMessage | null;
-  /** Ponte de WebRTC, repassada até o painel de tela compartilhada. */
+  /** Ponte de WebRTC, repassada ao painel de tela compartilhada. */
   streamBridge: StreamController;
   /**
-   * Preferências de menção, repassadas até o cabeçalho do chat.
+   * Largura do painel, em px, controlada pela divisória.
    *
-   * O `Sidebar` não decide nada disso: ele é a passagem entre a página, que
-   * tem o estado, e o `ChatPanel`, que tem o lugar onde o botão fica. Um
-   * componente que só repassa não deve ganhar um terceiro dono do estado.
+   * `undefined` abaixo de `lg`, onde o layout é empilhado e a largura é da
+   * janela — por isso o `style` só entra no `lg`, e no resto a coluna segue
+   * `w-[23rem]`.
    */
-  mentionPrefs?: PreferenciasMencao;
-  onMentionPrefs?: (patch: Partial<PreferenciasMencao>) => void;
-  onPedirPermissaoNotificacao?: () => void;
-  jaPediuPermissaoNotificacao?: boolean;
-  /** Se o endereço de push está registrado no servidor. Repassado ao ChatPanel. */
-  pushDeMencaoAtivo?: boolean;
+  largura?: number;
 }
 
 export function Sidebar({
@@ -53,11 +47,7 @@ export function Sidebar({
   isHost,
   replyingTo,
   streamBridge,
-  mentionPrefs,
-  onMentionPrefs,
-  onPedirPermissaoNotificacao,
-  jaPediuPermissaoNotificacao,
-  pushDeMencaoAtivo,
+  largura,
 }: Props) {
   const [tab, setTab] = useState<TabId>('chat');
   const [unread, setUnread] = useState(0);
@@ -85,9 +75,16 @@ export function Sidebar({
 
   return (
     <aside
+      style={largura ? { width: `${largura}px` } : undefined}
       className={clsx(
         'flex min-w-0 flex-col border-t border-hairline bg-surface',
-        'lg:h-full lg:w-[23rem] lg:shrink-0 lg:border-l lg:border-t-0',
+        /*
+         * `lg:w-[23rem]` é o valor inicial, e só vale quando não há `style`.
+         * Uma largura em `style` ganha da classe utilitária, e é por isso que as
+         * duas nunca podem brigar: a que está no `style` é a da divisória.
+         */
+        largura ? 'lg:shrink-0' : 'lg:w-[23rem] lg:shrink-0',
+        'lg:h-full lg:border-l lg:border-t-0',
         open ? 'min-h-[22rem] flex-1 animate-fade-up lg:min-h-0 lg:flex-none' : 'hidden',
       )}
     >
@@ -119,11 +116,6 @@ export function Sidebar({
             onReply={actions.reply}
             onCancelReply={actions.cancelReply}
             replyingTo={replyingTo ?? null}
-            mentionPrefs={mentionPrefs}
-            onMentionPrefs={onMentionPrefs}
-            onPedirPermissaoNotificacao={onPedirPermissaoNotificacao}
-            jaPediuPermissaoNotificacao={jaPediuPermissaoNotificacao}
-            pushDeMencaoAtivo={pushDeMencaoAtivo}
           />
         )}
         {tab === 'queue' && (

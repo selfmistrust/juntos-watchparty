@@ -6,7 +6,6 @@ import { Avatar } from '@/components/ui/Avatar';
 import { IconButton } from '@/components/ui/Button';
 import { compressImageFile, formatClock } from '@/lib/media';
 import { MentionAutocomplete } from './MentionAutocomplete';
-import { MentionPreferences } from './MentionPreferences';
 import { MentionText } from './MentionText';
 import { UserProfile } from './UserProfile';
 import { GifPicker } from './GifPicker';
@@ -15,7 +14,6 @@ import { ReactionPicker } from './ReactionPicker';
 import { ReplyPreview } from './ReplyPreview';
 import { destravarSomDeMencao } from '@/lib/mentionSound';
 import { mencaoPendente, sugerir } from '@/lib/mentionHighlight';
-import type { PreferenciasMencao } from '@/lib/mentionPreferences';
 import type { FeedEntry, GifResult, User, ChatMessage } from '@/types';
 
 interface Props {
@@ -37,18 +35,6 @@ interface Props {
   onCancelReply: () => void;
   /** Mensagem que está sendo respondida (se houver). */
   replyingTo?: ChatMessage | null;
-  /** Preferências de menção e seus alteradores. */
-  mentionPrefs?: PreferenciasMencao;  onMentionPrefs?: (patch: Partial<PreferenciasMencao>) => void;
-  onPedirPermissaoNotificacao?: () => void;
-  jaPediuPermissaoNotificacao?: boolean;
-  /**
-   * Se o endereço de push está registrado no servidor.
-   *
-   * Vem do `useMencoes` e chega aqui por prop porque a linha de status das
-   * preferências precisa mostrar o que o servidor confirmou, e não o que a
-   * pessoa pediu.
-   */
-  pushDeMencaoAtivo?: boolean;
 }
 
 export function ChatPanel({
@@ -66,11 +52,6 @@ export function ChatPanel({
   onReply,
   onCancelReply,
   replyingTo,
-  mentionPrefs,
-  onMentionPrefs,
-  onPedirPermissaoNotificacao,
-  jaPediuPermissaoNotificacao,
-  pushDeMencaoAtivo,
 }: Props) {
   const [draft, setDraft] = useState('');
   const [gifOpen, setGifOpen] = useState(false);
@@ -229,6 +210,32 @@ export function ChatPanel({
    * cada mensagem nova. Rolar o container do feed (`nearest`) mantém o vídeo e
    * os controles no lugar, e só mexe no chat.
    */
+  /**
+   * Pula para o fim do feed, sem animação.
+   *
+   * ## Por que o envio não pode ser suave
+   *
+   * O efeito que rola a cada mensagem usa `smooth`, e isso é certo para quem
+   * *recebe*: a mensagem nova entra logo abaixo e o deslocamento é de uma linha.
+   *
+   * No envio é o oposto. A pessoa estava lendo o meio do histórico, aperta Enter,
+   * e o `smooth` anima a travessia inteira — dezenas de mensagens subindo, por
+   * um segundo e meio, com a entrada dela no fim. O movimento é lento o bastante
+   * para parecer travamento, e a pessoa não sabe se a mensagem entrou.
+   *
+   * `auto` corta: o feed vai direto ao fim e a mensagem aparece no lugar. O
+   * efeito suave ainda roda quando a mensagem chega pelo socket, e aí o
+   * deslocamento é de uma linha, que é o que `smooth` faz bem.
+   *
+   * O alvo é o mesmo sentinela do efeito — `endRef`, a marca de fim do feed.
+   * Rolar até a última mensagem *renderizada* é o que dá: no instante do envio a
+   * mensagem ainda não chegou pelo socket, e esperar por ela deixaria a pessoa
+   * olhando para o rodapé sem resposta nenhuma.
+   */
+  const pularParaOFim = useCallback(() => {
+    endRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+  }, []);
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [feed.length, typingUsers.length]);
@@ -256,6 +263,15 @@ export function ChatPanel({
     if (replyingTo) {
       payload.parentMessageId = replyingTo.id;
     }
+    /*
+     * O salto vem **antes** do `onSend`.
+     *
+     * A ordem importa pouco para o efeito (que só roda quando o feed cresce), mas
+     * importa para quem vê: pulando primeiro, a rolagem acontece no mesmo frame
+     * do clique, junto com o campo esvaziando. Se viesse depois, haveria um
+     * instante com a mensagem enviada e o histórico ainda no lugar.
+     */
+    pularParaOFim();
     onSend(payload);
     setDraft('');
     clearTimeout(typingTimeout.current);
@@ -265,6 +281,12 @@ export function ChatPanel({
   };
 
   const pickGif = (gif: GifResult) => {
+    /*
+     * GIF e imagem são mensagem como o texto, e a pessoa que escolheu uma está
+     * em outro ponto do histórico — normalmente no topo, logo depois de abrir o
+     * picker. Sem o salto, a animação longa voltaria por este caminho.
+     */
+    pularParaOFim();
     onSendGif(gif);
     setGifOpen(false);
   };
@@ -274,6 +296,7 @@ export function ChatPanel({
     setSendingImage(true);
     try {
       const dataUrl = await compressImageFile(file);
+      pularParaOFim();
       onSendImage(dataUrl);
     } catch {
       // Leitura/compressão falhou — sem canal próprio de erro aqui
@@ -309,30 +332,6 @@ export function ChatPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/*
-        * Cabeçalho do chat. Não existia, e foi criado só para a preferência de
-        * menção ter onde morar.
-        *
-        * A alternativa era esconder os três interruptores dentro do menu do
-        * player ou da lista de pessoas, e as duas estão longe demais de quem
-        * recebeu a menção. Uma linha de 36px é o preço de "desligar o som
-        * agora" ser um clique, e é bem mais barato do que a pessoa decidir
-        * deixar ligado e sair da sala.
-        *
-        * A borda inferior é a mesma do feed, então o cabeçalho não desenha uma
-        * faixa nova: ele apenas interrompe a coluna de mensagens.
-        */}
-      {(mentionPrefs && onMentionPrefs) && (
-        <div className="flex shrink-0 items-center justify-end border-b border-hairline px-2 py-1">
-          <MentionPreferences
-            prefs={mentionPrefs}
-            jaPediu={Boolean(jaPediuPermissaoNotificacao)}
-            onMudar={onMentionPrefs}
-            aoPedirPermissao={onPedirPermissaoNotificacao ?? (() => undefined)}
-            pushAtivo={Boolean(pushDeMencaoAtivo)}
-          />
-        </div>
-      )}
 
       <div data-reaction-bounds className="scroll-thin flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {feed.length === 0 && (
