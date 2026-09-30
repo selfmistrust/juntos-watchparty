@@ -173,6 +173,54 @@ test('a divisoria redimensiona o painel entre 320 e 700', () => {
   assert.match(pagina, /useEffect\(\(\) => \{\s*\n\s*const guardada = lerLarguraDoPainel\(\)/, 'a leitura da largura guardada e um efeito');
 });
 
+test('o painel de reacoes guarda margem da viewport, e nao so do botao', () => {
+  /*
+   * O sintoma: com o menu aberto, o conjunto batia na borda superior da janela e
+   * cortava o cabeçalho da sala. Não faltava espaço — o cálculo estava 8px acima
+   * do que devia, porque a folga entre o picker e o botão não era descontada do
+   * `top` que posiciona o conjunto.
+   *
+   * Margem e folga são a mesma medida e não são o mesmo uso: a margem se guarda
+   * da **borda da janela**, a folga se deixa entre o picker e o **botão**.
+   */
+  const c = semComentario(reacao);
+  assert.match(
+    c,
+    /top = rect\.top - alturaTotal - FOLGA;/,
+    'abrindo para cima, a folga e descontada do topo: senao encosta na borda',
+  );
+  assert.match(c, /top = rect\.bottom \+ FOLGA;/, 'e abrindo para baixo tambem');
+  assert.match(
+    c,
+    /espacoAcima = rect\.top - MARGEM - FOLGA/,
+    'e o espaco disponivel acima desconta as duas, nao so a margem',
+  );
+  assert.match(
+    c,
+    /espacoAbaixo = window\.innerHeight - rect\.bottom - MARGEM - FOLGA/,
+    'o mesmo abaixo: sem isto o "cabe abaixo" seria um Rotlieben sobre estimacao',
+  );
+
+  /*
+   * O botão `⋯` sem o rótulo "mais".
+   *
+   * O texto alinhava a célula, e alinhamento é o que não podia continuar: cada
+   * emoji mostra contagem embaixo, e a célula do botão ficava alta sozinha
+   * quando não tinha, deixando o último item pendurado para baixo.
+   */
+  assert.ok(
+    !/<span className="text-\[0\.625rem\]">mais<\/span>/.test(c),
+    'o rotulo "mais" saiu: ele alinhava a celula e a barra ficava torta',
+  );
+  assert.match(c, /aria-label="Mais reações"/, 'e o botao continua nomeado para quem nao ve o glifo');
+  assert.match(c, /aria-expanded=\{showFull\}/, 'e diz se o menu esta aberto');
+  assert.match(
+    c,
+    /flex items-center gap-1 rounded-xl bg-surface/,
+    'a barra usa items-center, e nao items-start que pendurava o ultimo item',
+  );
+});
+
 test('o painel de reacoes mede o menu inteiro antes de escolher o lado', () => {
   /*
    * O defeito: o menu expandido e `absolute top-full`, ou seja, sai da caixa do
@@ -213,4 +261,15 @@ test('o painel de reacoes mede o menu inteiro antes de escolher o lado', () => {
    */
   assert.match(c, /max-h-\[min\(15rem,42dvh\)\]/, 'o grid tem teto em dvh, que acompanha a janela');
   assert.ok(!/max-h-60/.test(c), 'e nao um max-h fixo, que nao cabe em tela baixa');
+
+  /*
+   * A barra rapida e medida com a do container, e o `top` posiciona o **conjunto**
+   * -- barra mais menu. A medicao tem que ser a do conjunto, senao o calculo de
+   * "cabe acima" olha a barra sozinha e decide errado, que foi o defeito
+   * original deste painel.
+   */
+  assert.ok(
+    !/top = rect\.top - containerRect\.height/.test(c),
+    'a altura medida e a do conjunto, nunca a da barra sozinha',
+  );
 });

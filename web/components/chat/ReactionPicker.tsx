@@ -139,9 +139,21 @@ export function ReactionPicker({
     // na borda esquerda em vez de centralizar e empurrar para fora da tela.
     if (left < minX) left = minX;
 
+    /*
+     * A margem da borda da viewport, e a folga entre o picker e a âncora.
+     *
+     * São a mesma medida e por isso dividem a constante — mas não são o mesmo
+     * uso, e confundi-las é o que põe o menu colado no topo da tela. A margem é
+     * o que se guarda da **borda da janela**; a folga é o que se deixa entre o
+     * picker e o **botão**. Com uma só das duas, o conjunto encosta em uma
+     * borda ou gruda no botão.
+     *
+     * `espacoAcima` já desconta as duas, porque o topo do conjunto fica
+     * `alturaTotal + FOLGA` acima da âncora.
+     */
     const MARGEM = 8;
-    const espacoAcima = rect.top - MARGEM;
-    const espacoAbaixo = window.innerHeight - rect.bottom - MARGEM;
+    const espacoAcima = rect.top - MARGEM - FOLGA;
+    const espacoAbaixo = window.innerHeight - rect.bottom - MARGEM - FOLGA;
 
     /*
      * A barra é quem ancora no botão, e o menu cresce **para longe** dela.
@@ -164,9 +176,21 @@ export function ReactionPicker({
 
     let top: number;
     if (cabeAcima) {
-      top = rect.top - alturaTotal;
+      /*
+       * A folga vai para **cima**, não para o meio.
+       *
+       * O cálculo original era `rect.top - alturaTotal`: com o menu aberto, o
+       * topo do conjunto batia exatamente na borda superior da janela, e a barra
+       * rápida ficava colada no topo da tela. Na captura o menu aparece
+       * cortando o próprio cabeçalho da sala — não faltava espaço, o conjunto
+       * estava `8px` acima do que deveria.
+       *
+       * Subtrair a folga aqui deixa a margem entre o menu e a borda da viewport,
+       * que é o que a regra de "nunca encostar na borda" pede.
+       */
+      top = rect.top - alturaTotal - FOLGA;
     } else if (cabeAbaixo) {
-      top = rect.bottom;
+      top = rect.bottom + FOLGA;
     } else {
       /*
        * Não cabe inteiro em nenhum lado, e é o caso do painel de mensagens numa
@@ -174,7 +198,7 @@ export function ReactionPicker({
        * menu rolar dentro de si (`max-h` no grid), em vez de empurrar o picker
        * para fora da viewport — que é o que escondia o botão de fechar.
        */
-      top = espacoAcima >= espacoAbaixo ? MARGEM : rect.bottom;
+      top = espacoAcima >= espacoAbaixo ? MARGEM : rect.bottom + FOLGA;
       if (top + alturaTotal > window.innerHeight - MARGEM) {
         top = Math.max(MARGEM, window.innerHeight - alturaTotal - MARGEM);
       }
@@ -218,6 +242,15 @@ export function ReactionPicker({
         role="group"
         aria-label="Reações"
       >
+        {/*
+         * `items-center` e não `items-start`.
+         *
+         * Com `items-start`, a célula do botão `⋯` alinha pelo topo e a barra
+         * fica com o último item pendurado para baixo quando as outras células
+         * têm contagem embaixo do emoji. `items-center` centraliza todas na
+         * mesma linha, e a diferença de altura entre quem tem contagem e quem não
+         * some dentro da própria célula.
+         */}
         <div className="flex items-center gap-1 rounded-xl bg-surface border border-hairline shadow-lg px-2 py-1.5">
           {allEmojis.map((emoji) => {
             const reaction = reactions.find((r) => r.emoji === emoji);
@@ -254,15 +287,31 @@ export function ReactionPicker({
             );
           })}
 
+          {/*
+           * Só o ícone, sem o rótulo "mais" embaixo.
+           *
+           * O rótulo ALIGNAVA a barra, e alinhamento é o que não pode continuar:
+           * cada emoji mostra a contagem abaixo quando tem reactions, e a
+           * célula do botão ficava alta sozinha quando não tinha. O resultado era
+           * a barra com o último item pendurado para baixo, desalinhado de tudo.
+           *
+           * O `⋯` sozinho resolve por um motivo melhor que o visual: o símbolo
+           * já diz "há mais aqui", e um texto de uma palavra embaixo de um
+           * glifo de três pontos repete a informação em dois formatos e ainda
+           * ocupa a altura de uma linha para dizer o que o glifo diz.
+           *
+           * O `aria-label` continua nomeando a ação, que é quem precisa do nome
+           * para quem não vê o glifo.
+           */}
           <button
             type="button"
             role="menuitem"
             onClick={() => setShowFull((prev) => !prev)}
-            className="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 text-ink-muted hover:bg-hover hover:text-ink transition-colors"
             aria-label="Mais reações"
+            aria-expanded={showFull}
+            className="flex items-center justify-center rounded-lg px-2 py-1.5 text-ink-muted hover:bg-hover hover:text-ink transition-colors"
           >
-            <span className="text-lg">⋯</span>
-            <span className="text-[0.625rem]">mais</span>
+            <span className="text-lg leading-none">⋯</span>
           </button>
         </div>
 
