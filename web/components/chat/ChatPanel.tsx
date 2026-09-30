@@ -73,30 +73,62 @@ export function ChatPanel({
   const reactionAnchors = useRef<Map<string, { current: HTMLButtonElement | null }>>(new Map());
 
   /**
-   * O campo cresce com o texto, até o teto do CSS.
+   * O campo cresce com o texto, ate o teto do CSS.
    *
-   * Sem isto o `max-h-28` não servia para nada: o `textarea` ficava nos 32px
-   * do `rows={1}` para sempre, e uma mensagem longa **rolava dentro do campo** —
-   * medi no celular a 390px: 32px de altura, 164px de largura, 22 caracteres
-   * visíveis, com o texto digitado escondido atrás de uma barra de rolagem
-   * minúscula. No desktop passa despercebido porque o campo é largo; no
-   * celular a pessoa escreve às cegas.
+   * O truque e o `height: auto` antes de medir: sem ele o `scrollHeight` seria o da
+   * altura ja fixada, e o campo nunca cresceria. O `max-h` do CSS segura o teto --
+   * passando dele, `scrollHeight` continua crescendo e o campo volta a rolar, que
+   * e o comportamento certo no limite.
    *
-   * O truque é o `height: auto` antes de medir: sem ele o `scrollHeight` seria
-   * o da altura já fixada, e o campo nunca cresceria. O `max-h` do CSS segura
-   * o teto — passando dele, `scrollHeight` continua crescendo e o campo volta
-   * a rolar, que é o comportamento certo no limite.
-   *
-   * `useEffect` e não `useLayoutEffect` de propósito: este roda no servidor
-   * no SSR do Next e causaria aviso de hydration. O salto de um quadro é
-   * invisível porque o texto aparece uma tecla por vez.
+   * A altura e uma funcao da **largura**, e por isso a medicao precisa repetir
+   * quando a largura muda. Ver o efeito de resize logo abaixo.
    */
-  useEffect(() => {
+  const ajustarAlturaDoCampo = useCallback(() => {
     const ta = draftRef.current;
     if (!ta) return;
     ta.style.height = 'auto';
     ta.style.height = `${ta.scrollHeight}px`;
-  }, [draft]);
+  }, []);
+
+  useEffect(() => {
+    ajustarAlturaDoCampo();
+  }, [draft, ajustarAlturaDoCampo]);
+
+  /**
+   * Re-medir a altura quando a largura do campo muda.
+   *
+   * ## O sintoma
+   *
+   * A medicao vinha so de `[draft]`. Depois de arrastar a divisoria, o campo
+   * ficava com a altura calculada para a largura antiga: o texto quebrava em
+   * mais linhas sem que o campo crescesse, e o placeholder aparecia acima da
+   * linha de base -- fora do centro dos icones. Quem arrasta via o texto
+   * desalinhado e nenhuma mudanca de largura parece ter resolvido nada.
+   *
+   * ## Por que os dois escutam
+   *
+   * O `resize` da janela pega a largura maxima da tela, que e onde a
+   * `min-width` da media query entra. O `ResizeObserver` no proprio campo pega o
+   * painel sendo arrastado, que muda de largura **sem** a janela mudar nada --
+   * e e o caso que o sintoma descreve.
+   *
+   * Nao ha polyfill: o app ja exige `100dvh` e `pointer: coarse` em outros
+   * lugares, e `ResizeObserver` esta em todos os navegadores que rodam isso.
+   */
+  useEffect(() => {
+    const aoRedimensionar = () => ajustarAlturaDoCampo();
+    window.addEventListener('resize', aoRedimensionar);
+
+    const ta = draftRef.current;
+    const observador =
+      ta && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(aoRedimensionar) : null;
+    if (observador && ta) observador.observe(ta);
+
+    return () => {
+      window.removeEventListener('resize', aoRedimensionar);
+      observador?.disconnect();
+    };
+  }, [ajustarAlturaDoCampo]);
 
   /** Devolve (criando na primeira vez) o ref estável da âncora de uma mensagem. */
   const getReactionAnchor = (messageId: string) => {
@@ -787,25 +819,24 @@ export function ChatPanel({
                * somando a descida da linha do wrapper por cima dele.
                */
               /*
-               * `min-w-[9rem]` e o piso do campo, e ele substitui o `min-w-0`.
+               * `min-h-9` e o que garante o centro.
                *
-               * Com `min-w-0` o campo encolhe ate zero: os quatro botoes tem
-               * `shrink-0` e medem 36px cada, entao num painel estreito eles
-               * consomem a barra inteira e o campo fica com algumas dezenas de
-               * pixels. A quebra de linha do placeholder em duas linhas, a
-               * palavra cortado e aquele tracinho tracejado embaixo -- que e o
-               * indicador de transbordo do textarea -- sao todos o mesmo
-               * problema: nao e o texto quebrando, e o campo sem largura.
+               * O `IconButton` e `h-9`, e a barra e `items-center`: os dois ficam
+               * centrados um no outro **por construcao**, sem conta de pixels.
                *
-               * Com o piso, o campo nunca some. E se ainda assim a barra nao
-               * couber, quem transborda e a barra -- e a pessoa ve a barra
-               * cortada, que e um sintoma legivel, em vez de um campo ilegivel.
+               * Sem o piso, o `scrollHeight` de um campo **vazio** devolve so o
+               * padding -- nao ha caixa de linha sem texto -- e o auto-crescimento
+               * escrevia `height: 16px`. O campo ficava mais curto que uma linha,
+               * o navegador rolava ate a linha visivel, e o placeholder aparecia
+               * acima do padding: uns dez pixels mais alto que os icones, e com
+               * a borda tracejada de quem esta sendo cortado.
                *
-               * O `max-h-28` e o auto-crescimento: o campo cresce em altura ate
-               * 112px e depois rola. E por isso que o `min-w` precisa existir --
-               * altura cresce sem limite, largura nao.
+               * `min-h` do CSS vence o `height` em `style`, porque o valor usado
+               * e limitado pelo minimo. Por isso o piso e aqui e nao dentro do
+               * `Math.max` do JavaScript: uma fonte so, e que sobrevive a
+               * qualquer valor que a medicao devolva.
                */
-              className="scroll-thin block max-h-28 min-w-[9rem] flex-1 resize-none bg-transparent py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
+              className="scroll-thin block max-h-28 min-h-9 min-w-[9rem] flex-1 resize-none bg-transparent py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
             />
             </div>
             <IconButton dense label="Enviar mensagem" onClick={send} disabled={!draft.trim()}>

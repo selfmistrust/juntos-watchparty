@@ -250,10 +250,46 @@ test('o painel acompanha a largura: nenhum filho tem tamanho fixo', () => {
    * e o tracinho tracejado embaixo (o indicador de transbordo do textarea) sao o
    * mesmo problema: nao e o texto quebrando, e o campo sem largura.
    */
-  assert.match(chat, /min-w-\[9rem\] flex-1 resize-none/, 'o campo do composer tem piso de largura');
+  assert.match(chat, /min-h-9 min-w-\[9rem\] flex-1 resize-none/, 'o campo tem piso de altura e de largura');
   assert.ok(
     !/max-h-28 min-w-0 flex-1/.test(chat),
     'e nao min-w-0, que o deixava ser espremido a quase zero',
+  );
+
+  /*
+   * A altura do campo e uma funcao da **largura**, e a medicao precisa repetir
+   * quando a largura muda.
+   *
+   * O sintoma era o texto desalinhado depois do arraste: a altura continuava a
+   * calculada para a largura antiga, o texto quebrava em mais linhas sem que o
+   * campo crescesse, e o placeholder aparecia acima da linha de base.
+   */
+  assert.match(chat, /const ajustarAlturaDoCampo = useCallback/, 'a medicao virou uma funcao nomeada');
+  assert.match(
+    chat,
+    /window\.addEventListener\('resize', aoRedimensionar\)/,
+    'e o resize da janela re-mede',
+  );
+  assert.match(
+    chat,
+    /new ResizeObserver\(aoRedimensionar\)/,
+    'e o ResizeObserver pega o painel sendo arrastado, que muda sem a janela mudar',
+  );
+  assert.match(chat, /observador\.observe\(ta\)/, 'observando o proprio campo');
+  assert.match(chat, /observador\?\.disconnect\(\)/, 'e desconectado no cleanup, para nao vazar');
+  assert.ok(
+    !/ta\.style\.height = `\$\{ta\.scrollHeight\}px`;\s*\}, \[draft\]\);/.test(semComentario(chat)),
+    'e a medicao nao depende so de [draft], que era o que a deixava obsoleta no resize',
+  );
+
+  /*
+   * O `min-h-9` e o mesmo do `IconButton` (`h-9`), e a barra e `items-center`.
+   * Com os dois medindo 36px, o centro vem por construcao e nao por conta.
+   */
+  assert.match(
+    semComentario(ler('../web/components/ui/Button.tsx')),
+    /h-9 w-9 shrink-0/,
+    'e o botao do composer e h-9, o mesmo piso do campo',
   );
 
   /*
