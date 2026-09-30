@@ -61,17 +61,48 @@ export function MediaSourceModal({
   const youtube = useYoutubeSource();
   const tela = useScreenShare(streamBridge);
   const drive = useDriveSource();
+
+  /**
+   * A versão de cada fonte que **precisa** da hook, indexada por `id`.
+   *
+   * ## Por que um mapa e não uma cadeia de `if`
+   *
+   * A versão anterior era `if (f.id === 'screen') ... if (f.id === 'drive') ...`, e
+   * a remoção de uma linha dela tirou o `start` do Drive e o `resolveState` do
+   * compartilhamento de tela **sem erro nenhum**: os cards continuaram na grade,
+   * o Drive simplesmente não abria mais, e a tela passou a dizer "indisponível no
+   * navegador" mesmo no app desktop.
+   *
+   * O sintoma é silencioso porque o `if` esquecido não dá erro — ele devolve o
+   * provider do registro, que é uma versão mais pobre do mesmo card, e a
+   * diferença só aparece quando alguém clica.
+   *
+   * Com o mapa, a substituição é a **única** regra e não há como esquecer uma
+   * fonte: a que não está no mapa usa o registro, e ponto. Registrar uma fonte
+   * com hook passa a ser uma linha aqui, e o `tsc` cobra a chave.
+   */
+  const comHook = useMemo<Record<string, MediaSourceProvider>>(
+    () => ({
+      [youtube.provider.id]: youtube.provider,
+      [tela.provider.id]: tela.provider,
+      [drive.provider.id]: drive.provider,
+    }),
+    [youtube.provider, tela.provider, drive.provider],
+  );
+
   const sources = useMemo<MediaSourceProvider[]>(
     () =>
       MEDIA_SOURCES.flatMap((f) => {
-        // O YouTube não está no registro: ele entra logo depois do Dispositivo,
-        // que é a ordem que o modal já tinha. Trocar a fonte do registro pela
-        // versão do hook, mantendo o lugar, evita que um card suma da grade
-        // quando uma fonte ganha painel próprio.
-        if (f.id === 'upload') return [f, youtube.provider];
-        return [f];
+        /*
+         * O YouTube não está no registro: ele entra logo depois do Dispositivo,
+         * que é a ordem que o modal já tinha. Trocar a fonte do registro pela
+         * versão do hook, mantendo o lugar, evita que um card suma da grade
+         * quando uma fonte ganha painel próprio.
+         */
+        if (f.id === 'upload') return [f, comHook.youtube ?? f];
+        return [comHook[f.id] ?? f];
       }),
-    [youtube.provider],
+    [comHook],
   );
 
   const context = useRef<MediaSourceContext>({ canControl, addToPlaylist, requestUploadToken });
