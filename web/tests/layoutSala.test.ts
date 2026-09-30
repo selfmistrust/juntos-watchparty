@@ -173,103 +173,132 @@ test('a divisoria redimensiona o painel entre 320 e 700', () => {
   assert.match(pagina, /useEffect\(\(\) => \{\s*\n\s*const guardada = lerLarguraDoPainel\(\)/, 'a leitura da largura guardada e um efeito');
 });
 
-test('o painel de reacoes guarda margem da viewport, e nao so do botao', () => {
+test('o painel de reacoes e um container so, medido inteiro', () => {
   /*
-   * O sintoma: com o menu aberto, o conjunto batia na borda superior da janela e
-   * cortava o cabeçalho da sala. Não faltava espaço — o cálculo estava 8px acima
-   * do que devia, porque a folga entre o picker e o botão não era descontada do
-   * `top` que posiciona o conjunto.
-   *
-   * Margem e folga são a mesma medida e não são o mesmo uso: a margem se guarda
-   * da **borda da janela**, a folga se deixa entre o picker e o **botão**.
+   * O defeito era estrutural, e nao aritmetico: barra e painel eram dois
+   * elementos, o menu era `absolute` dentro da barra, e o calculo media a barra
+   * enquanto o menu pendurava fora dela. Uma medicao, um posicionamento -- e nao
+   * como os dois discordariam entre si.
    */
   const c = semComentario(reacao);
-  assert.match(
-    c,
-    /top = rect\.top - alturaTotal - FOLGA;/,
-    'abrindo para cima, a folga e descontada do topo: senao encosta na borda',
-  );
-  assert.match(c, /top = rect\.bottom \+ FOLGA;/, 'e abrindo para baixo tambem');
-  assert.match(
-    c,
-    /espacoAcima = rect\.top - MARGEM - FOLGA/,
-    'e o espaco disponivel acima desconta as duas, nao so a margem',
+
+  // Nenhum posicionamento interno: os dois sao irmaos num flex vertical.
+  assert.ok(
+    !/absolute (left-0 )?(top|bottom)-full/.test(c),
+    'nenhum filho com top-full ou bottom-full: o menu nao pendura mais da barra',
   );
   assert.match(
     c,
-    /espacoAbaixo = window\.innerHeight - rect\.bottom - MARGEM - FOLGA/,
-    'o mesmo abaixo: sem isto o "cabe abaixo" seria um Rotlieben sobre estimacao',
+    /fixed left-0 top-0 z-50 flex flex-col/,
+    'e o container e um flex vertical so',
+  );
+  assert.match(
+    c,
+    /flex-col-reverse/,
+    'que se inverte quando ancorado para baixo, para a barra ficar junto do botao',
   );
 
   /*
-   * O botão `⋯` sem o rótulo "mais".
-   *
-   * O texto alinhava a célula, e alinhamento é o que não podia continuar: cada
-   * emoji mostra contagem embaixo, e a célula do botão ficava alta sozinha
-   * quando não tinha, deixando o último item pendurado para baixo.
+   * A medicao e da caixa do container -- que contem os dois -- e nao de uma
+   * parcela. E o que garante que "cabe acima" seja verdade para o conjunto.
    */
+  assert.match(c, /const \{ width, height \} = el\.getBoundingClientRect\(\);/, 'a caixa medida e a do container');
   assert.ok(
-    !/<span className="text-\[0\.625rem\]">mais<\/span>/.test(c),
-    'o rotulo "mais" saiu: ele alinhava a celula e a barra ficava torta',
+    !/alturaMenu|offsetHeight/.test(c),
+    'e nao soma alturas de filhos: nao ha mais parcela a medir',
   );
-  assert.match(c, /aria-label="Mais reações"/, 'e o botao continua nomeado para quem nao ve o glifo');
-  assert.match(c, /aria-expanded=\{showFull\}/, 'e diz se o menu esta aberto');
+
+  /*
+   * A regra da colisao: cima primeiro, depois baixo, e no caso sem espaco em
+   * nenhum dos dois o conjunto encosta na margem e o GRID rola dentro de si.
+   */
+  assert.match(c, /if \(height <= espacoAcima\)/, 'cima e a primeira tentativa');
+  assert.match(c, /else if \(height <= espacoAbaixo\)/, 'e senao, baixo');
   assert.match(
     c,
-    /flex items-center gap-1 rounded-xl bg-surface/,
-    'a barra usa items-center, e nao items-start que pendurava o ultimo item',
+    /proximoLado = espacoAcima >= espacoAbaixo \? 'cima' : 'baixo';/,
+    'sem espaco nos dois, fica no lado com mais espaco',
   );
+  assert.match(
+    c,
+    /y = proximoLado === 'cima' \? MARGEM : window\.innerHeight - height - MARGEM;/,
+    'e encostado na margem, nunca fora da viewport',
+  );
+  assert.match(
+    c,
+    /y = Math\.min\(Math\.max\(MARGEM, y\), Math\.max\(MARGEM, window\.innerHeight - height - MARGEM\)\);/,
+    'com trava final: um conjunto maior que a viewport nao vira topo negativo',
+  );
+
+  /*
+   * Eixo horizontal: canto direito alinhado com o do botao.
+   *
+   * Centralizar no botao deixava o painel estendido para a esquerda por cima do
+   * texto da mensagem -- que e a sobreposicao reportada.
+   */
+  assert.match(c, /let x = a\.right - width;/, 'o painel alinha pela borda direita do botao');
+  assert.match(c, /const maxX = window\.innerWidth - MARGEM - width;/, 'e respeita a borda direita da viewport');
+  assert.match(c, /if \(maxX < MARGEM\) x = MARGEM;/, 'e nao gera posicao impossivel se o painel for largo demais');
+
+  /*
+   * `transform` em vez de `left`/`top` no style. Nao e estetica: escrever `left`
+   * num `fixed` a cada scroll do chat força layout do documento a cada quadro.
+   */
+  assert.match(c, /el\.style\.transform = `translate3d\(/, 'o movimento e por transform');
+  assert.ok(!/el\.style\.(top|left)/.test(c), 'e nenhum top ou left escrito a mao');
 });
 
-test('o painel de reacoes mede o menu inteiro antes de escolher o lado', () => {
-  /*
-   * O defeito: o menu expandido e `absolute top-full`, ou seja, sai da caixa do
-   * container para baixo — mas o `containerRect.height` media so a barra rapida.
-   * O calculo dizia "cabe acima" com folga de 40px, posicionava, e o menu de
-   * 200px aparecia em cima da barra de escrever, cortado pela viewport.
-   */
+test('o painel de reacoes e compacto, e so o grid rola', () => {
   const c = semComentario(reacao);
-  assert.match(
-    c,
-    /alturaTotal = containerRect\.height \+ \(alturaMenu > 0 \? alturaMenu \+ FOLGA : 0\)/,
-    'a altura somada inclui o menu expandido',
-  );
-  assert.match(c, /const alturaMenu = menu\?\.offsetHeight \?\? 0;/, 'medido do no, nao estimado');
+
+  // 320px de largura e 320px de altura, que e o que a especificacao pediu.
+  assert.match(c, /max-h-80 w-80/, 'o painel tem 320px de largura e 320px de altura');
 
   /*
-   * A regra: primeiro quem tem espaco para o **conjunto**, e so depois o lado.
-   * Abrir a barra para cima porque ha espaco e o menu para baixo -- o que a
-   * versao anterior fazia -- poe o menu exatamente onde nao ha espaco.
-   */
-  assert.match(c, /cabeAcima = espacoAcima >= alturaTotal/, 'a escolha compara o espaco com o total');
-  assert.match(c, /cabeAbaixo = espacoAbaixo >= alturaTotal/, 'nos dois lados');
-  assert.match(c, /if \(cabeAcima\) \{/, 'e o de cima vem primeiro');
-
-  /*
-   * `bottom-full` e `top-full` precisam combinar com o `top` escrito por JS, e o
-   * estado que decide qual e lido no render do menu.
+   * O teto vale para a **caixa**, e o grid e `flex-1` com `min-h-0`.
+   *
+   * Com `max-h` no grid, o cabecalho e o padding somados passariam do limite, e o
+   * conjunto ultrapassaria a altura que a deteccao de colisao assumiu existir.
+   * E `min-h-0` e obrigatorio num item flex com `overflow-y-auto`: sem ele o
+   * grid nao encolhe abaixo do conteudo e o pai estoura em vez de rolar.
    */
   assert.match(
     c,
-    /acimaDoBotao \? 'bottom-full mb-2' : 'top-full mt-2'/,
-    'o menu cresce para longe do botao, do lado que o container escolheu',
+    /scroll-thin grid min-h-0 flex-1 grid-cols-8 gap-0\.5 overflow-y-auto/,
+    'o grid e o unico que rola, e encolhe dentro do teto',
+  );
+  assert.match(c, /scroll-thin/, 'e com a scrollbar discreta do projeto');
+
+  /*
+   * Contagem sempre presente, invisivel quando zero.
+   *
+   * Sem isso a celula de quem tem reacao fica mais alta que a de quem nao tem, e
+   * as linhas do grid ficam tortas -- o mesmo desalinhamento que o rotulo "mais"
+   * causava na barra, voltando pela outra porta.
+   */
+  assert.match(
+    c,
+    /count > 0 \? \(hasCurrentUser \? 'text-accent' : 'text-ink-faint'\) : 'invisible'/,
+    'a contagem reserva a linha mesmo valendo zero',
   );
 
-  /*
-   * O teto do grid em `dvh` e nao em px: um `max-h-60` fixo num monitor de 600px
-   * de altura entrega um menu que nao cabe em lugar nenhum.
-   */
-  assert.match(c, /max-h-\[min\(15rem,42dvh\)\]/, 'o grid tem teto em dvh, que acompanha a janela');
-  assert.ok(!/max-h-60/.test(c), 'e nao um max-h fixo, que nao cabe em tela baixa');
+  // A barra rapida continua pequena e horizontal.
+  assert.match(
+    c,
+    /flex items-center gap-0\.5 rounded-xl border border-hairline bg-surface px-1\.5 py-1 shadow-lg/,
+    'a barra rapida e horizontal e compacta',
+  );
+  assert.match(c, /h-8 w-8 flex-col items-center/, 'com celulas de 32px');
 
-  /*
-   * A barra rapida e medida com a do container, e o `top` posiciona o **conjunto**
-   * -- barra mais menu. A medicao tem que ser a do conjunto, senao o calculo de
-   * "cabe acima" olha a barra sozinha e decide errado, que foi o defeito
-   * original deste painel.
-   */
+  // Portal e z-index: fora do container de scroll do chat, acima de tudo.
+  assert.match(c, /from '@\/components\/ui\/Portal'/, 'o painel sai pelo Portal');
+  assert.match(c, /z-50/, 'com z-index acima do chat, do input e do player');
+
+  // O botao "..." continua nomeado e sem rotulo.
   assert.ok(
-    !/top = rect\.top - containerRect\.height/.test(c),
-    'a altura medida e a do conjunto, nunca a da barra sozinha',
+    !/text-\[0\.625rem\]">mais<\/span>/.test(c),
+    'o rotulo "mais" nao voltou',
   );
+  assert.match(c, /aria-label=\{showFull \? 'Menos reações' : 'Mais reações'\}/, 'e o botao muda de nome com o estado');
+  assert.match(c, /aria-expanded=\{showFull\}/, 'e declara se o painel esta aberto');
 });

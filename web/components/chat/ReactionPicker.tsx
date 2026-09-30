@@ -35,6 +35,13 @@ interface Props {
 
 const QUICK_REACTIONS: ChatReactionEmoji[] = ['❤️', '👍', '😂', '😮', '🔥', '🎉'];
 
+/** Margem mínima entre o painel e a borda da viewport. */
+const MARGEM = 8;
+/** Distância entre o painel e o botão de reação. */
+const FOLGA = 6;
+
+type Lado = 'cima' | 'baixo';
+
 export function ReactionPicker({
   isOpen,
   onClose,
@@ -45,15 +52,13 @@ export function ReactionPicker({
 }: Props) {
   const [showFull, setShowFull] = useState(false);
   /**
-   * Se a barra rápida ancorou **para cima** do botão de reação.
+   * De qual lado da âncora o conjunto foi ancorado.
    *
-   * É estado, e não algo derivado do CSS, porque o menu expandido precisa saber
-   * para que lado crescer — e a âncora (`top`, em px, escrito por
-   * `updatePosition`) só existe depois do primeiro layout. Ler a posição aqui
-   * seria medir o DOM no render, que é o que a medição em `useLayoutEffect`
-   * existe para evitar.
+   * É estado, e não algo derivado do CSS, porque a **ordem** dos filhos muda com
+   * o lado: ancorado para cima, o painel vem antes da barra no DOM, para que a
+   * barra — que encosta no botão — fique por baixo dele.
    */
-  const [acimaDoBotao, setAcimaDoBotao] = useState(true);
+  const [lado, setLado] = useState<Lado>('cima');
   /**
    * O nó do container em `state`, e não em `useRef`, de propósito: o `Portal`
    * resolve o alvo num `useLayoutEffect` e só então monta os filhos, ou seja,
@@ -88,139 +93,102 @@ export function ReactionPicker({
   }, [isOpen, onClose, anchorRef, container]);
 
   /**
-   * O nó do menu expandido, medido para o cálculo de espaço.
+   * Detecção de colisão: um elemento medido, dois lados tentados, eixo duplo.
    *
-   * Está em `state` pelo mesmo motivo do `container`: o `Portal` monta os filhos
-   * um render depois de `isOpen`, e um ref comum mediria zero.
-   */
-  const [menu, setMenu] = useState<HTMLDivElement | null>(null);
-
-  /**
-   * Reposiciona o picker, medindo o que ele **realmente** ocupa.
+   * ## Por que a medição é do conjunto inteiro
    *
-   * ## A medição anterior media metade do que era preciso
+   * A versão anterior media a barra rápida e posicionava o menu — que é
+   * `absolute` dentro dela — por conta própria. O menu não contava na medição, e
+   * o cálculo dizia "cabe acima" com folga de 40px, para um menu de 200px que
+   * aparecia em cima da barra de escrever e cortado pela viewport.
    *
-   * O menu expandido é `absolute top-full`, ou seja, sai da caixa do container
-   * para baixo. O `containerRect.height` media só a barra rápida — o menu não
-   * contava. O cálculo dizia "cabe acima" com folga de 40px, posicionava, e o
-   * menu de 200px aparecia em cima da barra de escrever e do fim da viewport. Era
-   * o sintoma reportado: abre muito para baixo e fica cortado.
+   * Aqui não existe posicionamento interno: barra e painel são irmãos num `flex`
+   * vertical, e o container é a **caixa dos dois**. Uma medição, um posicionamento,
+   * e não há como os dois discordarem entre si.
    *
-   * Aqui a altura somada é a barra mais o menu mais a folga, e o `top` é
-   * calculado com o total. A barra também muda de lado, o que importa porque
-   * `bottom-full` e `top-full` são propriedades diferentes e precisam combinar
-   * com o `top` que o JS escreve.
+   * ## A ordem das tentativas
+   *
+   * Acima primeiro, porque é o lado com menos chance de cobrir o campo de
+   * escrever e a barra do player. Se o conjunto não couber acima, desce. Se não
+   * couber em nenhum dos dois — o caso de uma janela baixa com o painel aberto —
+   * fica no lado com mais espaço, encostado na margem, e o **grid** rola dentro
+   * de si. Nunca o conjunto inteiro: é o grid que tem teto de altura, então
+   * sobra sempre espaço para ele aparecer inteiro.
    */
   const updatePosition = useCallback(() => {
-    const anchor = anchorRef.current;
-    if (!anchor || !container) return;
+    const ancora = anchorRef.current;
+    const el = container;
+    if (!ancora || !el) return;
 
-    const rect = anchor.getBoundingClientRect();
-    const containerRect = container.getBoundingClientRect();
-    const alturaMenu = menu?.offsetHeight ?? 0;
-    const FOLGA = 8;
-    // `top-full mt-2` no menu vale 8px de distância entre a barra e ele.
-    const alturaTotal = containerRect.height + (alturaMenu > 0 ? alturaMenu + FOLGA : 0);
+    const a = ancora.getBoundingClientRect();
+    const { width, height } = el.getBoundingClientRect();
 
-    // Limites horizontais/verticais: o painel do chat quando ele existe.
-    // Usar só a viewport faria o picker "vazar" por cima do vídeo, já que o
-    // botão de reação fica encostado na borda direita do painel.
-    const boundsEl = anchor.closest('[data-reaction-bounds]');
-    const bounds = boundsEl?.getBoundingClientRect();
-    const minX = (bounds ? bounds.left : 0) + 8;
-    const maxX = (bounds ? bounds.right : window.innerWidth) - 8;
+    const espacoAcima = a.top - FOLGA;
+    const espacoAbaixo = window.innerHeight - a.bottom - FOLGA;
 
-    let left = rect.left + rect.width / 2 - containerRect.width / 2;
-
-    // Não deixa vazar para fora dos limites.
-    if (left < minX) left = minX;
-    if (left + containerRect.width > maxX) left = maxX - containerRect.width;
-    // Se ainda assim não couber (painel mais estreito que o picker), encosta
-    // na borda esquerda em vez de centralizar e empurrar para fora da tela.
-    if (left < minX) left = minX;
-
-    /*
-     * A margem da borda da viewport, e a folga entre o picker e a âncora.
-     *
-     * São a mesma medida e por isso dividem a constante — mas não são o mesmo
-     * uso, e confundi-las é o que põe o menu colado no topo da tela. A margem é
-     * o que se guarda da **borda da janela**; a folga é o que se deixa entre o
-     * picker e o **botão**. Com uma só das duas, o conjunto encosta em uma
-     * borda ou gruda no botão.
-     *
-     * `espacoAcima` já desconta as duas, porque o topo do conjunto fica
-     * `alturaTotal + FOLGA` acima da âncora.
-     */
-    const MARGEM = 8;
-    const espacoAcima = rect.top - MARGEM - FOLGA;
-    const espacoAbaixo = window.innerHeight - rect.bottom - MARGEM - FOLGA;
-
-    /*
-     * A barra é quem ancora no botão, e o menu cresce **para longe** dela.
-     *
-     * A ordem aqui é: primeiro quem tem espaço para o **conjunto**, e só depois
-     * o lado. Abrir a barra para cima porque há espaço e o menu para baixo — que
-     * é o que a versão anterior fazia — põe o menu exatamente onde não há espaço.
-     */
-    const cabeAcima = espacoAcima >= alturaTotal;
-    const cabeAbaixo = espacoAbaixo >= alturaTotal;
-    /*
-     * Este `set` roda a cada `scroll` e a cada `resize`, e parece desperdício de
-     * render. Não é: o React descarta a atualização quando o estado é o mesmo, e
-     * `acimaDoBotao` só muda quando o picker **troca de lado** — o que numa
-     * rolagem de chat é raro. O guarda `!==` abaixo deixa isso explícito e evita
-     * o custo de um render por quadro durante o arraste da barra de rolagem.
-     */
-    const lado = cabeAcima || (!cabeAbaixo && espacoAcima >= espacoAbaixo);
-    if (lado !== acimaDoBotao) setAcimaDoBotao(lado);
-
-    let top: number;
-    if (cabeAcima) {
-      /*
-       * A folga vai para **cima**, não para o meio.
-       *
-       * O cálculo original era `rect.top - alturaTotal`: com o menu aberto, o
-       * topo do conjunto batia exatamente na borda superior da janela, e a barra
-       * rápida ficava colada no topo da tela. Na captura o menu aparece
-       * cortando o próprio cabeçalho da sala — não faltava espaço, o conjunto
-       * estava `8px` acima do que deveria.
-       *
-       * Subtrair a folga aqui deixa a margem entre o menu e a borda da viewport,
-       * que é o que a regra de "nunca encostar na borda" pede.
-       */
-      top = rect.top - alturaTotal - FOLGA;
-    } else if (cabeAbaixo) {
-      top = rect.bottom + FOLGA;
+    let proximoLado: Lado;
+    let y: number;
+    if (height <= espacoAcima) {
+      proximoLado = 'cima';
+      y = a.top - height - FOLGA;
+    } else if (height <= espacoAbaixo) {
+      proximoLado = 'baixo';
+      y = a.bottom + FOLGA;
     } else {
-      /*
-       * Não cabe inteiro em nenhum lado, e é o caso do painel de mensagens numa
-       * janela baixa com o menu aberto. Escolhe o lado com mais espaço e deixa o
-       * menu rolar dentro de si (`max-h` no grid), em vez de empurrar o picker
-       * para fora da viewport — que é o que escondia o botão de fechar.
-       */
-      top = espacoAcima >= espacoAbaixo ? MARGEM : rect.bottom + FOLGA;
-      if (top + alturaTotal > window.innerHeight - MARGEM) {
-        top = Math.max(MARGEM, window.innerHeight - alturaTotal - MARGEM);
-      }
+      proximoLado = espacoAcima >= espacoAbaixo ? 'cima' : 'baixo';
+      y = proximoLado === 'cima' ? MARGEM : window.innerHeight - height - MARGEM;
     }
+    // Rede de segurança para um `height` maior que a própria viewport, que
+    // acontece com o painel aberto numa janela muito baixa. Sem isto o topo
+    // ficaria negativo e o painel apareceria cortado em cima.
+    y = Math.min(Math.max(MARGEM, y), Math.max(MARGEM, window.innerHeight - height - MARGEM));
 
-    container.style.top = `${Math.round(top)}px`;
-    container.style.left = `${Math.round(left)}px`;
-  }, [anchorRef, container, menu, acimaDoBotao]);
+    /*
+     * Eixo horizontal: o canto direito do painel alinhado com o do botão.
+     *
+     * O botão de reação fica no fim da linha da mensagem, encostado na direita,
+     * e alinhar pela **borda** é o que faz o painel parecer preso nele. Centralizar
+     * no botão — o que a versão anterior fazia — deixa o painel estendido para
+     * a esquerda por cima do texto da mensagem, que é a sobreposição reportada.
+     */
+    let x = a.right - width;
+    const maxX = window.innerWidth - MARGEM - width;
+    x = Math.min(Math.max(MARGEM, x), maxX);
+    // Se o painel for mais largo que a janela menos as margens, `maxX` fica
+    // negativo e a linha acima devolveria a margem em vez de uma posição
+    // impossível.
+    if (maxX < MARGEM) x = MARGEM;
+
+    /*
+     * `transform` e não `top`/`left`.
+     *
+     * O elemento é `fixed` em 0,0 e anda por `translate3d`. A diferença que
+     * importa não é estética: escrever `left` num elemento `fixed` a cada
+     * `pointermove` ou `scroll` do chat força um layout do documento inteiro a
+     * cada quadro, e `translate3d` roda só na composição. Num picker que se
+     * reposiciona durante a rolagem, isso é a diferença entre o chat ficar
+     * liso e ficar travado.
+     */
+    el.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+
+    if (proximoLado !== lado) setLado(proximoLado);
+  }, [anchorRef, container, lado]);
 
   /**
    * Reposiciona no scroll, no resize, e quando abre ou expande.
    *
-   * `menu` entra na lista porque é ele que muda a altura total: sem ele na
-   * dependência, o primeiro `updatePosition` depois de `showFull` mediria um
-   * `menu` ainda `null` e voltaria a posicionar só pela barra — que é
-   * exatamente o defeito que a medição completa veio corrigir.
+   * `showFull` entra porque é ele que muda a altura do container: sem ele na
+   * dependência, o `updatePosition` seguinte mediria a barra sozinha e ancoraria
+   * no lugar errado — que é o que fazia o painel aparecer colado no topo da tela
+   * quando alguém clicava em `⋯` numa mensagem do fim.
    */
   useIsomorphicLayoutEffect(() => {
     if (!isOpen) return;
 
     updatePosition();
 
+    // `true` no capture: o scroll do chat acontece num ancestral, e sem capture
+    // o listener não veria.
     window.addEventListener('scroll', updatePosition, true);
     window.addEventListener('resize', updatePosition);
 
@@ -228,152 +196,163 @@ export function ReactionPicker({
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
     };
-  }, [isOpen, showFull, menu, updatePosition]);
+  }, [isOpen, showFull, updatePosition]);
 
   if (!isOpen) return null;
 
   const allEmojis = [...new Set([...QUICK_REACTIONS, ...reactions.map((r) => r.emoji)])];
 
+  const painel = showFull && (
+    <div
+      /*
+       * `w-80` são 320px e `max-h-80` são 320px, o teto que a especificação
+       * pediu. O teto vale para a **caixa**: o grid é `flex-1` com `min-h-0`,
+       * então ele recebe o que sobrar e rola sozinho. Um `max-h` no grid
+       * deixaria o cabeçalho e o padding somados ao teto, e o conjunto passaria
+       * do limite.
+       */
+      className="flex max-h-80 w-80 flex-col overflow-hidden rounded-xl border border-hairline bg-surface p-2 shadow-lg"
+      role="dialog"
+      aria-label="Todas as reações"
+    >
+      <p className="mb-1.5 shrink-0 text-2xs font-medium text-ink-faint">Escolha uma reação</p>
+      {/*
+       * `min-h-0` é obrigatório num item `flex` com `overflow-y-auto`: sem ele o
+       * grid não encolhe abaixo do conteúdo e o pai estoura em vez de rolar.
+       *
+       * O `scroll-thin` é a classe de scrollbar do projeto; sem ela a barra
+       * nativa do Windows aparece com 17px e come duas colunas de emoji.
+       */}
+      <div className="scroll-thin grid min-h-0 flex-1 grid-cols-8 gap-0.5 overflow-y-auto">
+        {CHAT_REACTION_EMOJIS.map((emoji) => {
+          const reaction = reactions.find((r) => r.emoji === emoji);
+          const count = reaction?.count ?? 0;
+          const hasCurrentUser = reaction?.hasCurrentUser ?? false;
+
+          return (
+            <button
+              key={emoji}
+              type="button"
+              onClick={() => {
+                onToggle(messageId, emoji);
+                onClose();
+              }}
+              aria-label={count > 0 ? `${emoji} ${count} reações` : `Reagir com ${emoji}`}
+              aria-pressed={hasCurrentUser}
+              className={`flex h-9 flex-col items-center justify-center rounded-md transition-colors ${
+                hasCurrentUser
+                  ? 'bg-accent-soft text-accent'
+                  : 'text-ink-muted hover:bg-hover hover:text-ink'
+              }`}
+            >
+              <span className="text-xl leading-none">{emoji}</span>
+              {/*
+               * A contagem ocupa a linha **sempre**, mesmo valendo zero, e sai
+               * invisível quando não há. Sem isso a célula de quem tem reação
+               * fica mais alta que a de quem não tem, e as linhas do grid ficam
+               * tortas — que é o desalinhamento que o `⋯` sem rótulo resolveu
+               * na barra e que aqui voltaria pela outra porta.
+               */}
+              <span
+                className={`text-[0.625rem] font-medium leading-none ${
+                  count > 0 ? (hasCurrentUser ? 'text-accent' : 'text-ink-faint') : 'invisible'
+                }`}
+              >
+                {count > 0 ? count : '0'}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  const barra = (
+    <div className="flex items-center gap-0.5 rounded-xl border border-hairline bg-surface px-1.5 py-1 shadow-lg">
+      {allEmojis.map((emoji) => {
+        const reaction = reactions.find((r) => r.emoji === emoji);
+        const count = reaction?.count ?? 0;
+        const hasCurrentUser = reaction?.hasCurrentUser ?? false;
+
+        return (
+          <button
+            key={emoji}
+            type="button"
+            onClick={() => {
+              onToggle(messageId, emoji);
+              onClose();
+            }}
+            aria-label={`${emoji} ${count > 0 ? `${count} reações` : 'sem reações'}`}
+            aria-pressed={hasCurrentUser}
+            className={`flex h-8 w-8 flex-col items-center justify-center rounded-full transition-colors ${
+              hasCurrentUser ? 'bg-accent-soft text-accent' : 'text-ink-muted hover:bg-hover hover:text-ink'
+            }`}
+          >
+            <span className="text-base leading-none">{emoji}</span>
+            {count > 0 && (
+              <span
+                className={`text-[0.625rem] font-medium leading-none ${
+                  hasCurrentUser ? 'text-accent' : 'text-ink-faint'
+                }`}
+              >
+                {count}
+              </span>
+            )}
+          </button>
+        );
+      })}
+
+      {/*
+       * Só o ícone, sem o rótulo "mais" embaixo.
+       *
+       * O rótulo alinhava a célula, e alinhamento é o que não pode continuar:
+       * cada emoji mostra a contagem embaixo quando tem reações, e a célula do
+       * botão ficava alta sozinha quando não tinha.
+       *
+       * O `aria-label` continua nomeando a ação, que é quem precisa do nome
+       * para quem não vê o glifo.
+       */}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => setShowFull((prev) => !prev)}
+        aria-label={showFull ? 'Menos reações' : 'Mais reações'}
+        aria-expanded={showFull}
+        className="flex h-8 w-8 items-center justify-center rounded-full text-ink-muted transition-colors hover:bg-hover hover:text-ink"
+      >
+        <span className="text-lg leading-none">⋯</span>
+      </button>
+    </div>
+  );
+
   return (
     <Portal>
+      {/*
+       * Um container só, em `fixed` no 0,0, movido por `transform` — e `flex-col`
+       * para que barra e painel sejam **irmãos** empilhados, nunca um `absolute`
+       * dentro do outro.
+       *
+       * A ordem dos filhos segue o lado: ancorado acima, o painel vem primeiro
+       * para ficar por cima da barra, e a barra — que é quem encosta no botão —
+       * por baixo. Invertido, o painel apareceria entre o botão e a barra, ou
+       * cobrindo a própria barra.
+       */}
       <div
         ref={setContainer}
-        className="fixed z-50 transition-opacity duration-150 opacity-100"
+        className={`fixed left-0 top-0 z-50 flex flex-col gap-1.5 will-change-transform ${lado === 'cima' ? '' : 'flex-col-reverse'}`}
         role="group"
         aria-label="Reações"
       >
-        {/*
-         * `items-center` e não `items-start`.
-         *
-         * Com `items-start`, a célula do botão `⋯` alinha pelo topo e a barra
-         * fica com o último item pendurado para baixo quando as outras células
-         * têm contagem embaixo do emoji. `items-center` centraliza todas na
-         * mesma linha, e a diferença de altura entre quem tem contagem e quem não
-         * some dentro da própria célula.
-         */}
-        <div className="flex items-center gap-1 rounded-xl bg-surface border border-hairline shadow-lg px-2 py-1.5">
-          {allEmojis.map((emoji) => {
-            const reaction = reactions.find((r) => r.emoji === emoji);
-            const count = reaction?.count ?? 0;
-            const hasCurrentUser = reaction?.hasCurrentUser ?? false;
-
-            return (
-              <button
-                key={emoji}
-                type="button"
-                onClick={() => {
-                  onToggle(messageId, emoji);
-                  onClose();
-                }}
-                className={`flex flex-col items-center gap-0.5 rounded-lg px-2 py-1.5 transition-all duration-150 ${
-                  hasCurrentUser
-                    ? 'bg-accent-soft text-accent'
-                    : 'text-ink-muted hover:bg-hover hover:text-ink'
-                }`}
-                aria-label={`${emoji} ${count > 0 ? `${count} reações` : 'sem reações'}`}
-                aria-pressed={hasCurrentUser}
-              >
-                <span className="text-lg">{emoji}</span>
-                {count > 0 && (
-                  <span
-                    className={`text-[0.625rem] font-medium ${
-                      hasCurrentUser ? 'text-accent' : 'text-ink-faint'
-                    }`}
-                  >
-                    {count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-
-          {/*
-           * Só o ícone, sem o rótulo "mais" embaixo.
-           *
-           * O rótulo ALIGNAVA a barra, e alinhamento é o que não pode continuar:
-           * cada emoji mostra a contagem abaixo quando tem reactions, e a
-           * célula do botão ficava alta sozinha quando não tinha. O resultado era
-           * a barra com o último item pendurado para baixo, desalinhado de tudo.
-           *
-           * O `⋯` sozinho resolve por um motivo melhor que o visual: o símbolo
-           * já diz "há mais aqui", e um texto de uma palavra embaixo de um
-           * glifo de três pontos repete a informação em dois formatos e ainda
-           * ocupa a altura de uma linha para dizer o que o glifo diz.
-           *
-           * O `aria-label` continua nomeando a ação, que é quem precisa do nome
-           * para quem não vê o glifo.
-           */}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => setShowFull((prev) => !prev)}
-            aria-label="Mais reações"
-            aria-expanded={showFull}
-            className="flex items-center justify-center rounded-lg px-2 py-1.5 text-ink-muted hover:bg-hover hover:text-ink transition-colors"
-          >
-            <span className="text-lg leading-none">⋯</span>
-          </button>
-        </div>
-
-        {/* Menu Expandido */}
-        {showFull && (
-          <div
-            ref={setMenu}
-            /*
-             * `bottom-full` quando o picker ancorou **para cima** da âncora, e
-             * `top-full` quando ancorou para baixo.
-             *
-             * O sinal é a borda inferior do container em relação à âncora: com o
-             * menu para cima, o container termina acima do botão. Sem isto o menu
-             * desce por cima da barra rápida e do campo de escrever, que é o
-             * sintoma reportado.
-             *
-             * `mb-2`/`mt-2` dão os 8px de folga que o cálculo do `top` já
-             * assumiu, para os dois lados baterem.
-             */
-            className={`absolute left-0 w-72 rounded-xl border border-hairline bg-surface shadow-lg overflow-hidden animate-fade-up z-50 p-2 ${
-              acimaDoBotao ? 'bottom-full mb-2' : 'top-full mt-2'
-            }`}
-            role="dialog"
-            aria-label="Todas as reações"
-          >
-            <p className="text-xs font-medium text-ink-muted mb-2">Escolha uma reação</p>
-            {/*
-             * `max-h` em `dvh` e não em px, porque o teto tem que acompanhar a
-             * janela: um `max-h-60` fixo num monitor de 600px de altura entrega
-             * um menu que não cabe em lugar nenhum, e o cálculo acima cai no caso
-             * "não cabe inteiro" e deixa o próprio menu rolável. Com `dvh`, o
-             * menu encolhe até caber na tela em vez de empurrar o picker para fora.
-             */}
-            <div className="grid grid-cols-6 gap-1 max-h-[min(15rem,42dvh)] overflow-y-auto">
-              {CHAT_REACTION_EMOJIS.map((emoji) => {
-                const reaction = reactions.find((r) => r.emoji === emoji);
-                const count = reaction?.count ?? 0;
-                const hasCurrentUser = reaction?.hasCurrentUser ?? false;
-
-                return (
-                  <button
-                    key={emoji}
-                    type="button"
-                    onClick={() => {
-                      onToggle(messageId, emoji);
-                      onClose();
-                    }}
-                    className={`flex flex-col items-center gap-0.5 rounded-lg p-1.5 transition-colors ${
-                      hasCurrentUser
-                        ? 'bg-accent-soft text-accent'
-                        : 'text-ink-muted hover:bg-hover hover:text-ink'
-                    }`}
-                  >
-                    <span className="text-xl">{emoji}</span>
-                    {count > 0 && (
-                      <span className="text-[0.625rem] font-medium">{count}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+        {lado === 'cima' ? (
+          <>
+            {painel}
+            {barra}
+          </>
+        ) : (
+          <>
+            {barra}
+            {painel}
+          </>
         )}
       </div>
     </Portal>
