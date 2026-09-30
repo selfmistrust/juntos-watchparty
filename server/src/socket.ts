@@ -13,6 +13,7 @@ import {
   sanitizeMessage,
 } from './chatGuard.js';
 import { extrairMencoes } from './mentions.js';
+import { ehPaginaDeTitulo, normalizarUrlDoPrime } from './prime.js';
 import { editarSala } from './roomLock.js';
 import * as push from './push.js';
 import {
@@ -26,11 +27,14 @@ import {
   ensureRoom,
   getRoom,
   getStream,
+  iniciarCountdown,
   isPastMaxLifetime,
+  limparReadiness,
   markUserDisconnected,
   newId,
   persistRoom,
   projectedPosition,
+  readinessDe,
   dropStreamsOwnedBy,
   removeUser,
   setUserAvatar,
@@ -56,6 +60,7 @@ import {
   type ReactionEmoji,
   type Room,
   type SystemEventKind,
+  CONTAGEM_REGRESSIVA_MS,
 } from './types.js';
 import { createUploadTarget, deleteUploadIfOwned, isAllowedVideoFile, MAX_UPLOAD_BYTES } from './storage.js';
 import { emailDaSessao } from './driveOAuth.js';
@@ -368,8 +373,35 @@ export function registerSocketHandlers(io: Server) {
           }
           driveFileId = item.driveFileId;
         }
+        /*
+         * Um item `prime` só entra com uma URL que o próprio servidor reconhece
+         * como página de título do Prime Video.
+         *
+         * Sem esta checagem, `playlist:add` — que aceita qualquer URL — viraria
+         * um jeito de colocar um endereço arbitrário na fila de todo mundo, e o
+         * botão "Abrir no Prime Video" da sala passaria a oferecer aquele
+         * endereço. O campo que o cliente mandou é descartado: o que vale é o
+         * que saiu de `normalizarUrlDoPrime`, com a query e a âncora removidas.
+         */
+        let primeUrl: string | null | undefined;
+        if (item.kind === 'prime') {
+          primeUrl = normalizarUrlDoPrime(item.primeUrl);
+          /*
+           * Domínio não é o bastante. A home e o catálogo são URLs válidas do
+           * Prime, e não identificam um filme: uma delas na fila mostraria a
+           * mesma coisa para todo mundo da sala, e o botão "Abrir no Prime
+           * Video" de cada um abriria a página inicial.
+           */
+          if (!primeUrl || !ehPaginaDeTitulo(primeUrl)) {
+            socket.emit('room:denied', 'Esse endereço não é uma página de título do Prime Video.');
+            return;
+          }
+        }
         const entry: PlaylistItem = {
           ...item,
+          // O `src` fica vazio para o `prime`: não há mídia para um `<video>`
+          // tocar, e a identidade do título está em `primeUrl`.
+          ...(primeUrl ? { primeUrl, src: '' } : {}),
           ...(driveFileId ? { driveFileId, src: '' } : {}),
           id: newId(),
           addedBy: user?.name ?? 'Convidado',
@@ -378,6 +410,7 @@ export function registerSocketHandlers(io: Server) {
         room.playlist.push(entry);
         if (room.currentIndex === -1) {
           room.currentIndex = 0;
+          limparReadiness(room);
           commitPosition(room, 0);
         }
         await persistRoom(room);
@@ -486,6 +519,7 @@ export function registerSocketHandlers(io: Server) {
         if (index < 0 || index >= room.playlist.length) return;
         const antes = room.playlist[room.currentIndex]?.kind;
         room.currentIndex = index;
+        limparReadiness(room);
         commitPosition(room, 0);
         room.isPlaying = true;
         await persistRoom(room);
@@ -494,6 +528,83 @@ export function registerSocketHandlers(io: Server) {
         if (antes === 'drive' || room.playlist[index].kind === 'drive') reconciliar = room;
       });
       if (reconciliar) await reconciliarDrive(reconciliar);
+    });
+
+    /*
+     * Prontidão: "Estou pronto", contagem regressiva e recomeço.
+     *
+     * ## Por que três eventos e não um
+     *
+     * O Prime Video não entrega posição de reprodução para o Juntos ler, e o
+     * DRM é do Prime. Não há como dar play para todo mundo, nem como corrigir
+     * deriva de um vídeo que o app não controla. O que sobra é coordenar: cada
+     * um abre o título na conta própria, confirma, e a sala começa junto.
+     *
+     * `watch:ready` é de qualquer participante — é uma informação sobre si
+     * mesmo, e a sala mostra "Ana está pronta" a partir dela. `watch:countdown`
+     * e `watch:resync` exigem `canControl`, porque decidem quando a sala
+     * começa e quando recomeça; uma pessoa sozinha não começa um filme para
+     * todo mundo.
+     *
+     * ## Só vale para faixa `prime`
+     *
+     * As outras fontes têm posição seekável e a sincronização delas é o laço
+     * de deriva do player. Se este contador existisse para elas, a sala teria
+     * dois notions de "está pronto" disputando a mesma tela, e o contador
+     * mostraria "pronto" para um vídeo que já está tocando sozinho.
+     */
+    socket.on('watch:ready', async (payload: unknown) => {
+      /*
+       * O `itemId` vai junto para o servidor descartar o clique atrasado:
+       * quem apertou "Estou pronto" e trocou de faixa antes do `emit` chegar
+       * seria marcado como pronto para o filme errado. Comparar com a faixa
+       * que está tocando é uma linha e fecha a corrida.
+       */
+      const dados = (typeof payload === 'object' && payload !== null ? payload : {}) as {
+        itemId?: unknown;
+        ready?: unknown;
+      };
+
+      await editar(async (room) => {
+        const user = room.users[socket.id];
+        const faixa = room.playlist[room.currentIndex];
+        if (typeof dados.itemId !== 'string' || dados.itemId !== faixa?.id) return;
+        if (!user || !faixa || faixa.kind !== 'prime') return;
+        const atual = readinessDe(room);
+        const base = atual ?? { itemId: faixa.id, userIds: [], countdownAt: null };
+        // Filtra antes de inserir: `socket.emit` repetido não pode contar duas
+        // vezes, e é o que aconteceria com um `push` sem este passo.
+        const userIds = base.userIds.filter((id) => id !== user.userId);
+        if (dados.ready === true) userIds.push(user.userId);
+        room.readiness = { ...base, userIds };
+        await persistRoom(room);
+        broadcastState(room);
+      });
+    });
+
+    socket.on('watch:countdown', async (itemId: unknown) => {
+      await editar(async (room) => {
+        if (!canControl(room, socket.id)) return denied(room);
+        if (typeof itemId !== 'string') return;
+        if (!iniciarCountdown(room, itemId)) return;
+        await persistRoom(room);
+        broadcastState(room);
+        system(room.id, 'info', 'A contagem começou. Todo mundo dá play junto.');
+      });
+    });
+
+    socket.on('watch:resync', async () => {
+      await editar(async (room) => {
+        if (!canControl(room, socket.id)) return denied(room);
+        const faixa = room.playlist[room.currentIndex];
+        if (!faixa || faixa.kind !== 'prime') return;
+        // Zera prontos e contagem. Quem estava pronto precisa confirmar de novo,
+        // e é o que a pessoa espera de "Ressincronizar": voltar ao começo.
+        room.readiness = { itemId: faixa.id, userIds: [], countdownAt: null };
+        await persistRoom(room);
+        broadcastState(room);
+        system(room.id, 'info', 'Ressincronizando: confirmem que estão prontos de novo.');
+      });
     });
 
     socket.on('room:setOpenControl', async (open: boolean) => {
@@ -1001,6 +1112,9 @@ export function registerSocketHandlers(io: Server) {
 }
 
 function advance(room: Room) {
+  // A faixa mudou: o contador de prontos é de uma faixa, e dizer "pronto"
+  // para o filme anterior seria mentira na tela de todo mundo.
+  limparReadiness(room);
   if (room.currentIndex < room.playlist.length - 1) {
     room.currentIndex += 1;
     commitPosition(room, 0);

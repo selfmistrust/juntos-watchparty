@@ -27,6 +27,40 @@ export interface CaptureError {
 
 export type CaptureResult = { ok: true; source: CaptureSource } | { ok: false; error: CaptureError };
 
+/**
+ * Onde a view do Prime fica, em pixels do conteúdo da janela.
+ *
+ * O palco manda o retângulo que ele ocupa na tela, e o `main` posiciona a view
+ * em cima dele. É a mesma medida em que o palco se vê: o `rect` do navegador é
+ * relativo à viewport, e a janela do Electron não rola — a sala ocupa
+ * exatamente `100dvh` e a rolagem que existe é de um `div` interno, que só se
+ * move no celular, e no celular não há view do Prime. Ainda assim a soma do
+ * scroll entra na medida, porque custa uma linha e é o que mantém o
+ * posicionamento certo se a rolagem do documento voltar a existir.
+ */
+export interface PrimeBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Página do Prime Video que a view embutida está mostrando.
+ *
+ * `url` é a URL canônica — o mesmo `normalizarUrlDoPrime` do servidor, e o
+ * `main` revalida antes de mandar. `isTitulo` diz se essa página é a de um
+ * título, que é o que habilita "Assistir com a sala". `titulo` é o
+ * `<title>` do documento: o que o Prime já escreve na aba do navegador, sem
+ * leitura de DOM.
+ */
+export interface PrimePage {
+  url: string;
+  titulo: string;
+  isTitulo: boolean;
+}
+
+
 export interface DesktopApi {
   readonly isDesktop: true;
   readonly version: string;
@@ -42,6 +76,59 @@ export interface DesktopApi {
    * na web o padrão não deixa o app puxar o foco de outra aba, e o que dá para
    * fazer — piscar o título e marcar o chat como não lido — é feito aqui.
    */
+  /**
+   * Abre (ou reusa) a `WebContentsView` do Prime, na posição dada.
+   *
+   * A sessão é `persist:prime`, que sobrevive ao fechar o app: é o que evita
+   * pedir login toda vez. Ela é desta instalação, e não da sala — duas pessoas
+   * em computadores diferentes têm contas diferentes, e o Juntos nunca troca
+   * nada entre elas. Nenhum cookie, token ou cabeçalho sai do `main`: a única
+   * coisa que volta é a URL e o título da página, no fim de `primePage`.
+   */
+  openPrimeView(bounds: PrimeBounds): Promise<boolean>;
+
+  /** Fecha e destrói a view. A sessão `persist:prime` fica em disco. */
+  closePrimeView(): Promise<void>;
+
+  /** Manda a view navegar, se e só se a URL for do domínio do Prime. */
+  primeNavigate(url: string): Promise<boolean>;
+
+  /**
+   * Página do Prime Video que a view embutida está mostrando.
+   *
+   * Só a URL canônica e o `<title>` do documento — o mesmo par que o `main`
+   * já tinha à mão, sem nenhuma leitura do DOM e sem injeção de JavaScript na
+   * página do Prime. `isTitulo` diz se essa página é a de um título, que é o
+   * que habilita "Assistir com a sala".
+   */
+  primePage(): Promise<PrimePage>;
+
+  /**
+   * Assina as mudanças de página da view do Prime.
+   *
+   * É um `on` e não um `primePage` que empurra, porque a pessoa navega pelo
+   * catálogo do Prime dentro da view — o renderer não sabe quando isso
+   * acontece, e não pode descobrir lendo o DOM de um site de terceiro.
+   * Devolve a função que cancela a assinatura.
+   */
+  onPrimePage(callback: (page: PrimePage) => void): () => void;
+
+  /**
+   * O build do Electron tem o componente de DRM (Widevine) para decifrar vídeo
+   * protegido dentro dele?
+   *
+   * A pergunta é feita ao motor, não ao site: `requestMediaKeySystemAccess`
+   * responde se este Chromium consegue decifrar, e não tem nada a ver com a
+   * conta de quem assiste nem com a assinatura do título.
+   *
+   * `false` é resposta definitiva: o build oficial do Electron não traz o CDM,
+   * e nenhum título protegido vai tocar dentro do app. `true` é só o mínimo
+   * necessário — a Prime Video ainda pode recusar na hora de tocar, por causa
+   * da checagem de caminho verificado (VMP). Por isso a UI nunca promete que
+   * vai tocar, e sempre deixa "Abrir no Prime Video" à mão.
+   */
+  primeCanPlayProtected(): Promise<boolean>;
+
   notifyMention(title: string, body: string): Promise<boolean>;
 }
 

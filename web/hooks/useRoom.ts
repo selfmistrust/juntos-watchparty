@@ -58,6 +58,18 @@ export interface RoomActions {
   setColor: (color: string) => void;
   setAvatar: (avatar: { seed?: string; url?: string }) => void;
   setName: (name: string) => void;
+  /**
+   * Confirma (ou desmarca) a prontidão da pessoa para a faixa `prime` atual.
+   *
+   * Vale para qualquer participante: é uma informação sobre si mesmo. O
+   * servidor liga e desliga o próprio `userId` na lista, e ignora um `emit`
+   * repetido — sem isso, apertar duas vezes contaria duas vezes.
+   */
+  setReady: (ready: boolean) => void;
+  /** Começa a contagem regressiva. Só quem conduz a sala. */
+  startCountdown: () => void;
+  /** Zera prontos e contagem, para todo mundo recomeçar. Só quem conduz. */
+  resync: () => void;
   /** Reage a uma mensagem do chat, ou desfaz a reação se o usuário já reagiu. */
   toggleReaction: (messageId: string, emoji: string) => void;
   /** Responder a uma mensagem do chat. */
@@ -146,10 +158,24 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color, o
    * dadas nas mensagens antigas, que só existem guardadas no snapshot.
    */
   const seededFromSnapshot = useRef(false);
+  /**
+   * `itemId` da faixa que está tocando, para as ações de prontidão.
+   *
+   * Em ref e não em estado pelo mesmo motivo do `feedRef`: `actions` é
+   * memoizado com `[emit]`, então ler o snapshot dentro dele faria cada
+   * ação ganhar identidade nova a cada `room:state` — que chega a cada play,
+   * pause e seek de qualquer pessoa da sala.
+   */
+  const itemIdPronto = useRef<string | null>(null);
 
   useEffect(() => {
     feedRef.current = feed;
   }, [feed]);
+
+  useEffect(() => {
+    itemIdPronto.current =
+      state && state.currentIndex >= 0 ? (state.playlist[state.currentIndex]?.id ?? null) : null;
+  }, [state]);
 
   useEffect(() => {
     userIdRef.current = me?.userId ?? '';
@@ -457,6 +483,15 @@ export function useRoom({ roomId, name, enabled, avatarSeed, avatarUrl, color, o
       setColor: (color) => emit('user:setColor', color),
       setAvatar: (avatar) => emit('user:setAvatar', avatar),
       setName: (newName) => emit('user:setName', newName),
+      /*
+       * Prontidão do Prime Video. O `itemId` vai junto porque o servidor
+       * compara com a faixa que está tocando: um clique que chegou atrasado,
+       * de quem trocou de faixa no meio do caminho, é descartado em vez de
+       * marcar a pessoa como pronta para o filme errado.
+       */
+      setReady: (ready) => emit('watch:ready', { itemId: itemIdPronto.current, ready }),
+      startCountdown: () => emit('watch:countdown', itemIdPronto.current),
+      resync: () => emit('watch:resync'),
       toggleReaction: (messageId, emoji) => {
         const entry = feedRef.current.find(
           (e): e is FeedEntry & { type: 'message' } => e.type === 'message' && e.id === messageId

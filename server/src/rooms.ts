@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { customAlphabet } from 'nanoid';
 import { redis } from './redis.js';
-import type { LiveStream, Room, RoomSnapshot, User } from './types.js';
+import type { LiveStream, Readiness, Room, RoomSnapshot, User } from './types.js';
 
 /** IDs de sala curtos e fáceis de ditar por voz. */
 export const newRoomId = customAlphabet('abcdefghjkmnpqrstuvwxyz23456789', 12);
@@ -557,6 +557,58 @@ export function commitPosition(room: Room, position?: number) {
   room.updatedAt = now;
 }
 
+/**
+ * Estado de prontidão da faixa atual, normalizado para o snapshot.
+ *
+ * Três leituras diferentes do mesmo campo, e por isso uma função só:
+ *
+ *   `undefined`   a sala foi gravada antes do recurso — não é "ninguém pronto",
+ *                 é "não sei", e o cliente trata como "sem contador".
+ *   `null`        o contador foi zerado, ou a faixa já não é a mesma.
+ *   preenchido    vale para a faixa de `itemId` — e só para ela.
+ *
+ * A conferência do `itemId` mora aqui, e não só no evento que troca a faixa,
+ * porque um contador preso na faixa anterior é pior do que nenhum contador:
+ * a tela diria "3 de 4 prontos" para um título que ninguém abriu ainda.
+ */
+export function readinessDe(room: Room): Readiness | null {
+  const atual = room.readiness;
+  if (!atual) return null;
+  if (!atual.itemId || atual.itemId !== room.playlist[room.currentIndex]?.id) return null;
+  return { itemId: atual.itemId, userIds: [...atual.userIds], countdownAt: atual.countdownAt ?? null };
+}
+
+/**
+ * Zera o contador. Chamado sempre que a faixa atual muda.
+ *
+ * Quem estava pronto deixa de estar, e é o certo: precisa abrir o título novo
+ * antes de apertar o botão de novo, e dizer que está pronta para o filme
+ * anterior seria mentira na tela de todo mundo.
+ */
+export function limparReadiness(room: Room): void {
+  room.readiness = null;
+}
+
+/**
+ * Começa a contagem regressiva a partir do relógio do servidor.
+ *
+ * O instante é do servidor, e não do cliente, por dois motivos: o relógio de
+ * cada máquina pode estar errado, e o início precisa sobreviver a uma
+ * reconexão sem recomeçar. Todo mundo mostra o mesmo número a partir do mesmo
+ * `countdownAt`.
+ */
+export function iniciarCountdown(room: Room, itemId: string): Readiness | null {
+  if (room.playlist[room.currentIndex]?.id !== itemId) return null;
+  const atual = readinessDe(room);
+  room.readiness = {
+    itemId,
+    userIds: atual ? atual.userIds : [],
+    countdownAt: Date.now(),
+  };
+  return room.readiness;
+}
+
+
 export function snapshot(room: Room): RoomSnapshot {
   const now = Date.now();
   // Só inclui usuários conectados no snapshot enviado aos clientes
@@ -583,6 +635,7 @@ export function snapshot(room: Room): RoomSnapshot {
     // socket cair do nada quando a chave sumir.
     expiresAt: expiresAt(room),
     messages: recentMessages,
+    readiness: readinessDe(room),
     streams,
   };
 }

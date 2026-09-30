@@ -7,6 +7,7 @@ import { TruncatedText } from '@/components/ui/TruncatedText';
 import { useYoutubeSource } from '@/lib/mediaSources/useYoutubeSource';
 import { useScreenShare } from '@/lib/mediaSources/useScreenShare';
 import { useDriveSource } from '@/lib/mediaSources/useDriveSource';
+import { usePrimeSource } from '@/lib/mediaSources/prime';
 import type { StreamController } from '@/hooks/useStreamBridge';
 import {
   MEDIA_SOURCES,
@@ -61,6 +62,7 @@ export function MediaSourceModal({
   const youtube = useYoutubeSource();
   const tela = useScreenShare(streamBridge);
   const drive = useDriveSource();
+  const prime = usePrimeSource();
 
   /**
    * A versão de cada fonte que **precisa** da hook, indexada por `id`.
@@ -86,8 +88,9 @@ export function MediaSourceModal({
       [youtube.provider.id]: youtube.provider,
       [tela.provider.id]: tela.provider,
       [drive.provider.id]: drive.provider,
+      [prime.provider.id]: prime.provider,
     }),
-    [youtube.provider, tela.provider, drive.provider],
+    [youtube.provider, tela.provider, drive.provider, prime.provider],
   );
 
   const sources = useMemo<MediaSourceProvider[]>(
@@ -279,6 +282,7 @@ export function MediaSourceModal({
       {youtube.panel}
       {tela.panel}
       {drive.panel}
+      {prime.painel}
     </>
   );
 

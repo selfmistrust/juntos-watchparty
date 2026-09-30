@@ -7,9 +7,18 @@ import { ReactionDock } from './ReactionDock';
 import { ReactionsOverlay } from './ReactionsOverlay';
 import { YoutubePlayer } from './YoutubePlayer';
 import { DriveVideo } from './DriveVideo';
+import { PrimeStage } from './PrimeStage';
 import { useFullscreenLandscape } from '@/hooks/useFullscreenLandscape';
 import type { RoomActions } from '@/hooks/useRoom';
-import type { FloatingReaction, PlaylistItem, PlayerHandle, ReactionEmoji, RoomSnapshot } from '@/types';
+import type {
+  FloatingReaction,
+  PlaylistItem,
+  PlayerHandle,
+  ReactionEmoji,
+  Readiness,
+  RoomSnapshot,
+  User,
+} from '@/types';
 
 /** Acima disto o salto é audível e vale um seek seco. */
 const HARD_SYNC_THRESHOLD = 1.5;
@@ -35,6 +44,14 @@ interface Props {
   /** A conexão com quem transmite está em andamento. */
   liveConnecting?: boolean;
   liveError?: string | null;
+  /** Contagem de prontos da faixa `prime` atual. */
+  readiness: Readiness | null;
+  /** Quem está na sala, para dizer quem ainda falta. */
+  users: User[];
+  /** `userId` de quem está olhando, para saber se a pessoa já está pronta. */
+  meId?: string;
+  /** A faixa `prime` é a que está tocando? */
+  isPrime?: boolean;
 }
 
 export function VideoStage({
@@ -49,6 +66,10 @@ export function VideoStage({
   liveStream,
   liveConnecting,
   liveError,
+  readiness,
+  users,
+  meId,
+  isPrime,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<PlayerHandle>(null);
@@ -115,6 +136,13 @@ export function VideoStage({
    */
   const [driveMediaPronta, setDriveMediaPronta] = useState(false);
   const mediaPronta = currentItem?.kind === 'drive' ? driveMediaPronta : true;
+  /*
+   * O `prime` não tem mídia sob o dedo: o vídeo toca na view nativa, e o
+   * palco é a caixa de medida. O catcher de play/pause é para um player que
+   * responde a play — aqui ele cobriria a faixa de baixo do `PrimeStage`, que
+   * é onde ficam "Estou pronto", "Começar agora" e "Ressincronizar".
+   */
+  const catcherVisivel = mediaPronta && !isPrime;
 
   const { isFullscreen, rotate, toggle: toggleFullscreen } = useFullscreenLandscape({ targetRef: stageRef });
 
@@ -350,6 +378,25 @@ export function VideoStage({
             onReady={handleReady}
             onEnded={actions.ended}
           />
+        ) : isPrime ? (
+          /*
+           * O Prime Video não é desenhado aqui. Ele vive numa
+           * `WebContentsView` nativa, por cima da janela, e o palco é a caixa
+           * de medida que diz ao `main` onde ela deve ficar. A faixa de baixo
+           * é a única parte que o Prime não cobre, e é por isso que os botões
+           * de prontidão podem existir sem injeção de JavaScript no site.
+           */
+          <PrimeStage
+            key={currentItem.id}
+            item={{ id: currentItem.id, title: currentItem.title, primeUrl: currentItem.primeUrl }}
+            readiness={readiness}
+            users={users}
+            meId={meId}
+            canControl={canControl}
+            onReady={actions.setReady}
+            onCountdown={actions.startCountdown}
+            onResync={actions.resync}
+          />
         ) : currentItem.kind === 'drive' && currentItem.driveFileId ? (
           /*
            * A faixa `drive` tem player próprio porque depende de uma condição
@@ -421,7 +468,7 @@ export function VideoStage({
         * qualquer etapa de preparação e para o YouTube carregando — o catcher só
         * faz sentido com vídeo sob o dedo.
         */}
-      {currentItem && mediaPronta && (
+      {currentItem && catcherVisivel && (
         <button
           aria-label={isPlaying ? 'Pausar' : 'Reproduzir'}
           onClick={togglePlay}
@@ -518,7 +565,16 @@ export function VideoStage({
         * YouTube, com um botão no canto para voltar; com `controls: 0` esse
         * caminho não existe mais e o botão junto com ele.
         */}
-      {currentItem && (
+      {/*
+       * A barra de controles fica de fora para o `prime`.
+       *
+       * Os botões dela — play, seek, volume — mandam `player:*` para o
+       * servidor, e nenhum deles tem efeito sobre um vídeo que toca na conta
+       * da Amazon, no aparelho de cada pessoa. Uma barra que acende e não
+       * faz nada é pior do que a ausência dela: ela promete um controle que
+       * não existe. O que sincroniza a sala está na faixa do `PrimeStage`.
+       */}
+      {currentItem && !isPrime && (
         <PlayerControls
           visible={controlsVisible || !isPlaying}
           isPlaying={isPlaying}

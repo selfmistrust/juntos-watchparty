@@ -10,7 +10,13 @@
  * cada conta para o seu próprio player. Ele tem posição seekável como qualquer
  * arquivo, então a sincronização trata igual.
  */
-export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive';
+/**
+ * `prime` segue a mesma lógica por um motivo diferente: o conteúdo protegido do
+ * Prime Video não expõe posição para o Juntos ler. O `src` fica vazio, a
+ * identidade do título viaja em `primeUrl`, e o que sincroniza as pessoas é o
+ * "Estou pronto" com contagem regressiva — ver `Readiness`.
+ */
+export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive' | 'prime';
 
 export interface PlaylistItem {
   id: string;
@@ -34,6 +40,16 @@ export interface PlaylistItem {
   /** id de quem adicionou, usado para o badge de "DJ" na faixa que está tocando. */
   addedById: string;
   /** Transmissão referenciada, quando `kind === 'stream'`. */
+  /**
+   * URL oficial do título no Prime Video, quando `kind === 'prime'`.
+   *
+   * É a **única** informação do conteúdo que viaja entre as pessoas.
+   *
+   * Não vai aqui: cookie, token, manifesto de vídeo, URL de HLS/MPD, chave de DRM.
+   * O Prime Video entrega o conteúdo de cada pessoa direto para o aparelho dela, e
+   * o Juntos não participa dessa entrega.
+   */
+  primeUrl?: string;
   streamId?: string;
 }
 
@@ -102,6 +118,41 @@ export interface GifResult {
   url: string;
 }
 
+/**
+ * Quem já está pronto para a faixa atual, e a contagem regressiva.
+ *
+ * ## Por que o servidor decide o instante
+ *
+ * O relógio de cada máquina pode estar errado, e o início precisa sobreviver a
+ * uma reconexão sem recomeçar. O servidor manda o `countdownAt` e todo mundo
+ * calcula o número a partir do mesmo instante.
+ *
+ * ## `userIds` e não `sessionId`
+ *
+ * A tela mostra "Ana está pronta" para todo mundo. O `sessionId` é o socket de
+ * uma instância específica, que muda a cada reconexão: quem caiu e voltou
+ * apareceria como outra pessoa no contador.
+ */
+export interface Readiness {
+  /** Faixa a que isto se refere. Trocar de faixa zera o contador inteiro. */
+  itemId: string;
+  /** `userId` de quem já confirmou estar pronto. */
+  userIds: string[];
+  /** Instante em que a contagem regressiva começou (epoch ms), ou `null`. */
+  countdownAt: number | null;
+}
+
+/**
+ * Quanto tempo a contagem regressiva dura.
+ *
+ * Cópia do valor de `server/src/types.ts`. As duas cópias existem porque o
+ * renderer não importa nada de `server/` — a duplicação é deliberada, e
+ * `web/tests/primeIntegracao.test.ts` trava que as duas continuam iguais. Se
+ * divergirem, a contagem de um cliente termina antes da de outro e a sala
+ * inteira dá play em instantes diferentes, que é o oposto do que a contagem
+ * existe para evitar.
+ */
+export const CONTAGEM_REGRESSIVA_MS = 5000;
 export interface RoomSnapshot {
   id: string;
   name: string;
@@ -120,6 +171,8 @@ export interface RoomSnapshot {
   /** Últimas mensagens do chat (últimas 100). */
   messages: ChatMessage[];
   /** Transmissões ao vivo ativas na sala. */
+  /** Contagem de prontos da faixa atual. Ver `Readiness`. */
+  readiness: Readiness | null;
   streams: LiveStream[];
 }
 

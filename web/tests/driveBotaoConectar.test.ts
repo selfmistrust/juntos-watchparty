@@ -32,12 +32,12 @@ test('o click-catcher só existe quando há mídia pronta', () => {
    * `<video>` na árvore.
    */
   assert.ok(
-    /\{currentItem && mediaPronta && \(/.test(stage),
-    'o catcher precisa depender de mediaPronta, e não só de currentItem',
+    /\{currentItem && catcherVisivel && \(/.test(stage),
+    'o catcher precisa depender de catcherVisivel, e nao so de currentItem',
   );
   assert.ok(
-    /const mediaPronta = currentItem\?\.kind === 'drive' \? driveMediaPronta : true;/.test(stage),
-    'mediaPronta precisa vir do DriveVideo, e ser true para as outras fontes',
+    /const catcherVisivel = mediaPronta && !isPrime;/.test(stage),
+    'catcherVisivel precisa ser mediaPronta && !isPrime: o prime nao tem midia sob o dedo, e o catcher cobriria a faixa de baixo do PrimeStage',
   );
 });
 

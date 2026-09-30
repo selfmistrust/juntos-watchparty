@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, ipcMain, Notification, screen, shell, se
 import path from 'node:path';
 import { APP_ORIGIN, startLocalServer, type LocalServer } from './localServer';
 import { iniciarLog, log } from './log';
+import { ligarPrimeJanela, registrarIpcPrime, temViewPrime } from './prime';
 import type { CaptureErrorReason } from '../shared/contract';
 import {
   erroDe,
@@ -222,6 +223,8 @@ function configuracoesDaJanela(): Electron.BrowserWindowConstructorOptions {
 function criarJanela(): BrowserWindow {
   const w = new BrowserWindow(configuracoesDaJanela());
 
+  ligarPrimeJanela(w);
+
   w.once('ready-to-show', () => w.show());
   w.on('closed', () => {
     janela = null;
@@ -427,6 +430,12 @@ async function subir(): Promise<void> {
 
   instalarHandlerDeCaptura();
   registrarIpc();
+  /*
+   * Os canais do Prime entram aqui, e não dentro de `criarJanela`:
+   * `criarJanela` roda de novo no `activate` do macOS, e `ipcMain.handle`
+   * lança quando o mesmo canal é registrado duas vezes.
+   */
+  registrarIpcPrime();
 
   try {
     log(`subindo o servidor local em ${APP_ORIGIN}`);
@@ -510,6 +519,10 @@ if (!unica) {
      * sempre-no-topo, ele ficaria sobre o próximo programa que a pessoa abrir.
      */
     fecharJanelaDeAviso();
+
+    // A view do Prime é destruída no `closed` da janela dona. Esta linha é
+    // só o registro do log, que é o que diz no relatório se a view sobreviveu.
+    log(`prime: view viva no encerramento = ${temViewPrime()}`);
     void servidor?.stop();
     app.quit();
   });

@@ -383,6 +383,15 @@ export default function RoomPage() {
             liveStream={liveStream}
             liveConnecting={liveConectando}
             liveError={streamBridge.erro}
+            /*
+             * Prontidão: só a faixa `prime` usa, e o palco decide o que
+             * fazer com ela. O `readiness` do snapshot é `null` para as outras,
+             * e é por isso que ele pode passar direto.
+             */
+            readiness={state.readiness ?? null}
+            users={state.users}
+            meId={me?.userId}
+            isPrime={currentItem?.kind === 'prime'}
           />
           {currentItem && (
             <div className="shrink-0 px-1 pt-3 lg:px-5 lg:pb-4">

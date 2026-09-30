@@ -7,7 +7,13 @@
  * instante chega pelo relógio da mídia, não por `position`. Por isso o item
  * carrega `streamId` e o `src` fica vazio, e o player não tenta sincronizar.
  */
-export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive';
+/**
+ * `prime` segue a mesma lógica por um motivo diferente: o conteúdo protegido do
+ * Prime Video não expõe posição para o Juntos ler. O `src` fica vazio, a
+ * identidade do título viaja em `primeUrl`, e o que sincroniza as pessoas é o
+ * "Estou pronto" com contagem regressiva — ver `Readiness`.
+ */
+export type MediaKind = 'youtube' | 'file' | 'stream' | 'drive' | 'prime';
 
 export interface PlaylistItem {
   id: string;
@@ -38,6 +44,17 @@ export interface PlaylistItem {
   /** id de quem adicionou, usado para o badge de "DJ" na faixa que está tocando. */
   addedById: string;
   /** Transmissão ao vivo referenciada, quando `kind === 'stream'`. */
+  /**
+   * URL oficial do título no Prime Video, quando `kind === 'prime'`.
+   *
+   * É a **única** informação do conteúdo que viaja entre as pessoas. O servidor
+   * revalida e reescreve este campo antes de gravar — ver `prime.ts`.
+   *
+   * Não vai aqui: cookie, token, manifesto de vídeo, URL de HLS/MPD, chave de DRM.
+   * O Prime Video entrega o conteúdo de cada pessoa direto para o aparelho dela, e
+   * o Juntos não participa dessa entrega.
+   */
+  primeUrl?: string;
   streamId?: string;
 }
 
@@ -101,6 +118,35 @@ export interface ReactionEvent {
 }
 
 
+/**
+ * Quem já está pronto para a faixa atual, e a contagem regressiva.
+ *
+ * ## Por que existe
+ *
+ * O Prime Video entrega o conteúdo de cada pessoa direto para o aparelho dela,
+ * com DRM que o Juntos não lê e não controla. Não há posição de reprodução
+ * compartilhável, então o "sincronizar" aqui não é o laço de deriva do player:
+ * é a coordenação de uma sala de cinema. Cada um abre o título na conta
+ * própria, aperta "Estou pronto", e a contagem começa quando todo mundo
+ * confirmou — ou quando quem conduz a sala decide começar.
+ *
+ * `userIds` e não `sessionId`: o snapshot mostra "Ana está pronta" para todo
+ * mundo, e o `sessionId` é o socket de uma instância específica, que não
+ * sobrevive a uma reconexão. Quem caiu e voltou apareceria como outra pessoa no
+ * contador.
+ */
+export interface Readiness {
+  /** Faixa a que isto se refere. Trocar de faixa zera o contador inteiro. */
+  itemId: string;
+  /** `userId` de quem já confirmou estar pronto. */
+  userIds: string[];
+  /** Instante em que a contagem regressiva começou (epoch ms), ou `null`. */
+  countdownAt: number | null;
+}
+
+/** Quanto tempo a contagem regressiva dura. Curto o bastante para não irritar. */
+export const CONTAGEM_REGRESSIVA_MS = 5000;
+
 /** Estado autoritativo mantido pelo servidor. */
 export interface Room {
   id: string;
@@ -131,6 +177,14 @@ export interface Room {
    * Transmissões ao vivo ativas, por id. Ausente em salas antigas — a leitura
    * usa `room.streams ?? {}` para não quebrar dado gravado antes do recurso.
    */
+  /**
+   * Contagem de prontos e contagem regressiva da faixa atual.
+   *
+   * Ausente em salas gravadas antes do recurso, como `streams` — a leitura usa
+   * `room.readiness ?? null`, e não quebrar dado antigo é mais importante do
+   * que a forma limpa do objeto.
+   */
+  readiness?: Readiness | null;
   streams?: Record<string, LiveStream>;
 }
 
@@ -161,6 +215,8 @@ export interface RoomSnapshot {
    * saber quem transmite — para assinar ou para recusar — se identifica pelo
    * `ownerUserId`, que é estável entre reconexões.
    */
+  /** Contagem de prontos da faixa atual. Ver `Room.readiness`. */
+  readiness: Readiness | null;
   streams: Array<Omit<LiveStream, 'ownerSessionId'>>;
 }
 
