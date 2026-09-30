@@ -75,20 +75,39 @@ export function Sidebar({
 
   return (
     <aside
+      /*
+       * A largura vem **só** da divisória, por `style`, e nada mais a define.
+       *
+       * Duas fontes de largura no mesmo elemento se brigam em silêncio: a
+       * utilitária `w-[23rem]` e o `style` inline. A ordem de cascata resolve
+       * — o inline ganha —, mas só enquanto ninguém mexer em nenhuma das duas.
+       * Por isso a utilitária aparece **apenas** quando não há largura, e assim
+       * existe um dono do valor em cada estado, não dois.
+       */
       style={largura ? { width: `${largura}px` } : undefined}
       className={clsx(
-        'flex min-w-0 flex-col border-t border-hairline bg-surface',
         /*
-         * `lg:w-[23rem]` é o valor inicial, e só vale quando não há `style`.
-         * Uma largura em `style` ganha da classe utilitária, e é por isso que as
-         * duas nunca podem brigar: a que está no `style` é a da divisória.
+         * `min-w-0` no painel é a condição para a largura ser respeitada. Sem
+         * ele, um item flex tem `min-width: auto`, e o conteúdo mais largo estica
+         * a coluna **por cima** do `width`: o `style` continua lá, o elemento
+         * apenas desobedece. Era o que fazia o chat parecer largo demais dentro de
+         * um painel estreito, e não o contrário.
          */
+        'flex min-w-0 flex-col border-t border-hairline bg-surface',
         largura ? 'lg:shrink-0' : 'lg:w-[23rem] lg:shrink-0',
         'lg:h-full lg:border-l lg:border-t-0',
         open ? 'min-h-[22rem] flex-1 animate-fade-up lg:min-h-0 lg:flex-none' : 'hidden',
       )}
     >
-      <div className="flex items-center gap-2 pr-2 lg:pr-0">
+      {/*
+       * A linha das tabs.
+       *
+       * O `shrink-0` importa: sem ele a linha encolhe quando o painel fica
+       * estreito no piso de 320px, e o botão de fechar — que é quem sai no
+       * celular — some antes das tabs. No desktop não há botão aqui, e a linha
+       * simplesmente ocupa a largura.
+       */}
+      <div className="flex shrink-0 items-center gap-2 pr-2 lg:pr-0">
         <div className="min-w-0 flex-1">
           <Tabs tabs={tabs} value={tab} onChange={setTab} />
         </div>
@@ -99,7 +118,19 @@ export function Sidebar({
 
       {/* Ações para chat */}
 
-      <div className="min-h-0 flex-1">
+      {/*
+       * O corpo do painel, onde mora a aba ativa.
+       *
+       * `min-w-0` é o que impede a aba de esticar o painel. Num item flex
+       * vertical o padrão também é `min-height: auto`, e o mesmo vale na
+       * horizontal: sem o `min-w-0`, o conteúdo mais largo — a barra do composer
+       * com o botão de enviar, o `ReplyPreview` — empurra a coluna para fora em vez
+       * de encolher.
+       *
+       * E `min-h-0` no eixo vertical é o que deixa a área de mensagens rolar
+       * dentro de si em vez de esticar a lateral inteira.
+       */}
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
         {tab === 'chat' && (
           <ChatPanel
             feed={feed}

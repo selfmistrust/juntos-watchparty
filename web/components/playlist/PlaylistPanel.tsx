@@ -49,7 +49,7 @@ export function PlaylistPanel({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
       <MediaSourceModal
         open={sourcesOpen}
         onClose={() => setSourcesOpen(false)}
@@ -79,7 +79,7 @@ export function PlaylistPanel({
         </Button>
       </div>
 
-      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+      <div className="scroll-thin min-h-0 min-w-0 w-full flex-1 overflow-y-auto overflow-x-hidden">
         {playlist.length === 0 ? (
           <p className="px-6 pt-10 text-center text-sm text-ink-faint">
             A fila começa vazia. Adicione o primeiro vídeo acima.
@@ -104,7 +104,13 @@ export function PlaylistPanel({
                     setDragOver(null);
                   }}
                   className={clsx(
-                    'group flex items-center gap-2 rounded-lg p-2 transition-colors duration-150',
+                    /*
+                     * `min-w-0` na linha do item: um título de faixa sem espaços
+                     * ou um nome de artista longo faz a linha esticar o
+                     * container, e com a divisória o sintoma era a lista da Fila
+                     * mais larga que o próprio painel.
+                     */
+                    'group flex min-w-0 items-center gap-2 rounded-lg p-2 transition-colors duration-150',
                     playing ? 'bg-accent-soft' : 'hover:bg-hover',
                     dragOver === index && 'ring-1 ring-accent/50',
                   )}

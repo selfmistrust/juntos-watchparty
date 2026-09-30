@@ -333,7 +333,23 @@ export function ChatPanel({
   return (
     <div className="flex h-full min-h-0 flex-col">
 
-      <div data-reaction-bounds className="scroll-thin flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      {/*
+       * A área de mensagens.
+       *
+       * O `min-w-0` é o que impede a deformação. Num item flex, o tamanho
+       * mínimo padrão é `auto`, ou seja, o conteúdo — e uma mensagem com um link
+       * longo, uma imagem ou uma palavra sem hífen estica o item e empurra a
+       * coluna para fora do painel. Com a divisória, o sintoma era o feed inteiro
+       * mais largo que a lateral, e o painel parecendo "espremido" por dentro
+       * enquanto transbordava por fora.
+       *
+       * `min-w-0` + `w-full` = o feed ocupa exatamente o espaço disponível e
+       * encolhe junto com ele.
+       */}
+      <div
+        data-reaction-bounds
+        className="scroll-thin min-h-0 min-w-0 w-full flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-4 py-4"
+      >
         {feed.length === 0 && (
           <p className="pt-6 text-center text-sm text-ink-faint">
             Ninguém falou nada ainda. Comece você.
@@ -378,7 +394,7 @@ export function ChatPanel({
           );
 
           return (
-            <div key={entry.id} className="animate-fade-up flex gap-2.5">
+            <div key={entry.id} className="animate-fade-up flex min-w-0 gap-2.5">
               <Avatar
                 name={entry.name}
                 color={entry.color}
@@ -529,18 +545,24 @@ export function ChatPanel({
         )}
       </div>
 
-      <div className="border-t border-hairline p-3">
+      <div className="shrink-0 border-t border-hairline p-3">
         {/*
-         * A barra é centralizada e com largura limitada, em vez de sangrar de
-         * ponta a ponta do painel.
+         * O composer ocupa **toda** a largura interna do painel.
          *
-         * Este wrapper também é o âncora de posicionamento dos pickers: eles
-         * são `absolute bottom-full left-0 right-0`, e se o `relative`
-         * ficasse no container de fora, abririam com a largura da tela cheia
-         * enquanto a barra teria 336px — desalinhados na borda direita. Por
-         * isso o `relative` desceu para cá, junto do `max-w`.
+         * Este wrapper tinha `mx-auto` e `max-w-[21rem]`, o que travava a barra em
+         * 336px e a centralizava dentro de um painel que vai de 320 a 650px. Com a
+         * divisória, o resultado era o campo estreito e deslocado: arrastar para a
+         * direita aumentava o painel, e os 336px continuavam no meio, com uma
+         * faixa vazia dos dois lados.
+         *
+         * O `mx-auto` e o `max-w` saíram, e a largura agora é a do pai.
+         *
+         * O `relative` **fica**, e é o que ancora os pickers de GIF e emoji: eles
+         * são `absolute bottom-full left-0 right-0` e precisam abrir com a mesma
+         * largura da barra. Com o `max-w` removido, eles passam a acompanhar a
+         * largura real — que é o que se quer.
          */}
-        <div className="relative mx-auto w-full max-w-[21rem]">
+        <div className="relative w-full">
           {gifOpen && <GifPicker onPick={pickGif} onClose={() => setGifOpen(false)} />}
           {emojiOpen && (
             <EmojiPicker

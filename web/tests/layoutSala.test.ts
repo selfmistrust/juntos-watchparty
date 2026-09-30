@@ -131,7 +131,7 @@ test('o sino de mencao foi para a barra superior, e em um lugar so', () => {
 
 test('a divisoria redimensiona o painel entre 320 e 700', () => {
   assert.equal(LARGURA_MIN_PAINEL, 320, 'o piso e 320px');
-  assert.equal(LARGURA_MAX_PAINEL, 700, 'o teto e 700px');
+  assert.equal(LARGURA_MAX_PAINEL, 650, 'o teto e 650px');
 
   /*
    * A funcao de limite e o unico lugar onde os numeros valem, e a pagina, a
@@ -171,6 +171,110 @@ test('a divisoria redimensiona o painel entre 320 e 700', () => {
    * resultado e HTML divergente do primeiro render do cliente.
    */
   assert.match(pagina, /useEffect\(\(\) => \{\s*\n\s*const guardada = lerLarguraDoPainel\(\)/, 'a leitura da largura guardada e um efeito');
+});
+
+test('o painel acompanha a largura: nenhum filho tem tamanho fixo', () => {
+  /*
+   * A divisória ajustava a largura do `aside`, e os filhos continuavam com os
+   * tamanhos deles. O sintoma era um chat que parecia espremido por dentro e
+   * largo por fora, com o campo de mensagem centralizado num bloco estreito.
+   *
+   * Estes sao os tamanhos que causaram isso. é um `max-w` ou um `min-w`
+   *_defaults_ que sobrevive ao `width` do pai.
+   */
+  const chat = semComentario(ler('../web/components/chat/ChatPanel.tsx'));
+  const sidebar = semComentario(painel);
+  const fila = semComentario(ler('../web/components/playlist/PlaylistPanel.tsx'));
+  const pessoas = semComentario(ler('../web/components/people/PeoplePanel.tsx'));
+
+  /*
+   * O composer. `mx-auto` + `max-w-[21rem]` travava a barra em 336px dentro de
+   * um painel de 320 a 650px: arrastar aumentava o painel e os 336px seguiam no
+   * meio, com faixa vazia dos dois lados.
+   */
+  assert.ok(
+    !/mx-auto[^"]*max-w-\[21rem\]/.test(chat),
+    'o composer nao e mais centralizado com largura fixa',
+  );
+  assert.match(chat, /<div className="relative w-full">/, 'e ocupa a largura toda do pai');
+  assert.ok(
+    !/max-w-\[21rem\]/.test(chat),
+    'e nao sobrou nenhum max-w de 21rem no chat',
+  );
+
+  /*
+   * `min-w-0` e a condicao para o `width` do pai ser respeitado. Sem ele, um item
+   * flex tem `min-width: auto` — ou seja, o conteudo — e uma mensagem com link
+   * longo estica a coluna **por cima** da largura definida.
+   */
+  assert.match(
+    sidebar,
+    /'flex min-w-0 flex-col border-t border-hairline bg-surface'/,
+    'o painel tem min-w-0: sem ele o conteudo desobedece ao width',
+  );
+  assert.match(
+    sidebar,
+    /<div className="min-h-0 min-w-0 flex-1 overflow-hidden">/,
+    'e o corpo do painel tambem, no mesmo eixo',
+  );
+  assert.match(
+    chat,
+    /scroll-thin min-h-0 min-w-0 w-full flex-1 space-y-3 overflow-y-auto/,
+    'a area de mensagens encolhe e ocupa a largura toda',
+  );
+  assert.match(chat, /animate-fade-up flex min-w-0 gap-2\.5/, 'e a linha da mensagem tambem');
+  assert.match(
+    chat,
+    /<div className="shrink-0 border-t border-hairline p-3">/,
+    'a barra do composer nao encolhe abaixo do conteudo',
+  );
+
+  for (const [nome, fonte] of [
+    ['Fila', fila],
+    ['Pessoas', pessoas],
+  ] as const) {
+    assert.match(
+      fonte,
+      /flex h-full min-h-0 min-w-0 flex-col/,
+      `${nome}: a raiz encolhe em vez de esticar o painel`,
+    );
+  }
+  assert.match(fila, /scroll-thin min-h-0 min-w-0 w-full flex-1/, 'a lista da Fila ocupa a largura');
+  assert.match(fila, /group flex min-w-0 items-center gap-2/, 'e a linha do item tambem');
+  assert.match(pessoas, /<li key=\{user\.sessionId\} className="flex min-w-0 items-center/, 'e a linha de pessoa tambem');
+
+  /*
+   * Uma unica fonte de largura. A utilitaria `w-[23rem]` e o `style` inline brigam
+   * em silencio -- o inline ganha por cascata, mas so enquanto ninguem mexer em
+   * nenhuma das duas.
+   */
+  assert.match(
+    sidebar,
+    /largura \? 'lg:shrink-0' : 'lg:w-\[23rem\] lg:shrink-0'/,
+    'a largura inicial so existe quando nao ha largura da divisoria',
+  );
+  /*
+   * Nenhum reposicionamento manual de filho.
+   *
+   * A verificação olha `mx-auto` e `w-[` com número, e não `translate-x` genérico:
+   * há um `translate-x-4` legítimo no `PeoplePanel`, que é a bolinha de um
+   * interruptor sliding. Um teste que proibisse a palavra reprovaria um
+   * interruptor, e o próximo que precisasse de um transform pararia de usar.
+   */
+  for (const [nome, fonte] of [
+    ['chat', chat],
+    ['Fila', fila],
+    ['Pessoas', pessoas],
+  ] as const) {
+    assert.ok(
+      !/w-\[\d+px\]/.test(fonte),
+      `${nome}: nenhuma largura fixa em px nos filhos`,
+    );
+    assert.ok(
+      !/style=\{\{[^}]*(width|left|marginLeft|translateX)/.test(fonte),
+      `${nome}: e nenhum style de largura ou posicao nos filhos`,
+    );
+  }
 });
 
 test('o painel de reacoes e um container so, medido inteiro', () => {

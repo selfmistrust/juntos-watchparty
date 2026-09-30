@@ -20,7 +20,17 @@
  * demais é o jeito mais fácil de não ver o filme.
  */
 export const LARGURA_MIN_PAINEL = 320;
-export const LARGURA_MAX_PAINEL = 700;
+/**
+ * **650px** é o ponto em que o vídeo começa a ficar pequeno demais para ver o que
+ * a sala está assistindo. E o vídeo é o produto, não o painel: um painel largo
+ * demais é o jeito mais fácil de não ver o filme.
+ *
+ * O teto caiu de 700px porque, com o composer ocupando a largura toda, acima de
+ * ~650px a coluna de mensagens fica mais larga que qualquer tela de TV com a
+ * janela dividida — a leitura fica confortável e o vídeo some. Medir pelo
+ * comfortably-large do texto é o critério, e é o que se sente.
+ */
+export const LARGURA_MAX_PAINEL = 650;
 
 /** O mesmo `23rem` que o `Sidebar` usa como largura inicial. */
 export const LARGURA_PADRAO_PAINEL = 368;

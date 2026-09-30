@@ -64,7 +64,7 @@ export function PeoplePanel({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
       {me && (
         <div className="border-b border-hairline p-4">
           <p className="text-2xs uppercase tracking-wide text-ink-faint">Seu perfil</p>
@@ -185,9 +185,9 @@ export function PeoplePanel({
         </div>
       )}
 
-      <ul className="scroll-thin min-h-0 flex-1 overflow-y-auto p-2">
+      <ul className="scroll-thin min-h-0 min-w-0 w-full flex-1 overflow-y-auto overflow-x-hidden p-2">
         {state.users.map((user) => (
-          <li key={user.sessionId} className="flex items-center gap-3 rounded-lg p-2 transition-colors duration-150 hover:bg-hover">
+          <li key={user.sessionId} className="flex min-w-0 items-center gap-3 rounded-lg p-2 transition-colors duration-150 hover:bg-hover">
             <Avatar name={user.name} color={user.color} avatarSeed={user.avatarSeed} avatarUrl={user.avatarUrl} />
             <span className="min-w-0 flex-1 truncate text-sm text-ink">
               {user.name}
