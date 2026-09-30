@@ -413,6 +413,7 @@ export default function RoomPage() {
             onChange={ajustarLargura}
             min={LARGURA_MIN_PAINEL}
             max={LARGURA_MAX_PAINEL}
+            padrao={LARGURA_PADRAO_PAINEL}
           />
         )}
 

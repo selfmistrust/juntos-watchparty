@@ -786,7 +786,26 @@ export function ChatPanel({
                * era o `line-height` que descentrava o campo; era o `inline-block`
                * somando a descida da linha do wrapper por cima dele.
                */
-              className="scroll-thin block max-h-28 min-w-0 flex-1 resize-none bg-transparent py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
+              /*
+               * `min-w-[9rem]` e o piso do campo, e ele substitui o `min-w-0`.
+               *
+               * Com `min-w-0` o campo encolhe ate zero: os quatro botoes tem
+               * `shrink-0` e medem 36px cada, entao num painel estreito eles
+               * consomem a barra inteira e o campo fica com algumas dezenas de
+               * pixels. A quebra de linha do placeholder em duas linhas, a
+               * palavra cortado e aquele tracinho tracejado embaixo -- que e o
+               * indicador de transbordo do textarea -- sao todos o mesmo
+               * problema: nao e o texto quebrando, e o campo sem largura.
+               *
+               * Com o piso, o campo nunca some. E se ainda assim a barra nao
+               * couber, quem transborda e a barra -- e a pessoa ve a barra
+               * cortada, que e um sintoma legivel, em vez de um campo ilegivel.
+               *
+               * O `max-h-28` e o auto-crescimento: o campo cresce em altura ate
+               * 112px e depois rola. E por isso que o `min-w` precisa existir --
+               * altura cresce sem limite, largura nao.
+               */
+              className="scroll-thin block max-h-28 min-w-[9rem] flex-1 resize-none bg-transparent py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:shadow-none"
             />
             </div>
             <IconButton dense label="Enviar mensagem" onClick={send} disabled={!draft.trim()}>

@@ -9,31 +9,34 @@
  * na leitura do `localStorage` é a forma mais rápida de o painel ficar 200px mais
  * estreito do que o mínimo, num recarregamento.
  *
- * ## Por que os limites são estes
+ * **360px** e o piso, e ele veio da conta do composer -- nao de um gosto.
  *
- * **320px** é o ponto em que a coluna de mensagens do chat deixa de ter largura
- * útil: abaixo disso o remetente e a hora já comem metade da linha e a mensagem
- * vira uma coluna de três palavras.
+ * A 360px sobram 318px dentro da barra do composer, e os quatro botoes (imagem,
+ * GIF, emoji, enviar) com os vaos levam 150. Sobram 168px para o campo, ou 152px
+ * de texto depois do `py-2`.
  *
- * **700px** é o ponto em que o vídeo começa a ficar pequeno demais para ver o que
- * a sala está assistindo. E o vídeo é o produto, não o painel: um painel largo
- * demais é o jeito mais fácil de não ver o filme.
+ * A 320px sobrariam 112px de texto, e o placeholder "Mandar mensagem" mede cerca
+ * de 110px: cabe por dois pixels e quebra em qualquer fonte um pouco maior. O
+ * piso de 320 era meu, e estava errado.
  */
-export const LARGURA_MIN_PAINEL = 320;
+export const LARGURA_MIN_PAINEL = 360;
+
 /**
- * **650px** é o ponto em que o vídeo começa a ficar pequeno demais para ver o que
- * a sala está assistindo. E o vídeo é o produto, não o painel: um painel largo
- * demais é o jeito mais fácil de não ver o filme.
+ * **650px** e o teto: acima disso a coluna de mensagens fica mais larga que
+ * qualquer TV com a janela dividida, e o video -- que e o produto -- some.
  *
- * O teto caiu de 700px porque, com o composer ocupando a largura toda, acima de
- * ~650px a coluna de mensagens fica mais larga que qualquer tela de TV com a
- * janela dividida — a leitura fica confortável e o vídeo some. Medir pelo
- * comfortably-large do texto é o critério, e é o que se sente.
+ * O teto caiu de 700px porque, com o composer ocupando a largura toda, a leitura
+ * fica confortavel e o que desaparece e justamente o filme.
  */
 export const LARGURA_MAX_PAINEL = 650;
 
-/** O mesmo `23rem` que o `Sidebar` usa como largura inicial. */
-export const LARGURA_PADRAO_PAINEL = 368;
+/**
+ * O padrao, em 400px.
+ *
+ * 400 da ao campo 192px de texto: o placeholder inteiro com folga, e espaco para
+ * o nome de quem manda ao lado do botao de enviar.
+ */
+export const LARGURA_PADRAO_PAINEL = 400;
 
 const CHAVE = 'juntos:largura-painel';
 

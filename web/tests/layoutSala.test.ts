@@ -130,8 +130,9 @@ test('o sino de mencao foi para a barra superior, e em um lugar so', () => {
 });
 
 test('a divisoria redimensiona o painel entre 320 e 700', () => {
-  assert.equal(LARGURA_MIN_PAINEL, 320, 'o piso e 320px');
+  assert.equal(LARGURA_MIN_PAINEL, 360, 'o piso e 360px');
   assert.equal(LARGURA_MAX_PAINEL, 650, 'o teto e 650px');
+  assert.equal(LARGURA_PADRAO_PAINEL, 400, 'e o padrao caiu para 400px');
 
   /*
    * A funcao de limite e o unico lugar onde os numeros valem, e a pagina, a
@@ -151,7 +152,7 @@ test('a divisoria redimensiona o painel entre 320 e 700', () => {
   assert.match(c, /userSelect = 'none'/, 'e a selecao de texto e desligada durante o arraste');
   assert.match(
     c,
-    /role="separator"[\s\S]{0,200}?tabIndex=\{0\}/,
+    /role="separator"[\s\S]{0,400}?tabIndex=\{0\}/,
     'e a alca e um separator focavel, com setas do teclado',
   );
   for (const tecla of ['ArrowLeft', 'ArrowRight', 'Home', 'End']) {
@@ -241,6 +242,34 @@ test('o painel acompanha a largura: nenhum filho tem tamanho fixo', () => {
   }
   assert.match(fila, /scroll-thin min-h-0 min-w-0 w-full flex-1/, 'a lista da Fila ocupa a largura');
   assert.match(fila, /group flex min-w-0 items-center gap-2/, 'e a linha do item tambem');
+
+  /*
+   * O composer tem `min-w-0` e `flex-1`, o que deixa os quatro botoes — que tem
+   * `shrink-0` e medem 36px — consumirem a barra e o campo sobrar com algumas
+   * dezenas de pixels. A quebra do placeholder em duas linhas, a palavra cortada
+   * e o tracinho tracejado embaixo (o indicador de transbordo do textarea) sao o
+   * mesmo problema: nao e o texto quebrando, e o campo sem largura.
+   */
+  assert.match(chat, /min-w-\[9rem\] flex-1 resize-none/, 'o campo do composer tem piso de largura');
+  assert.ok(
+    !/max-h-28 min-w-0 flex-1/.test(chat),
+    'e nao min-w-0, que o deixava ser espremido a quase zero',
+  );
+
+  /*
+   * A largura guardada nao muda quando o padrao muda, e a pessoa que ja arrastou
+   * ficaria com a largura antiga sem caminho para a nova. O duplo clique na
+   * divisoria e o caminho de volta, e e reversivel por natureza: quem nao gostar
+   * arrasta de novo.
+   */
+  assert.match(resizer, /onDoubleClick=\{onDoubleClick\}/, 'o duplo clique na divisoria volta ao padrao');
+  assert.match(resizer, /onChange\(padrao\);/, 'e aplica o valor padrao');
+  assert.match(
+    resizer,
+    /'Enter' \|\| e\.key === ' '[\s\S]{0,40}?onChange\(padrao\)/,
+    'e o teclado chega no padrao tambem, por Enter e espaco',
+  );
+  assert.match(pagina, /padrao=\{LARGURA_PADRAO_PAINEL\}/, 'a pagina passa o padrao para a divisoria');
   assert.match(pessoas, /<li key=\{user\.sessionId\} className="flex min-w-0 items-center/, 'e a linha de pessoa tambem');
 
   /*

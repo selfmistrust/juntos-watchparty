@@ -38,11 +38,14 @@ export function SidebarResizer({
   onChange,
   min,
   max,
+  padrao,
 }: {
   width: number;
   onChange: (width: number) => void;
   min: number;
   max: number;
+  /** O valor do botão duplo. */
+  padrao: number;
 }) {
   const [arrastando, setArrastando] = useState(false);
   const [larguraTela, setLarguraTela] = useState(0);
@@ -106,12 +109,35 @@ export function SidebarResizer({
       else if (e.key === 'ArrowRight') onChange(Math.max(min, width - passo));
       else if (e.key === 'Home') onChange(max);
       else if (e.key === 'End') onChange(min);
+      else if (e.key === 'Enter' || e.key === ' ') onChange(padrao);
       else return;
       // Sem isto a página rola junto com a tecla, e o foco pula para o vídeo.
       e.preventDefault();
     },
-    [max, min, onChange, width],
+    [max, min, onChange, padrao, width],
   );
+
+  /**
+   * O botão duplo volta ao padrão.
+   *
+   * ## Por que ele é preciso
+   *
+   * A largura fica no `localStorage`, então mudar o valor padrão **não** muda a
+   * tela de quem já arrastou. A pessoa fica com a largura antiga, sem caminho
+   * para o valor novo a não ser o arraste inteiro de volta.
+   *
+   * Apagar a chave por conta própria seria o caminho curto e o errado: a largura
+   * escolhida é uma preferência, e jogá-la fora sem a pessoa pedir é a mesma
+   * coisa que o Spotify faz com os escopos — trocar de conta porque o app
+   * decidiu.
+   *
+   * O duplo clique é o gesto de desfazer, e ele é reversível por natureza: quem
+   * não gostar arrasta de novo. O `aria-label` cita o valor, para quem navega
+   * por teclado saber o que o duplo clique faz antes de fazê-lo.
+   */
+  const onDoubleClick = useCallback(() => {
+    onChange(padrao);
+  }, [onChange, padrao]);
 
   /*
    * A janela muda de largura entre o `pointerdown` e o `pointermove` — a pessoa
@@ -149,7 +175,7 @@ export function SidebarResizer({
       ref={ref}
       role="separator"
       aria-orientation="vertical"
-      aria-label="Largura do painel lateral"
+      aria-label={`Largura do painel lateral. Duplo clique volta ao padrão, ${padrao} pixels.`}
       aria-valuenow={width}
       aria-valuemin={min}
       aria-valuemax={max}
@@ -158,6 +184,7 @@ export function SidebarResizer({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onDoubleClick={onDoubleClick}
       onKeyDown={onKeyDown}
       className={[
         'group relative z-10 hidden w-px shrink-0 cursor-col-resize touch-none lg:block',
