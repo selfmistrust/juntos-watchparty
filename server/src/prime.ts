@@ -104,21 +104,3 @@ export function ehPaginaDeTitulo(url: unknown): boolean {
   const primeiro = segmentos[0];
   return CAMINHOS_DE_TITULO.includes(primeiro as (typeof CAMINHOS_DE_TITULO)[number]);
 }
-
-/**
- * DomÃ­nios por onde o Prime Video leva a pessoa durante o login.
- *
- * NÃ£o Ã© usado para decidir o que a fila guarda â€” ali a regra Ã© sÃ³ o domÃ­nio do
- * Prime. Ã‰ o filtro de navegaÃ§Ã£o da `WebContentsView` do desktop: o formulÃ¡rio
- * de login da Amazon aparece em `amazon.com`, e mandar a pessoa para o navegador
- * do sistema no meio do login seria trocar um formulÃ¡rio por uma ida e volta
- * sem aviso. Link de marketers e CDN vÃ£o para o navegador do sistema, porque
- * navigated dentro da view de verdade perde a pessoa no meio do app.
- */
-export const DOMINIOS_DA_NAVEGACAO = [DOMINIO, 'amazon.com'] as const;
-
-/** `true` para um domÃ­nio que a view do Prime pode navegar sozinha. */
-export function ehDominioDeNavegacao(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  return DOMINIOS_DA_NAVEGACAO.some((d) => host === d || host.endsWith(`.${d}`));
-}

@@ -129,7 +129,7 @@ function PrimeBase({ tituloDaFaixa, urlDaFaixa, onAssistirComSala, onFechar, chi
    * Fechar no cleanup é o que garante que trocar de fonte não deixe uma aba do
    * Prime flutuando sobre o vídeo seguinte — e o `main` **remove a view do
    * `contentView`**, em vez de escondê-la: uma view invisível ainda
-   * participating do hit-test é como o Prime passa a engolir clique do chat.
+   * participa do hit-test, e é assim que o Prime passa a engolir clique do chat.
    *
    * A sessão `persist:juntos-prime` continua em disco, então quem volta ao
    * Prime não precisa logar de novo.
@@ -377,8 +377,33 @@ export function PrimeStage({
       onFechar={onFechar}
     >
       {/*
-        * Prontidão: o que substitui a sincronização de player aqui. Cada um abre
-        * o título na conta própria, confirma, e a sala começa junta.
+        * Prontidão: o que substitui a sincronização de player aqui.
+        *
+        * ## Por que não é play/pause sincronizado
+        *
+        * A pergunta foi pesquisa, não presumida:
+        *
+        * - As APIs oficiais da Prime Video (Video Central) são Content API, para
+        *   parceiros de *conteúdo* enviarem catálogo, e Analytics API, somente
+        *   leitura, para parceiros elegíveis. Nenhuma expõe reprodução, posição,
+        *   ou controle sobre o player de um assinante.
+        * - A Watch Party nativa da Amazon foi lançada em 2020 e **removida em
+        *   2024**.
+        * - Todo produto que promete sync (Teleparty, Prime Party, WatchNest) é
+        *   extensão de navegador, e funciona injetando na página: lendo
+        *   `video.currentTime` e chamando `play()` num contexto que o site não
+        *   expõe.
+        *
+        * A última é a que decide. Esta view é o site da Amazon — sem preload,
+        * sem Node, em sandbox, sem `executeJavaScript` — e injetar para ler a
+        * posição seria exatamente o que a integração recusa ser. É o único
+        * lugar onde esse caminho seria possível, e é justamente onde ele não
+        * pode ser usado.
+        *
+        * Então o que sobra é coordenação de sala de cinema: cada um abre o
+        * título na conta própria, confirma, e a contagem começa junto. É menos
+        * preciso que um play sincronizado, e é o único caminho que não depende
+        * de ler algo que o Prime não expõe.
         */}
       <div className="flex flex-wrap items-center gap-2">
         <Button onClick={() => onReady(!jaPronto)} variant={jaPronto ? 'ghost' : 'primary'} className="h-9 gap-1.5">

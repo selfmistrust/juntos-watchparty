@@ -1,5 +1,6 @@
-import { BrowserWindow, WebContentsView, ipcMain, session, shell } from 'electron';
+import { BrowserWindow, WebContentsView, app, ipcMain, session, shell } from 'electron';
 import { log } from './log';
+import { ehDominioPermitido } from '../shared/dominioPrime';
 import type { PrimeBounds, PrimePage } from '../shared/contract';
 
 /**
@@ -45,11 +46,16 @@ import type { PrimeBounds, PrimePage } from '../shared/contract';
  */
 const PARTICAO = 'persist:juntos-prime';
 
-/** Domínio de onde a view pode navegar. O resto vai para o navegador do sistema. */
-const DOMINIO_PRIME = 'primevideo.com';
+/**
+ * A regra de domínios mora em `shared/dominioPrime.ts`.
+ *
+ * Ela fica lá, e não aqui, por um motivo concreto: a suíte de testes roda a
+ * partir de `server`, onde o pacote `electron` não está instalado. Com a regra
+ * num módulo sem import nenhum, o `main` e o teste exercitam o mesmo código —
+ * antes havia uma cópia aqui e outra em `server/src/prime.ts`, e o teste só
+ * olhava uma delas.
+ */
 
-/** Domínio do login. O formulário da Amazon aparece aqui, dentro da view. */
-const DOMINIO_LOGIN = 'amazon.com';
 
 /** Caminhos que são a página de um título. O primeiro segmento basta. */
 const CAMINHOS_DE_TITULO = ['detail', 'title', 'dp'];
@@ -74,18 +80,13 @@ let paiDaView: BrowserWindow | null = null;
 /** Última página conhecida, para responder a `prime:pagina` sem esperar evento. */
 let paginaAtual: PrimePage = { url: '', titulo: '', isTitulo: false };
 
-function hostPermitido(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  return [DOMINIO_PRIME, DOMINIO_LOGIN].some((d) => host === d || host.endsWith(`.${d}`));
-}
-
 /** URL canônica de uma página permitida, com query e âncora removidas. */
 function normalizar(url: unknown): URL | null {
   if (typeof url !== 'string' || url.length === 0 || url.length > 2048) return null;
   try {
     const u = new URL(url);
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
-    if (!hostPermitido(u.hostname)) return null;
+    if (!ehDominioPermitido(u.hostname)) return null;
     u.search = '';
     u.hash = '';
     return u;
@@ -146,6 +147,99 @@ function destruir(): void {
   paginaAtual = { url: '', titulo: '', isTitulo: false };
 }
 
+/**
+ * Abre uma janela para o login da Amazon, na **mesma sessão** da view do Prime.
+ *
+ * ## O que estava errado
+ *
+ * O `setWindowOpenHandler` mandava toda URL permitida para `shell.openExternal`.
+ * A login da Amazon acontece em parte numa janela separada, com formulário e POST.
+ * Mandar essa URL para o navegador do sistema significa que o POST vai para o
+ * Chrome — e a sessão que completa o login é a do Chrome. A sessão
+ * `persist:juntos-prime` continua deslogada, a view volta para o Prime pedindo
+ * login de novo, e a pessoa entra num ciclo.
+ *
+ * Não é um detalhe de implementação: é o passo "login na conta própria" inteiro
+ * quebrado, e ele é o que o modelo do Rave promete — *"you can sign in to that
+ * account in Rave"*.
+ *
+ * ## Por que deixar o Electron criar
+ *
+ * `action: 'allow'` deixa o Chromium abrir a janela, e o Electron herda a
+ * `webPreferences` do pai. `partition` está explícita em `overrideBrowserWindowOptions`
+ * de propósito: é ela que garante que o POST e os cookies do login caiam na
+ * sessão do Prime, e confiar na herança seria confiar num detalhe de versão.
+ *
+ * `parent` faz a janela ser filha da principal: ela fica agrupada na barra de
+ * tarefas e na frente, em vez de sumir atrás do app.
+ */
+function opcoesDaJanelaDeLogin(janela: BrowserWindow | null) {
+  const base = janela && !janela.isDestroyed() ? janela.getBounds() : null;
+  const largura = 460;
+  const altura = 620;
+  return {
+    title: 'Entrar no Prime Video',
+    width: largura,
+    height: altura,
+    /*
+     * Sem `useContentSize`: o `width`/`height` acima são da **janela**, e o
+     * conteúdo fica menor que isso por causa da borda. Centralizar pelo tamanho
+     * da janela punha a janela do login um pouco acima e à esquerda do centro da
+     * tela, e o deslocamento era visível a cada login.
+     */
+    ...(base
+      ? { x: Math.round(base.x + (base.width - largura) / 2), y: Math.round(base.y + (base.height - altura) / 3) }
+      : {}),
+    parent: janela ?? undefined,
+    modal: false,
+    show: true,
+    autoHideMenuBar: true,
+    backgroundColor: '#0b0b0d',
+    webPreferences: {
+      /*
+       * A mesma partição da view do Prime. É a linha inteira que faz o login
+       * funcionar: o `POST` do formulário e os cookies que a Amazon grava
+       * precisam cair em `persist:juntos-prime`, e não na sessão do navegador do
+       * sistema.
+       */
+      partition: PARTICAO,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  } as const;
+}
+
+/**
+ * Filtro de navegação, para **todo** WebContents da partição do Prime.
+ *
+ * ## Por que um `app.on('web-contents-created')` e não só na view
+ *
+ * A view principal tem o seu próprio `will-navigate`. A janela de login, não:
+ * ela é criada pelo Chromium, e um filtro preso à view não alcança o que nasce
+ * dentro dela. Sem este gancho, a janela de login navegaria para o que
+ * quisesse — inclusive para uma página que imitasse a Amazon e trouxesse a
+ * pessoa a digitar a senha num lugar que não é a Amazon, dentro de um app que
+ * tem cara de app confiável.
+ *
+ * O gancho dispara para cada `webContents` criado no processo, e o filtro é
+ * aplicado só aos que estão na partição do Prime. Uma view de terceiro outro
+ * qualquer no mesmo app não é tocada por ele.
+ */
+function instalarFiltroDeNavegacao(): void {
+  app.on('web-contents-created', (_evento, wc) => {
+    if (wc.getURL().startsWith('data:')) return;
+    const ehDoPrime = wc.session === session.fromPartition(PARTICAO);
+    if (!ehDoPrime) return;
+    wc.on('will-navigate', (evento, url) => {
+      const u = normalizar(url);
+      if (u) return;
+      evento.preventDefault();
+      if (/^https?:/.test(url)) void shell.openExternal(url);
+    });
+  });
+}
+
 function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
   if (!janela || janela.isDestroyed()) return false;
 
@@ -174,8 +268,25 @@ function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
      */
     view.webContents.setWindowOpenHandler(({ url }) => {
       const u = normalizar(url);
-      if (u) void shell.openExternal(u.toString());
-      return { action: 'deny' };
+      if (!u) {
+        /*
+         * Fora dos domínios permitidos, o navegador do sistema. Um popup de
+         * anúncio ou de terceiro não pode ficar dentro do app com a cara dele.
+         */
+        if (/^https?:/.test(url)) void shell.openExternal(url);
+        return { action: 'deny' };
+      }
+      /*
+       * Login. A janela é criada aqui, na MESMA sessão da view -- o que é o
+       * ponto inteiro: a sessão que completa o login tem de ser a
+       * `persist:juntos-prime`, e não a do navegador do sistema.
+       *
+       * Ver `opcoesDaJanelaDeLogin`.
+       */
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: opcoesDaJanelaDeLogin(dona),
+      };
     });
 
     /*
@@ -183,11 +294,11 @@ function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
      * é bloqueio: é para a pessoa não ficar presa numa tela do Prime sem barra
      * de endereço, sem volta e sem saber que saiu do app.
      */
-    view.webContents.on('will-navigate', (evento, url) => {
-      if (normalizar(url)) return;
-      evento.preventDefault();
-      if (/^https?:/.test(url)) void shell.openExternal(url);
-    });
+    //
+    // A navegação fora dos domínios é filtrada por
+    // `instalarFiltroDeNavegacao`, que alcança esta view e a janela de login.
+    // Aqui não há um segundo filtro: a mesma regra em dois lugares diverge,
+    // e ninguém descobre qual delas está errada.
 
     view.webContents.on('did-navigate', publicar);
     view.webContents.on('did-navigate-in-page', publicar);
@@ -299,6 +410,7 @@ function temDrm(): Promise<boolean> {
  * aí, a segunda janela derrubaria o app inteiro em vez de apenas abrir.
  */
 export function registrarIpcPrime(): void {
+  instalarFiltroDeNavegacao();
   /*
    * A janela vem do `sender`, e não da variavel global.
    *

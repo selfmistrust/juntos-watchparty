@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 
-import { ehPaginaDeTitulo, ehDominioDeNavegacao, normalizarUrlDoPrime } from '../src/prime.js';
+import { ehPaginaDeTitulo, normalizarUrlDoPrime } from '../src/prime.js';
+import { ehDominioPermitido, ehAmazon, ehPrimeVideo } from '../../desktop/electron/shared/dominioPrime.js';
 
 /*
  * O Prime Video dentro do Junto: as regras de URL e o que a sala guarda.
@@ -109,13 +110,72 @@ test('a URL guardada é canônica: sem query e sem âncora', () => {
   assert.equal(normalizarUrlDoPrime(`${semRef}#algum-ancora`), semRef);
 });
 
-test('a navegação da view aceita Prime e login, e manda o resto ao navegador', () => {
-  for (const host of ['primevideo.com', 'www.primevideo.com', 'amazon.com', 'www.amazon.com', 'smile.amazon.com']) {
-    assert.ok(ehDominioDeNavegacao(host), `${host} deveria navegar dentro da view`);
+test('a navegação aceita as lojas regionais da Amazon, e só elas', () => {
+  /*
+   * ## O defeito que este teste existe para pegar
+   *
+   * A regra anterior era `host.endsWith('.amazon.com')`. Isso **rejeita
+   * `www.amazon.com.br`**: `amazon.com.br` não termina em `amazon.com`, porque o
+   * final de verdade é `.com.br`.
+   *
+   * O efeito era o login inteiro fora do aplicativo: o redirecionamento para a
+   * loja regional saía para o navegador do sistema, e a sessão
+   * `persist:juntos-prime` nunca era completada. A pessoa logava no Chrome e
+   * voltava para um app que continuava deslogado — o passo "login na conta
+   * própria" do modelo do Rave, impossível.
+   *
+   * E `smile.amazon.com` e `sso.amazon.com` são as superfícies de login da
+   * Amazon: qualquer subdomínio de `amazon.<loja>` passa, sem lista.
+   */
+  const passam = [
+    'primevideo.com',
+    'www.primevideo.com',
+    'amazon.com',
+    'www.amazon.com',
+    'smile.amazon.com',
+    'sso.amazon.com',
+    // As lojas regionais. As duas primeiras são o caso que quebrava.
+    'amazon.com.br',
+    'www.amazon.com.br',
+    'sso.amazon.com.br',
+    'amazon.co.uk',
+    'amazon.de',
+    'amazon.co.jp',
+    'amazon.com.mx',
+    'amazon.com.au',
+  ];
+
+  for (const host of passam) {
+    assert.ok(ehDominioPermitido(host), `${host} deveria navegar dentro da view`);
   }
-  for (const host of ['evilprimevideo.com', 'primevideo.com.atacante.net', 'notamazon.com', 'google.com']) {
-    assert.equal(ehDominioDeNavegacao(host), false, `${host} não deveria navegar dentro da view`);
+
+  /*
+   * E o segundo nível é fechado em `com` e `co` de propósito: aceitar qualquer
+   * um abriria `amazon.evil.net`, e quem registrasse `evil.net` levaria a view
+   * para lá.
+   */
+  for (const host of [
+    'evilprimevideo.com',
+    'primevideo.com.atacante.net',
+    'notamazon.com',
+    'amazon.com.br.evil.net',
+    'amazon.com.evil.net',
+    'amazon.evil.net',
+    'amazon.zip',
+    'google.com',
+    'netflix.com',
+  ]) {
+    assert.equal(ehDominioPermitido(host), false, `${host} não deveria navegar dentro da view`);
   }
+
+  /*
+   * As duas perguntas são separadas, e a separação importa: `primevideo.com` é o
+   * que identifica um título; as lojas da Amazon são para onde a pessoa pode
+   * *ir* durante o login, e nada disso identifica um filme.
+   */
+  assert.ok(ehPrimeVideo('www.primevideo.com'));
+  assert.equal(ehPrimeVideo('www.amazon.com.br'), false, 'a loja da Amazon não é o Prime');
+  assert.ok(ehAmazon('www.amazon.com.br'), 'mas é onde o login acontece');
 });
 
 test('a validação é do servidor, e o item gravado é o que o servidor reescreveu', () => {
@@ -661,5 +721,228 @@ test('a view é reposicionada em todos os momentos em que o palco muda de tamanh
     palco,
     /return \(\) => \{\s*void api\.closePrimeView\(\);\s*\};|void api\.closePrimeView\(\);/,
     'e o cleanup da faixa fecha a view',
+  );
+});
+
+test('o login da Amazon acontece na sessão do Prime, e não no navegador do sistema', () => {
+  /*
+   * ## O defeito
+   *
+   * O `setWindowOpenHandler` mandava **toda** URL permitida para
+   * `shell.openExternal`. O login da Amazon acontece em parte numa janela
+   * separada, com formulário e POST.
+   *
+   * Mandar essa URL para o navegador do sistema significa que o POST vai para o
+   * Chrome — e a sessão que completa o login é a do Chrome. A
+   * `persist:juntos-prime` continua deslogada, a view volta para o Prime pedindo
+   * login de novo, e a pessoa entra num ciclo.
+   *
+   * Não é um detalhe de implementação. É o passo inteiro quebrado, e ele é
+   * justamente o que o modelo do Rave promete: *"you can sign in to that account
+   * in Rave"*.
+   */
+  const main = semComentario(ler('../desktop/electron/main/prime.ts'));
+
+  // 1. Popup de domínio permitido: janela de verdade, com a mesma partição.
+  assert.match(
+    main,
+    /setWindowOpenHandler\(\(\{ url \}\) => \{[\s\S]{0,400}action: 'allow'/,
+    'um popup do Prime ou da Amazon vira janela, e não link externo',
+  );
+  assert.match(
+    main,
+    /overrideBrowserWindowOptions: opcoesDaJanelaDeLogin\(dona\)/,
+    'com as opções que importam',
+  );
+
+  const opcoes = main.slice(main.indexOf('function opcoesDaJanelaDeLogin'), main.indexOf('function instalarFiltroDeNavegacao'));
+  assert.match(
+    opcoes,
+    /partition: PARTICAO/,
+    'a janela do login usa a MESMA partição da view: é o POST e os cookies que precisam cair aqui',
+  );
+  assert.match(opcoes, /nodeIntegration: false/, 'e sem Node');
+  assert.match(opcoes, /contextIsolation: true/, 'e com isolamento de contexto');
+  assert.match(opcoes, /sandbox: true/, 'e em sandbox');
+
+  /*
+   * `parent` faz a janela do login ser filha da principal. Sem isso ela é uma
+   * janela solta: não agrupa na barra de tarefas e pode ficar atrás do app, e
+   * o sintoma de um login que parece não ter acontecido.
+   */
+  assert.match(opcoes, /parent: janela \?\? undefined/, 'a janela do login é filha da principal');
+
+  /*
+   * 2. Popup de fora dos domínios: navegador do sistema.
+   *
+   * Um anúncio ou um link de terceiro não pode ficar dentro do app com a cara
+   * dele — mas também não pode ser bloqueado em silêncio, porque a pessoa ficaria
+   * presa numa tela que não reage.
+   */
+  assert.match(
+    main,
+    /setWindowOpenHandler[\s\S]{0,400}if \(\/\^https\?:\/\.test\(url\)\) void shell\.openExternal\(url\);[\s\S]{0,80}action: 'deny'/,
+    'e um popup de fora vai para o navegador do sistema, em vez de ser bloqueado em silêncio',
+  );
+
+  /*
+   * 3. `shell.openExternal` não pode estar no caminho do login.
+   *
+   * É a trava que pega a volta atrás. A regra é: `openExternal` só aparece
+   * dentro de um ramo cujo teste de domínio **falhou**.
+   */
+  const handler = main.slice(
+    main.indexOf('setWindowOpenHandler'),
+    main.indexOf('did-navigate'),
+  );
+  const [ateAllow, doAllow] = handler.split("action: 'allow'");
+  assert.equal(
+    ateAllow.length > 0 && doAllow.length > 0,
+    true,
+    'o handler tem um caminho que recusa e um que deixa abrir',
+  );
+  assert.match(
+    ateAllow,
+    /openExternal\(/,
+    'o caminho que recusa manda a URL para o navegador do sistema, em vez de sumir com ela',
+  );
+  assert.ok(
+    !/openExternal/.test(doAllow),
+    'e o caminho que vira janela de login não tem escape para o navegador do sistema -- é essa a linha que quebrava o login',
+  );
+
+  /*
+   * 4. A navegação da janela do login também é filtrada.
+   *
+   * Um `will-navigate` preso à view não alcança o que nasce dentro dela. Sem o
+   * gancho global, a janela de login navegaria para onde quisesse — inclusive
+   * para uma página que imitasse a Amazon e trouxesse a pessoa a digitar a senha
+   * num lugar que não é a Amazon, dentro de um app que tem cara de app
+   * confiável.
+   */
+  assert.match(
+    main,
+    /app\.on\('web-contents-created',[\s\S]{0,300}wc\.session === session\.fromPartition\(PARTICAO\)/,
+    'o filtro alcança todo WebContents da partição do Prime, e só ele',
+  );
+  assert.match(
+    main,
+    /instalarFiltroDeNavegacao\(\);\r?\n?\s*ipcMain\.handle/,
+    'e ele é instalado junto com os canais IPC, uma vez só',
+  );
+
+  /*
+   * 5. A regra de domínios não pode voltar a ser uma cópia dentro do main.
+   *
+   * Houve duas — uma em `server/src/prime.ts` e outra aqui — e o teste olhava
+   * só uma delas. É a forma mais barata de um bug que só aparece em produção.
+   */
+  assert.ok(
+    !/hostPermitido/.test(main),
+    'o main não tem mais a sua própria função de dominio',
+  );
+  assert.ok(
+    !/const DOMINIO_(PRIME|LOGIN)/.test(main),
+    'e nem as constantes: a lista de dominios mora inteira no modulo compartilhado',
+  );
+  assert.match(
+    main,
+    /import \{ ehDominioPermitido \} from '\.\.\/shared\/dominioPrime'/,
+    'ele importa do módulo compartilhado, que é o mesmo que o teste exercita',
+  );
+  assert.ok(
+    !/DOMINIOS_DA_NAVEGACAO|ehDominioDeNavegacao/.test(
+      ler('../server/src/prime.ts'),
+    ),
+    'e a cópia do servidor saiu: lá a regra não tem consumidor',
+  );
+});
+
+test('a sincronização não injeta no player do Prime, e o motivo está escrito', () => {
+  /*
+   * ## Por que este teste existe
+   *
+   * A resposta certa para "como sincronizar o Prime" é "não dá", e uma resposta
+ * negativa é a mais fácil de refazer sem perceber. A forma "suportada" de
+ * corrigir isso é injetar na página: ler `video.currentTime` e chamar
+ * `play()`.
+   * Isso quebraria três das garantias da integração ao mesmo tempo, e as três
+   * estão em outros testes deste arquivo — o que faz deste um teste de
+   * *consistência*, e não só de presença.
+   *
+   * ## O que foi pesquisado, e não presumido
+   *
+   * - As APIs oficiais da Prime Video (Video Central) são Content API, para
+   *   parceiros de **conteúdo** enviarem catálogo, e Analytics API, somente
+   *   leitura, para parceiros elegíveis. Nenhuma expõe reprodução ou posição.
+   * - A Watch Party nativa da Amazon foi lançada em 2020 e **removida em 2024**.
+   * - Teleparty, Prime Party e WatchNest prometem a mesma coisa e são extensões de
+   *   navegador: leem `video.currentTime` e chamam `play()` no contexto do site.
+   *
+   * A última é a que decide. A view é o site da Amazon, e injetar nela seria
+   * também a única coisa que poderia extrair MPD, headers ou qualquer coisa do
+   * stream.
+   */
+  const palco = ler('../web/components/player/PrimeStage.tsx');
+  const video = ler('../web/components/player/VideoStage.tsx');
+  const main = semComentario(ler('../desktop/electron/main/prime.ts'));
+
+  // Nada de tocar no player de dentro.
+  /*
+   * O comentário acima cita `executeJavaScript` de propósito — é onde a pessoa
+   * vai procurar. Por isso a regra é sobre o *código*, não sobre o arquivo:
+   * citar o nome num comentário é a documentação que impede a feature.
+   */
+  const palcoCodigo = semComentario(palco);
+  const videoCodigo = semComentario(video);
+  assert.ok(!/executeJavaScript/.test(palcoCodigo), 'o palco não executa nada na view');
+  assert.ok(!/executeJavaScript/.test(videoCodigo), 'e o VideoStage também não');
+  assert.ok(
+    !/querySelector|\.play\(\)|\.pause\(\)|currentTime\s*=/.test(palco),
+    'e não mexe em currentTime, play ou pause do nada',
+  );
+
+  /*
+   * O `executeJavaScript` que existe no `main` é o da sonda de DRM, numa view
+   * descartável em `data:` — não na view que tem a sessão do Prime.
+   */
+  const linhas = main.split('\n').filter((l) => l.includes('executeJavaScript'));
+  assert.equal(linhas.length, 1, 'uma única chamada, a da sonda');
+  assert.ok(
+    !/view\.webContents\.executeJavaScript/.test(main),
+    'e nunca na view que tem a particao do Prime',
+  );
+
+  /*
+   * O porque fica escrito onde ele vai ser consultado.
+   *
+   * O lugar onde alguém vai tentar acrescentar play/pause sincronizado é o bloco
+   * de prontidão. Um "não" sem fonte na mesma tela vale mais do que um "não" num
+   * documento que ninguém abre na hora de acrescentar a feature.
+   */
+  assert.match(
+    palco,
+    /Por que não é play\/pause sincronizado/,
+    'o bloco de prontidão diz por que não há play/pause',
+  );
+  assert.match(palco, /Content API/, 'e cita a API oficial que foi verificada');
+  assert.match(palco, /removida em[\s\S]{0,24}2024/, 'e que a Watch Party nativa saiu em 2024');
+  assert.match(
+    palco,
+    /Teleparty, Prime Party, WatchNest/,
+    'e como os terceiros fazem, para não parecer que ninguém pensou nisso',
+  );
+
+  /*
+   * E o fallback existe de fato, inteiro: quem coordena começa a contagem, e
+   * qualquer participante confirma e desfaz.
+   */
+  assert.match(palco, /onReady\(!jaPronto\)/, 'qualquer participante marca e desmarca');
+  assert.match(palco, /onCountdown/, 'e quem conduz a sala começa a contagem');
+  assert.match(palco, /onResync/, 'e recomeça do zero');
+  assert.match(
+    semComentario(ler('../server/src/socket.ts')),
+    /if \(!canControl\(room, socket\.id\)\) return denied\(room\);\s*if \(typeof itemId !== 'string'\) return;\s*if \(!iniciarCountdown/,
+    'a contagem exige controle da sala: uma pessoa sozinha não começa um filme para todo mundo',
   );
 });
