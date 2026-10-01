@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { JoinGate } from '@/components/JoinGate';
 import { PasswordGate } from '@/components/PasswordGate';
 import { RoomHeader } from '@/components/RoomHeader';
+import { usePrimeAberto } from '@/lib/primeView';
 import { RoomExpired } from '@/components/RoomExpired';
 import { Sidebar } from '@/components/Sidebar';
 import { SidebarResizer } from '@/components/player/SidebarResizer';
@@ -316,6 +317,16 @@ export default function RoomPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentItem?.streamId, souDono]);
 
+  /**
+   * A view do Prime está aberta por causa do card, sem item na fila.
+   *
+   * A leitura mora na página e não dentro do `VideoStage` porque o card vive
+   * no modal de Aplicações, dentro do painel lateral: quem abre é um clique
+   * lá, e quem precisa saber é o palco, do outro lado da janela. Ver
+   * `lib/primeView.ts`.
+   */
+  const primeAbertoNoPalco = usePrimeAberto();
+
   // Sem id não há nem o que mostrar — nem onde procurar a sala. Um estado de
   // carregamento é melhor que `null`: tela branca não dá nenhuma pista do que
   // aconteceu, e era o sintoma do bug que esta rota tinha.
@@ -392,6 +403,7 @@ export default function RoomPage() {
             users={state.users}
             meId={me?.userId}
             isPrime={currentItem?.kind === 'prime'}
+            primeAberto={primeAbertoNoPalco}
           />
           {currentItem && (
             <div className="shrink-0 px-1 pt-3 lg:px-5 lg:pb-4">

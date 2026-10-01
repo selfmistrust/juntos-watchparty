@@ -7,7 +7,8 @@ import { ReactionDock } from './ReactionDock';
 import { ReactionsOverlay } from './ReactionsOverlay';
 import { YoutubePlayer } from './YoutubePlayer';
 import { DriveVideo } from './DriveVideo';
-import { PrimeStage } from './PrimeStage';
+import { PrimeStage, PrimeViewport } from './PrimeStage';
+import { fecharPrime } from '@/lib/primeView';
 import { useFullscreenLandscape } from '@/hooks/useFullscreenLandscape';
 import type { RoomActions } from '@/hooks/useRoom';
 import type {
@@ -52,6 +53,14 @@ interface Props {
   meId?: string;
   /** A faixa `prime` é a que está tocando? */
   isPrime?: boolean;
+  /**
+   * A pessoa abriu o Prime Video pelo card e está no catálogo, sem item na fila.
+   *
+   * É o que existia antes do primeiro "Assistir com a sala": sem isto, clicar
+   * no card não tinha para onde abrir, porque o palco do Prime só existia
+   * quando um item `prime` já estava tocando — e ele nunca chegava a estar.
+   */
+  primeAberto: boolean;
 }
 
 export function VideoStage({
@@ -70,6 +79,7 @@ export function VideoStage({
   users,
   meId,
   isPrime,
+  primeAberto,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<PlayerHandle>(null);
@@ -143,6 +153,22 @@ export function VideoStage({
    * é onde ficam "Estou pronto", "Começar agora" e "Ressincronizar".
    */
   const catcherVisivel = mediaPronta && !isPrime;
+
+  /*
+   * Trocar para YouTube, Drive, upload ou tela compartilhada fecha o Prime.
+   *
+   * Não é vaidade: é o requisito de não deixar a view no caminho. Uma
+   * `WebContentsView` que continua como filha do `contentView` continua
+   * participating do hit-test, e o sintoma é o Prime engolindo clique do
+   * chat e dos controles enquanto a tela mostra o vídeo de outra pessoa.
+   *
+   * Fechar o store é o que desmonta a faixa, e o cleanup dela é quem chama
+   * `closePrimeView` — que remove a view do `contentView` no `main`.
+   */
+  useEffect(() => {
+    if (currentItem && currentItem.kind !== 'prime') fecharPrime();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentItem?.kind]);
 
   const { isFullscreen, rotate, toggle: toggleFullscreen } = useFullscreenLandscape({ targetRef: stageRef });
 
@@ -396,6 +422,7 @@ export function VideoStage({
             onReady={actions.setReady}
             onCountdown={actions.startCountdown}
             onResync={actions.resync}
+            onFechar={fecharPrime}
           />
         ) : currentItem.kind === 'drive' && currentItem.driveFileId ? (
           /*
@@ -439,6 +466,23 @@ export function VideoStage({
             />
           </>
         )
+      ) : primeAberto ? (
+        /*
+         * O Prime aberto pelo card, sem item na fila.
+         *
+         * O palco do Prime é montado aqui, e não só quando há um item `prime`
+         * tocando. Era esse o defeito que fazia o clique no card não abrir
+         * nada: o componente que posiciona a view só existia depois que a
+         * fila tinha um item, e a fila só ganhava um item pelo botão que está
+         * dentro desse componente.
+         */
+        <PrimeViewport
+          key="prime-viewport"
+          onFechar={fecharPrime}
+          onAssistirComSala={(url, titulo) =>
+            actions.addToPlaylist({ kind: 'prime', src: '', primeUrl: url, title: titulo.slice(0, 200) })
+          }
+        />
       ) : (
         <EmptyStage />
       )}

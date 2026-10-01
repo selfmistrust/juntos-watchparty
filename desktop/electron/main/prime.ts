@@ -35,8 +35,15 @@ import type { PrimeBounds, PrimePage } from '../shared/contract';
  * dela, que é o requisito de nunca compartilhar sessão entre usuários.
  */
 
-/** Sessão dedicada, separada da `defaultSession` do app. */
-const PARTICAO = 'persist:prime';
+/**
+ * Sessão dedicada, separada da `defaultSession` do app.
+ *
+ * O nome é explícito de propósito. `persist:prime` é curto e poderia colidir
+ * com outra coisa da máquina que guarde uma sessão com esse nome;
+ * `juntos-prime` não collide com nada, e o que aparece na pasta de dados do
+ * app diz de quem é a sessão quando alguém precisar investigate.
+ */
+const PARTICAO = 'persist:juntos-prime';
 
 /** Domínio de onde a view pode navegar. O resto vai para o navegador do sistema. */
 const DOMINIO_PRIME = 'primevideo.com';
@@ -47,16 +54,23 @@ const DOMINIO_LOGIN = 'amazon.com';
 /** Caminhos que são a página de um título. O primeiro segmento basta. */
 const CAMINHOS_DE_TITULO = ['detail', 'title', 'dp'];
 
-const HOME_PRIME = 'https://www.primevideo.com/';
-
 /** Mesmo UA do `index.ts`: o Prime recusa contexto que se identifica como Electron. */
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
 let view: WebContentsView | null = null;
-/** A janela dona da view. */
+/** A janela dona da view. Só muda quando a janela fecha. */
 let dona: BrowserWindow | null = null;
+/**
+ * A janela em que a view foi de fato adicionada como filha.
+ *
+ * Separado de `dona` porque `removeChildView` precisa ser chamado no mesmo
+ * pai onde `addChildView` foi chamado. Com o app de instância única são a
+ * mesma janela — e quando não forem, remover no pai errado deixa a view órfã
+ * dentro de uma janela que já não é a dela.
+ */
+let paiDaView: BrowserWindow | null = null;
 /** Última página conhecida, para responder a `prime:pagina` sem esperar evento. */
 let paginaAtual: PrimePage = { url: '', titulo: '', isTitulo: false };
 
@@ -107,18 +121,28 @@ function publicar(): void {
   }
 }
 
+/**
+ * Remove a view do `contentView` e fecha a página.
+ *
+ * `dona` **não** é zerada aqui: quem fecha a view é a pessoa, e a janela
+ * continua sendo a dona dela. Zerar a janela aqui fazia `prime:abrir` receber
+ * `null` na vez seguinte, e o Prime não abria mais pelo resto da sessão — o
+ * sintoma seria "funcionou uma vez e nunca mais".
+ *
+ * E remover, em vez de esconder: ver o comentário de `ligarPrimeJanela`.
+ */
 function destruir(): void {
   if (!view) return;
-  if (dona && !dona.isDestroyed()) {
+  if (paiDaView && !paiDaView.isDestroyed()) {
     try {
-      dona.contentView.removeChildView(view);
+      paiDaView.contentView.removeChildView(view);
     } catch {
       // Janela já fechada: a view morreu com ela.
     }
   }
+  paiDaView = null;
   if (!view.webContents.isDestroyed()) view.webContents.close();
   view = null;
-  dona = null;
   paginaAtual = { url: '', titulo: '', isTitulo: false };
 }
 
@@ -169,7 +193,16 @@ function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
     view.webContents.on('did-navigate-in-page', publicar);
 
     janela.contentView.addChildView(view);
-    void view.webContents.loadURL(HOME_PRIME);
+    paiDaView = janela;
+    /*
+     * Nenhum `loadURL` aqui.
+     *
+     * O destino é do renderer, que sabe se há um título escolhido ou se a
+     * pessoa só abriu o catálogo. Carregar a home aqui e deixar a faixa
+     * carregar o título em seguida são dois `loadURL` em sequência, e o
+     * primeiro chega a aparecer: um flash da home do Prime a cada troca de
+     * faixa, exatamente quando a pessoa está esperando o filme.
+     */
   }
 
   try {
@@ -189,7 +222,12 @@ function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
   } catch {
     return false;
   }
-  view.setVisible(true);
+  /*
+   * Sem `setVisible`: a view nasce visível, e o que a esconde é removê-la.
+   * Se existisse um `setVisible(false)` em algum lugar, a view ficaria fora
+   * da tela e ainda dentro do hit-test — que é o pior defeito possível num
+   * app com view nativa sobreposta.
+   */
   return true;
 }
 
@@ -261,7 +299,17 @@ function temDrm(): Promise<boolean> {
  * aí, a segunda janela derrubaria o app inteiro em vez de apenas abrir.
  */
 export function registrarIpcPrime(): void {
-  ipcMain.handle('prime:abrir', (_e, bounds: PrimeBounds) => abrir(dona, bounds));
+  /*
+   * A janela vem do `sender`, e não da variavel global.
+   *
+   * Com mais de uma janela, o `prime:abrir` da uma acabaria posicionando a
+   * view da outra — e o sintoma é a Prime aparecendo na janela errada, que
+   * ninguém sabe explicar. `fromWebContents` é o caminho que não depende de
+   * qual janela foi criada por último.
+   */
+  ipcMain.handle('prime:abrir', (evento, bounds: PrimeBounds) =>
+    abrir(BrowserWindow.fromWebContents(evento.sender), bounds),
+  );
 
   ipcMain.handle('prime:fechar', () => {
     destruir();
@@ -292,18 +340,18 @@ export function ligarPrimeJanela(janela: BrowserWindow): void {
   });
 
   /*
-   * A view para de renderizar quando a janela perde o foco, e volta quando ela
-   * recupera. Não é esconder: é parar de consumir GPU e bateria por baixo da
-   * tela de bloqueio. `setVisible(false)` não descarrega a sessão nem a página,
-   * então o estado do Prime fica exatamente onde estava.
+   * A view é REMOVIDA do `contentView` quando o Prime sai, e nunca apenas
+   * escondida.
+   *
+   * `setVisible(false)` desliga a renderização, mas a view continua filha do
+   * `contentView` e continua entrando no hit-test do Chromium. O sintoma é o
+   * pior possível para quem está usando: a tela mostra o vídeo de outra pessoa
+   * e os cliques no chat, no cabeçalho e nos controles vão para o Prime, sem
+   * nenhum sintoma visual que explique. Remover é o que fecha isso.
+   *
+   * O `blur` então não tem mais o que esconder — e é por isso que ele sumiu:
+   * esconder no blur era a metade do problema acima.
    */
-  janela.on('blur', () => {
-    if (view && !view.webContents.isDestroyed()) view.setVisible(false);
-  });
-  janela.on('focus', () => {
-    if (view && !view.webContents.isDestroyed()) view.setVisible(true);
-  });
-
   log(`prime: view ligada na janela ${janela.id}`);
 }
 

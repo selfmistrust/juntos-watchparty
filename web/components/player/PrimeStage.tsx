@@ -1,85 +1,86 @@
 'use client';
 
-import { ArrowSquareOutIcon, CheckCircleIcon, PlayIcon } from '@phosphor-icons/react';
-import clsx from 'clsx';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ArrowSquareOutIcon, CheckCircleIcon, PlayIcon, XIcon } from '@phosphor-icons/react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Button, IconButton } from '@/components/ui/Button';
 import { TruncatedText } from '@/components/ui/TruncatedText';
-import { desktop, isDesktop } from '@/lib/desktop';
-import { ehPaginaDeTitulo, rotuloDoPrime, HOME_PRIME } from '@/lib/prime';
+import { desktop } from '@/lib/desktop';
+import { HOME_PRIME, rotuloDoPrime } from '@/lib/prime';
 import type { PrimePage } from '@/lib/desktop';
 import { CONTAGEM_REGRESSIVA_MS, type Readiness, type User } from '@/types';
 
 /**
- * O palco do Prime Video.
+ * O Prime Video dentro do palco do Juntos.
  *
- * ## O que aparece aqui, e o que aparece na view nativa
+ * ## O Prime não é desenhado aqui
  *
- * No desktop, o Prime Video **não** é desenhado por este componente. Ele vive
- * numa `WebContentsView` nativa, que o Chromium renderiza por cima da janela —
- * e nada que este componente desenhe ficaria visível por baixo dela. Por isso o
- * palco é uma caixa de medida: ele diz ao `main` onde a view deve ficar, e o
- * que ele mesmo desenha é só a faixa de baixo, que fica **fora** do retângulo
- * enviado. É a mesma contagem que a barra de um player nativo.
+ * Ele vive numa `WebContentsView` nativa, que o Chromium renderiza **por cima**
+ * da janela. Nada que este componente desenhe ficaria visível sob ela — e é por
+ * isso que este arquivo tem duas metades bem separadas:
  *
- * ## Por que a faixa é nossa, e não do Prime
+ *   a caixa de medida   diz ao `main` onde a view deve ficar
+ *   a faixa de baixo    fica **fora** desse retângulo, e é a única parte da
+ *                       tela que o Prime não cobre
  *
- * "Assistir com a sala" precisa de um clique nosso, no momento em que a pessoa
- * está na página de um título. A view do Prime é do Prime: não há onde
- * colocar um botão do Juntos sem injetar JavaScript no DOM de um site de
- * terceiro, que é o que esta integração não faz.
+ * Todo botão nosso mora na faixa. Por isso "Assistir com a sala" existe sem
+ * injeção de JavaScript no DOM do Prime: ele é nosso, e a view do Prime não
+ * precisa saber que ele está ali.
+ *
+ * ## Dois modos, um componente
+ *
+ * `PrimeViewport` é a navegação: a pessoa abriu o Prime Video pelo card e está
+ * no catálogo, sem nenhum item na fila. `PrimeStage` é a reprodução: há um item
+ * `prime` tocando, e a faixa ganha a contagem de prontos.
+ *
+ * A diferença é a faixa, não a caixa. Separar os dois em componentes
+ * diferentes duplicaria o posicionamento da view — que é a parte que dá errado
+ * sozinha — em dois lugares.
  *
  * ## Onde a reprodução fica
  *
  * O Prime Video entrega o vídeo de cada pessoa direto para o aparelho dela,
- * com DRM que este app não lê. Quando o build do Electron não tem o
- * componente de decifração — e o build oficial não tem — a reprodução dentro do
- * app é impossível, e a tela diz isso em vez de mostrar um player preto. O
- * botão "Abrir no Prime Video" é o caminho que funciona em qualquer build.
+ * com DRM que este app não lê. Quando o build do Electron não traz o
+ * componente de decifração — e o build oficial não traz — o vídeo protegido
+ * não toca dentro do app, e a faixa diz isso com a frase que a pessoa
+ * reconhece. "Abrir no navegador" fica sempre à mão.
  */
 
-interface Props {
-  item: { id: string; title: string; primeUrl?: string };
-  readiness: Readiness | null;
-  users: User[];
-  meId: string | undefined;
-  canControl: boolean;
-  /** Chama o servidor: confirma ou desmarca a própria prontidão. */
-  onReady: (ready: boolean) => void;
-  /** Chama o servidor: começa a contagem regressiva. */
-  onCountdown: () => void;
-  /** Chama o servidor: zera prontos e contagem. */
-  onResync: () => void;
+/** Tudo que as duas metades precisam saber da faixa. */
+interface FaixaProps {
+  /** Título do item `prime` em reprodução, quando houver um. */
+  tituloDaFaixa?: string;
+  /** URL do item em reprodução — é a que a view recebe ao virar a faixa. */
+  urlDaFaixa?: string;
+  /** Salva a página do Prime como item da fila. Ausente = só navegar. */
+  onAssistirComSala?: (url: string, titulo: string) => void;
+  /** Sai do Prime Video e devolve o palco ao estado vazio. */
+  onFechar: () => void;
+  /** Bloco extra abaixo da faixa — a contagem de prontos, no modo reprodução. */
+  children?: ReactNode;
 }
 
-interface Drm {
-  /** `null` enquanto não respondeu. */
-  podeTocarProtegido: boolean | null;
-  /** `true` quando nem faz sentido sondar: não estamos no app desktop. */
-  semProbe: boolean;
-}
-
-export function PrimeStage({ item, readiness, users, meId, canControl, onReady, onCountdown, onResync }: Props) {
+function PrimeBase({ tituloDaFaixa, urlDaFaixa, onAssistirComSala, onFechar, children }: FaixaProps) {
   const caixaRef = useRef<HTMLDivElement>(null);
   const [pagina, setPagina] = useState<PrimePage | null>(null);
   const [viewAberta, setViewAberta] = useState(false);
-  const [drm, setDrm] = useState<Drm>({ podeTocarProtegido: null, semProbe: !isDesktop() });
+  const [podeTocarProtegido, setPodeTocarProtegido] = useState<boolean | null>(null);
+  /** Último destino enviado à view, para não repetir a mesma navegação. */
+  const navegadoPara = useRef<string | null>(null);
 
   const api = desktop();
-  const jaPronto = readiness?.userIds.includes(meId ?? '') ?? false;
 
   /*
-   * Manda o retângulo do palco para a view nativa.
+   * Manda o retângulo da caixa para a view nativa.
    *
-   * `useLayoutEffect` e não `useEffect` aqui: o efeito roda antes do paint,
-   * então a view é posicionada no mesmo quadro em que a caixa aparece. Com
-   * `useEffect` a view ficaria um quadro no lugar antigo — visível por um
-   * instante na posição da faixa anterior, em cima do vídeo de outra pessoa.
+   * `useLayoutEffect` e não `useEffect`: o efeito roda antes do paint, então a
+   * view é posicionada no mesmo quadro em que a caixa aparece. Com `useEffect`
+   * ela ficaria um quadro no lugar antigo — visível por um instante sobre o
+   * vídeo de outra pessoa.
    *
-   * A soma do scroll entra porque `getBoundingClientRect` é relativo à
-   * viewport e a view é posicionada em coordenadas do conteúdo da janela. A
-   * janela não rola, então hoje a soma é zero, e ela continua correta se a
-   * rolagem do documento voltar a existir.
+   * A soma do scroll entra porque `getBoundingClientRect` é relativo à viewport
+   * e a view é posicionada em coordenadas do conteúdo da janela. A janela não
+   * rola, então hoje a soma é zero, e ela continua correta se a rolagem do
+   * documento voltar a existir.
    */
   const mandarRetangulo = useCallback(() => {
     const el = caixaRef.current;
@@ -97,11 +98,20 @@ export function PrimeStage({ item, readiness, users, meId, canControl, onReady, 
     if (!api) return;
     mandarRetangulo();
     const el = caixaRef.current;
+
     /*
-     * `ResizeObserver` pega a divisória sendo arrastada, que muda a largura do
-     * palco sem a janela mudar nada. O `resize` da janela pega o resto: entrar
-     * em tela cheia, maximizar, mudar de monitor. Um só dos dois deixa um
-     * caminho sem cobertura, e a view desalinhada cobre o chat.
+     * Os quatro momentos em que a caixa muda de lugar ou de tamanho, e quem
+     * pega cada um:
+     *
+     *   redimensionar a janela      `resize`
+     *   arrastar a divisória        `ResizeObserver` — a largura muda sem a
+     *                               janela mudar nada
+     *   ocultar o painel lateral    `ResizeObserver` — o palco ganha a largura
+     *   entrar/sair de tela cheia   `ResizeObserver` — a caixa troca de tamanho
+     *
+     * Um só dos dois deixaria um caminho sem cobertura, e a falha é a pior
+     * possível: a view desalinhada cobre o chat, o cabeçalho ou os controles
+     * do Juntos, e cliques que deveriam ir para o painel vão para o Prime.
      */
     const observador =
       el && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(mandarRetangulo) : null;
@@ -114,21 +124,29 @@ export function PrimeStage({ item, readiness, users, meId, canControl, onReady, 
   }, [api, mandarRetangulo]);
 
   /*
-   * A view do Prime fica aberta só enquanto esta faixa é a que está tocando.
+   * A view vive enquanto esta faixa estiver montada.
    *
-   * Fechar no cleanup é o que garante que trocar de faixa não deixe uma aba do
-   * Prime flutuando sobre o vídeo seguinte: a sessão `persist:prime` continua
-   * em disco, então quem volta ao Prime não precisa logar de novo.
+   * Fechar no cleanup é o que garante que trocar de fonte não deixe uma aba do
+   * Prime flutuando sobre o vídeo seguinte — e o `main` **remove a view do
+   * `contentView`**, em vez de escondê-la: uma view invisível ainda
+   * participating do hit-test é como o Prime passa a engolir clique do chat.
+   *
+   * A sessão `persist:juntos-prime` continua em disco, então quem volta ao
+   * Prime não precisa logar de novo.
    */
   useEffect(() => {
     if (!api) return;
     return () => {
       void api.closePrimeView();
     };
-  }, [api, item.id]);
+  }, [api]);
 
-  /* A página do Prime muda quando a pessoa navega lá dentro — não há como saber
-   * por outro caminho, e não há leitura de DOM para fazer. */
+  /*
+   * A página do Prime muda quando a pessoa navega lá dentro.
+   *
+   * Não há outro caminho para saber disso, e não há leitura de DOM para fazer:
+   * o `main` escuta `did-navigate` e `did-navigate-in-page` e empurra a URL.
+   */
   useEffect(() => {
     if (!api) return;
     let cancelado = false;
@@ -142,74 +160,109 @@ export function PrimeStage({ item, readiness, users, meId, canControl, onReady, 
       cancelado = true;
       parar();
     };
-  }, [api, item.id]);
+  }, [api]);
+
+  /*
+   * A view entrou em uso.
+   *
+   * O estado existe porque o `openPrimeView` é assíncrono e o primeiro quadro
+   * da caixa ainda ficaria preto. A resposta vem do `main`, e só depois dela a
+   * caixa deixa de anunciar "abrindo" — a tela preta sem explicação é
+   * indistinguível de "quebrou", que é a pior coisa que um player pode fazer.
+   */
+  useEffect(() => {
+    if (!api) return;
+    let cancelado = false;
+    const parar = api.onPrimePage(() => {
+      if (!cancelado) setViewAberta(true);
+    });
+    // A view pode já estar numa página: quem abriu o Prime numa sessão anterior
+    // não emite evento de navegação agora, e a caixa ficaria em "abrindo" para
+    // sempre. `primePage` é a consulta, e devolve `url` vazia se nunca abriu.
+    void api.primePage().then((p) => {
+      if (!cancelado && p.url) setViewAberta(true);
+    });
+    return () => {
+      cancelado = true;
+      parar();
+    };
+  }, [api]);
 
   /*
    * O que este build do Electron consegue decifrar.
    *
-   * A pergunta vai para o motor, não para o Prime, e a resposta `false` é
-   * definitiva: o build oficial do Electron não traz o CDM do Widevine, e
-   * nenhum título protegido toca dentro do app. Só no desktop vale sondar — na
-   * web nem existe view para tocar.
+   * A pergunta vai ao motor, não ao Prime: `requestMediaKeySystemAccess`
+   * responde se este Chromium decifra, e não tem nada a ver com a conta de
+   * quem assiste nem com a assinatura do título.
+   *
+   * `false` é resposta definitiva — o build oficial do Electron não traz o CDM
+   * do Widevine. `true` é só o mínimo: a Prime Video ainda pode recusar na hora
+   * de tocar por causa da checagem de VMP. Por isso a faixa nunca promete que
+   * toca, e "Abrir no navegador" fica sempre à mão.
    */
   useEffect(() => {
-    if (!api || drm.podeTocarProtegido !== null) return;
+    if (!api || podeTocarProtegido !== null) return;
     let cancelado = false;
     void api.primeCanPlayProtected().then((pode) => {
-      if (!cancelado) setDrm({ podeTocarProtegido: pode, semProbe: false });
+      if (!cancelado) setPodeTocarProtegido(pode);
     });
     return () => {
       cancelado = true;
     };
-  }, [api, drm.podeTocarProtegido]);
+  }, [api, podeTocarProtegido]);
 
-  /** Abre o título da fila na view nativa, ou no navegador do sistema se não houver. */
-  const abrirTitulo = useCallback(async () => {
-    const url = item.primeUrl;
-    if (!url) return;
-    if (api) {
-      const ok = await api.primeNavigate(url);
-      if (ok) {
-        setViewAberta(true);
-        mandarRetangulo();
-        return;
-      }
-    }
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }, [api, item.primeUrl, mandarRetangulo]);
+  /*
+   * Para onde a view vai.
+   *
+   * A home do Prime quando a pessoa abriu pelo card, e a URL do título quando
+   * há um item tocando. Uma navegação só, decidida aqui: o main cria a view e
+   * posiciona, e quem escolhe o destino é quem sabe o que a pessoa está
+   * fazendo.
+   *
+   * É também o que faz o participante não precisar digitar nada. Quem escolheu
+   * o título o vê aparecer na conta de cada um, na sessão da **própria** pessoa —
+   * e quem não tem assinatura vê a recusa do Prime Video, que é a resposta
+   * certa.
+   *
+   * O guard por `navegadoPara` é o que impede a luta: sem ele, cada
+   * `did-navigate` dispararia uma navegação de volta e a pessoa ficaria presa
+   * na página do host sem poder navegar no catálogo.
+   */
+  useEffect(() => {
+    if (!api) return;
+    const destino = urlDaFaixa && urlDaFaixa !== '' ? urlDaFaixa : HOME_PRIME;
+    if (navegadoPara.current === destino) return;
+    navegadoPara.current = destino;
+    void api.primeNavigate(destino).then((ok) => {
+      // Falhou: a URL foi recusada pelo `main`, ou a view ainda não existia.
+      // O guard volta um passo para o próximo destino tentar de novo.
+      if (!ok) navegadoPara.current = null;
+    });
+  }, [api, urlDaFaixa]);
 
-  const faltam = users.filter((u) => u.connected && !readiness?.userIds.includes(u.userId));
-  const prontos = (readiness?.userIds.length ?? 0) === 0 ? 0 : readiness?.userIds.length ?? 0;
+  const naPaginaDeTitulo = pagina?.isTitulo === true && pagina.url !== '';
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-black">
       {/*
         * A caixa de medida. Vazia de propósito: o conteúdo vem da view nativa,
-        * e qualquer coisa desenhada aqui ficaria atrás dela. O aviso de DRM
-        * mora **fora** desta caixa, na faixa de baixo, pelo mesmo motivo.
-      */}
+        * e qualquer coisa desenhada aqui ficaria atrás dela.
+        */}
       <div ref={caixaRef} className="relative min-h-0 flex-1 bg-black">
-        {/*
-          * Primeiro quadro: a view ainda não foi posicionada, e a área ficaria
-          * preta. O texto diz o que está acontecendo em vez de fingir que o
-          * vídeo carregou — uma tela preta sem explicação é indistinguível de
-          * "quebrou", que é a pior coisa que um player pode fazer.
-          */}
-        {/*
-         * Primeiro quadro: a view ainda não foi posicionada, e a área ficaria
-         * preta. O texto diz o que está acontecendo em vez de fingir que o
-         * vídeo carregou — uma tela preta sem explicação é indistinguível de
-         * "quebrou", que é a pior coisa que um player pode fazer.
-         *
-         * Na web não existe view nenhuma, e a mensagem seria uma promessa que
-         * não se cumpre. O caminho de lá é a outra aba, e é o que a tela diz.
-         */}
         {!api && (
+          /*
+           * Só na web, e sem campo para colar nada.
+           *
+           * O Prime Video recusa ser exibido dentro de outro site, e o caminho
+           * de lá é a outra aba. Um campo de URL aqui seria a experiência
+           * principal de uma integração que na web não existe — e foi
+           * exatamente o que o app mostrou.
+           */
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
             <p className="max-w-sm text-sm text-ink-muted">
-              Este título é assistido no seu próprio Prime Video, na sua conta.
+              O Prime Video integrado fica dentro do aplicativo Desktop, na área do player.
             </p>
-            <Button onClick={() => abrirTitulo()} className="h-9 gap-1.5">
+            <Button onClick={() => window.open('https://www.primevideo.com/', '_blank', 'noopener,noreferrer')} className="h-9 gap-1.5">
               <ArrowSquareOutIcon size={15} />
               Abrir no Prime Video
             </Button>
@@ -226,105 +279,141 @@ export function PrimeStage({ item, readiness, users, meId, canControl, onReady, 
       </div>
 
       {/*
-        * A faixa de baixo. Fora da caixa de medida, então é a única parte desta
-        * tela que o Prime não cobre — e é por isso que o botão "Assistir com a
-        * sala" pode existir sem injeção de JavaScript no site.
-      */}
+        * A faixa de baixo, fora da caixa de medida — a única parte da tela que
+        * o Prime não cobre.
+        */}
       <div className="shrink-0 space-y-2 border-t border-hairline bg-surface px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="shrink-0 text-2xs font-medium uppercase tracking-wide text-ink-faint">
             Prime Video
           </span>
           <span className="min-w-0 flex-1 truncate text-2xs text-ink-muted" title={pagina?.titulo}>
-            {pagina?.titulo || item.title}
+            {pagina?.titulo || tituloDaFaixa || ''}
           </span>
-          {item.primeUrl && (
+          {urlDaFaixa && (
             <IconButton
-              label={`Abrir ${rotuloDoPrime(item.primeUrl)} no navegador`}
-              onClick={() => window.open(item.primeUrl, '_blank', 'noopener,noreferrer')}
+              label={`Abrir ${rotuloDoPrime(urlDaFaixa)} no navegador`}
+              onClick={() => window.open(urlDaFaixa, '_blank', 'noopener,noreferrer')}
             >
               <ArrowSquareOutIcon size={15} />
             </IconButton>
           )}
+          <IconButton label="Sair do Prime Video" onClick={onFechar}>
+            <XIcon size={15} />
+          </IconButton>
         </div>
 
         {/*
-         * O botão que abre a faixa na Prime de quem está olhando.
-         *
-         * Sem ele, quem acabou de receber o título teria que colar a URL na
-         * mão dentro da view do Prime — e a view está ocupada pelo catálogo. O
-         * caminho quando não há view é a outra aba, que é o mesmo destino:
-         * o Prime Video de cada pessoa, na conta de cada pessoa.
-         */}
-        {item.primeUrl && (
-          <Button onClick={() => abrirTitulo()} variant="outline" className="h-8 w-full justify-center gap-1.5">
-            <ArrowSquareOutIcon size={14} />
-            Abrir este título no meu Prime Video
+          * "Assistir com a sala".
+          *
+          * É o botão que fecha o fluxo: ele lê a página que a pessoa está vendo
+          * dentro da view e vira item da fila. Fica desabilitado fora de uma
+          * página de título — a URL da home não identifica um filme, e adicionar
+          * isso à fila mostraria a mesma coisa para todo mundo da sala.
+          */}
+        {onAssistirComSala && (
+          <Button
+            onClick={() => pagina && onAssistirComSala(pagina.url, pagina.titulo || 'Título do Prime Video')}
+            disabled={!naPaginaDeTitulo}
+            className="h-9 w-full justify-center"
+          >
+            {naPaginaDeTitulo
+              ? `Assistir com a sala: ${(pagina?.titulo || '').slice(0, 60)}`
+              : 'Assistir com a sala'}
           </Button>
         )}
 
-        {/*
-          * A sonda de DRM.
-
-          * `false` é o caso que importa: aqui não há reprodução dentro do app,
-          * e a tela precisa dizer isso com a frase que a pessoa entende
-          * — "não está disponível na sua conta" é o sintoma que ela conhece,
-          * e não a razão. `true` não promete que toca: a Prime Video ainda
-          * pode recusar por VMP na hora de dar play, e por isso o botão
-          * "Abrir no Prime Video" fica sempre à mão.
-        */}
-        {drm.podeTocarProtegido === false && (
+        {podeTocarProtegido === false && (
           <p className="text-2xs leading-relaxed text-ink-faint">
             Este build do aplicativo não reproduz vídeo protegido dentro dele. Cada pessoa
             assiste no próprio Prime Video — no navegador, na conta dela.
           </p>
         )}
 
-        {/*
-          * Prontidão. É o que substitui a sincronização de player aqui: cada um
-          * abre o título na conta própria, confirma, e a sala começa junta.
-        */}
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            onClick={() => onReady(!jaPronto)}
-            variant={jaPronto ? 'ghost' : 'primary'}
-            className="h-9 gap-1.5"
-          >
-            <CheckCircleIcon size={15} weight={jaPronto ? 'fill' : 'regular'} />
-            {jaPronto ? 'Estou pronto' : 'Avisar que estou pronto'}
-          </Button>
-
-          {readiness?.countdownAt != null && (
-            <ContagemRegressiva desde={readiness.countdownAt} />
-          )}
-
-          {prontos > 0 && (
-            <span className="text-2xs text-ink-faint">
-              {prontos} de {users.filter((u) => u.connected).length} prontos
-            </span>
-          )}
-
-          {canControl && (
-            <>
-              <Button onClick={onCountdown} disabled={readiness?.countdownAt != null} className="h-9 gap-1.5">
-                <PlayIcon size={15} weight="fill" />
-                Começar agora
-              </Button>
-              <Button onClick={onResync} variant="outline" className="h-9">
-                Ressincronizar
-              </Button>
-            </>
-          )}
-        </div>
-
-        {faltam.length > 0 && (
-          <TruncatedText
-            text={`Ainda não: ${faltam.map((u) => u.name).join(', ')}`}
-            className="block text-2xs text-ink-faint"
-          />
-        )}
+        {children}
       </div>
     </div>
+  );
+}
+
+/** Modo navegação: o Prime aberto pelo card, sem item na fila. */
+export function PrimeViewport({ onFechar, onAssistirComSala }: Pick<FaixaProps, 'onFechar' | 'onAssistirComSala'>) {
+  return <PrimeBase onFechar={onFechar} onAssistirComSala={onAssistirComSala} />;
+}
+
+interface StageProps {
+  item: { id: string; title: string; primeUrl?: string };
+  readiness: Readiness | null;
+  users: User[];
+  meId: string | undefined;
+  canControl: boolean;
+  onReady: (ready: boolean) => void;
+  onCountdown: () => void;
+  onResync: () => void;
+  onFechar: () => void;
+}
+
+/** Modo reprodução: há um item `prime` tocando, e a fila é a que coordena. */
+export function PrimeStage({
+  item,
+  readiness,
+  users,
+  meId,
+  canControl,
+  onReady,
+  onCountdown,
+  onResync,
+  onFechar,
+}: StageProps) {
+  const jaPronto = readiness?.userIds.includes(meId ?? '') ?? false;
+  const faltam = users.filter((u) => u.connected && !readiness?.userIds.includes(u.userId));
+  const prontos = readiness?.userIds.length ?? 0;
+  const naSala = users.filter((u) => u.connected).length;
+
+  return (
+    <PrimeBase
+      tituloDaFaixa={item.title}
+      urlDaFaixa={item.primeUrl}
+      onFechar={onFechar}
+    >
+      {/*
+        * Prontidão: o que substitui a sincronização de player aqui. Cada um abre
+        * o título na conta própria, confirma, e a sala começa junta.
+        */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={() => onReady(!jaPronto)} variant={jaPronto ? 'ghost' : 'primary'} className="h-9 gap-1.5">
+          <CheckCircleIcon size={15} weight={jaPronto ? 'fill' : 'regular'} />
+          {jaPronto ? 'Estou pronto' : 'Avisar que estou pronto'}
+        </Button>
+
+        {readiness?.countdownAt != null && <ContagemRegressiva desde={readiness.countdownAt} />}
+
+        {prontos > 0 && (
+          <span className="text-2xs text-ink-faint">
+            {prontos} de {naSala} prontos
+          </span>
+        )}
+
+        {canControl && (
+          <>
+            <Button onClick={onCountdown} disabled={readiness?.countdownAt != null} className="h-9 gap-1.5">
+              <PlayIcon size={15} weight="fill" />
+              Começar agora
+            </Button>
+            <Button onClick={onResync} variant="outline" className="h-9">
+              Ressincronizar
+            </Button>
+          </>
+        )}
+      </div>
+
+      {faltam.length > 0 && (
+        <TruncatedText
+          text={`Ainda não: ${faltam.map((u) => u.name).join(', ')}`}
+          className="block text-2xs text-ink-faint"
+        />
+      )}
+    </PrimeBase>
   );
 }
 
@@ -332,12 +421,11 @@ export function PrimeStage({ item, readiness, users, meId, canControl, onReady, 
  * A contagem 5, 4, 3, 2, 1.
  *
  * O número vem de `countdownAt`, que é do servidor — se cada cliente contasse do
- * seu `performance.now()`, duas máquinas com relógios diferentes começariam a
- * contagem em instantes diferentes e a sala daria play fora de sincronia, que é
- * exatamente o que a contagem existe para evitar.
+ * seu relógio, duas máquinas com relógios diferentes começariam em instantes
+ * diferentes, e a sala daria play fora de sincronia, que é exatamente o que a
+ * contagem existe para evitar.
  *
- * Depois de `CONTAGEM_REGRESSIVA_MS` ela vira "já pode começar": o número não
- * fica em zero nem em "1" para sempre, porque uma contagem travada em 1 é
+ * Passado o tempo ela vira "já pode começar": um número travado em 1 é
  * indistinguível de um app quebrado.
  */
 function ContagemRegressiva({ desde }: { desde: number }) {
@@ -353,77 +441,5 @@ function ContagemRegressiva({ desde }: { desde: number }) {
     <span className="text-2xs font-medium text-accent" aria-live="polite">
       {Math.ceil(restante / 1000)}
     </span>
-  );
-}
-
-/**
- * Botão de adicionar a página atual do Prime à fila.
- *
- * Vive na faixa de baixo, e é o único caminho para "Assistir com a sala".
- * Fica desabilitado fora de uma página de título: a URL da home não identifica
- * um filme, e adicionar isso à fila mostraria a mesma coisa para todo mundo da
- * sala.
- */
-export function BotaoAssistirComSala({
-  pagina,
-  onAdicionar,
-}: {
-  pagina: PrimePage | null;
-  onAdicionar: (url: string, titulo: string) => void;
-}) {
-  const [url, setUrl] = useState<string | null>(null);
-  const api = desktop();
-  const [digitado, setDigitado] = useState('');
-
-  /* Na web não há view, então a URL é colada. O campo aceita o endereço que a
-   * pessoa acabou de copiar da barra do navegador, e `normalizarUrlDoPrime`
-   * (no `lib/prime`) recusa o que não for página de título — com a mensagem
-   * certa, em vez de um item silenciosamente inválido na fila. */
-  useEffect(() => {
-    if (api) return;
-    setUrl(ehPaginaDeTitulo(digitado) ? digitado : null);
-  }, [api, digitado]);
-
-  if (!api) {
-    return (
-      <div className="space-y-2">
-        <p className="text-2xs leading-relaxed text-ink-faint">
-          O Prime Video não pode ser incorporado nesta versão, e o site recusa ser exibido dentro
-          de outro site. Abra o Prime numa aba, escolha o título e cole o endereço da página aqui.
-        </p>
-        <a
-          href={HOME_PRIME}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-2xs text-accent hover:underline"
-        >
-          Abrir o Prime Video
-          <ArrowSquareOutIcon size={12} />
-        </a>
-        <input
-          value={digitado}
-          onChange={(e) => setDigitado(e.target.value)}
-          placeholder="Cole aqui o endereço da página do título"
-          aria-label="Endereço da página do título no Prime Video"
-          className="w-full rounded-md border border-hairline bg-raised px-2.5 py-2 text-2xs text-ink placeholder:text-ink-faint focus:outline-none focus-visible:border-accent"
-        />
-        {url && (
-          <Button onClick={() => onAdicionar(url, 'Título do Prime Video')} className="h-9 w-full justify-center">
-            Assistir com a sala
-          </Button>
-        )}
-      </div>
-    );
-  }
-
-  const naPaginaDeTitulo = pagina?.isTitulo === true && ehPaginaDeTitulo(pagina.url);
-  return (
-    <Button
-      onClick={() => pagina && onAdicionar(pagina.url, pagina.titulo || 'Título do Prime Video')}
-      disabled={!naPaginaDeTitulo}
-      className={clsx('h-10 w-full justify-center')}
-    >
-      Assistir com a sala
-    </Button>
   );
 }

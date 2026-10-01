@@ -225,7 +225,11 @@ test('a view do Prime não recebe injeção de JavaScript do site', () => {
 test('a sessão do Prime é persistente, isolada e local', () => {
   const main = semComentario(ler('../desktop/electron/main/prime.ts'));
 
-  assert.match(main, /const PARTICAO = 'persist:prime';/, 'a sessão sobrevive ao fechar o app');
+  assert.match(
+    main,
+    /const PARTICAO = 'persist:juntos-prime';/,
+    'a sessão sobrevive ao fechar o app, e o nome diz de quem é',
+  );
   assert.match(
     main,
     /webPreferences: \{[\s\S]{0,160}partition: PARTICAO,[\s\S]{0,160}nodeIntegration: false,[\s\S]{0,160}contextIsolation: true,[\s\S]{0,160}sandbox: true/,
@@ -238,7 +242,7 @@ test('a sessão do Prime é persistente, isolada e local', () => {
    * URL e o título da página para o renderer.
    */
   assert.ok(
-    !/session\.defaultSession|fromPartition\(['"]persist:prime['"]\)/.test(main),
+    !/session\.defaultSession|fromPartition\(['"]persist:juntos-prime['"]\)/.test(main),
     'o Prime não usa a sessão padrão do app',
   );
   assert.ok(
@@ -247,7 +251,7 @@ test('a sessão do Prime é persistente, isolada e local', () => {
   );
 });
 
-test('a web não tenta embutir o Prime, e o desktop não usa <webview>', () => {
+test('nem a web nem o desktop embutem o Prime em iframe ou <webview>', () => {
   const web = semComentario(ler('../web/lib/prime.ts'));
   const painel = semComentario(ler('../web/lib/mediaSources/prime.tsx'));
   const palco = semComentario(ler('../web/components/player/PrimeStage.tsx'));
@@ -267,14 +271,14 @@ test('a web não tenta embutir o Prime, e o desktop não usa <webview>', () => {
   }
 
   assert.match(
-    palco,
+    painel,
     /target="_blank"/,
     'e o caminho da web é abrir o Prime em outra aba',
   );
   assert.match(
     palco,
-    /window\.open\((url|item\.primeUrl), '_blank', 'noopener,noreferrer'\)/,
-    'e o palco também abre fora, sem dar acesso de volta à aba do app',
+    /window\.open\('https:\/\/www\.primevideo\.com\/', '_blank', 'noopener,noreferrer'\)/,
+    'e o palco também avisa, no lugar da view, quando não há app desktop',
   );
 });
 
@@ -386,5 +390,276 @@ test('as duas cópias da duração da contagem continuam iguais', () => {
     pega(web),
     pega(server),
     'divergir faz duas pessoas darem play em instantes diferentes, que é o que a contagem evita',
+  );
+});
+
+test('o clique no card abre a view no desktop, e não abre painel de URL', () => {
+  /*
+   * Este é o defeito que motivou a correção.
+   *
+   * O palco do Prime só era montado quando um item `prime` já estava tocando,
+   * e o item só entrava na fila pelo botão que estava dentro desse palco. Um
+   * clique no card, portanto, não tinha para onde abrir: aparecia um painel com
+   * um campo para colar a URL, num caminho que não podia dar certo. O sintoma na
+   * tela era "o Prime não pode ser incorporado, cole o endereço aqui" — que é
+   * uma explicação inventada para um bug de montagem.
+   *
+   * As duas metades que precisam concordar:
+   *
+   *   o `start` do provider   abre o store, e não um painel
+   *   o palco                 lê o store e monta a faixa, mesmo sem item
+   */
+  const provider = ler('../web/lib/mediaSources/prime.tsx');
+  const store = ler('../web/lib/primeView.ts');
+  const palco = ler('../web/components/player/VideoStage.tsx');
+  const pagina = ler('../web/pages/room/[id].tsx');
+
+  // 1. O `start` do desktop abre a view.
+  assert.match(
+    semComentario(provider),
+    /if \(desktop\(\)\) \{\s*abrirPrime\(\);\s*return;\s*\}/,
+    'no desktop o start abre a view e sai — nenhum painel',
+  );
+
+  // 2. Quem lê o store é a página, e ela passa para o palco.
+  assert.match(
+    semComentario(pagina),
+    /usePrimeAberto\(\)/,
+    'a página assina o store',
+  );
+  assert.match(
+    pagina,
+    /primeAberto=\{primeAbertoNoPalco\}/,
+    'e repassa para o palco — um literal `false` aqui deixa o card sem efeito',
+  );
+
+  // 3. O palco monta a faixa do Prime mesmo sem item na fila.
+  assert.match(
+    semComentario(palco),
+    /\)\s*:\s*primeAberto \? \([\s\S]{0,400}<PrimeViewport/,
+    'sem item na fila e com o Prime aberto, quem entra é o PrimeViewport',
+  );
+  assert.ok(
+    /<EmptyStage \/>/.test(palco),
+    'e o palco vazio continua existindo para o caso de não haver nada aberto',
+  );
+
+  /*
+   * "Assistir com a sala" mora na faixa, e é o botão que fecha o fluxo.
+   *
+   * Ele lê a página que a pessoa está vendo dentro da view — que é o que
+   * `did-navigate`/pubblica no `main` — e vira item da fila. O item é
+   * adicionado pelo palco, que já tem `actions.addToPlaylist`.
+   */
+  assert.match(
+    semComentario(palco),
+    /onAssistirComSala=\{\(url, titulo\) =>\s*actions\.addToPlaylist\(\{ kind: 'prime', src: '', primeUrl: url, title: titulo\.slice\(0, 200\) \}\)/,
+    'o viewport entrega a página atual para a fila, pelo palco',
+  );
+  assert.match(
+    semComentario(ler('../web/components/player/PrimeStage.tsx')),
+    /disabled=\{!naPaginaDeTitulo\}/,
+    'e o botão só fica ativo numa página de título — a home não identifica um filme',
+  );
+
+  // 4. O store é um store de verdade, e não um estado perdido.
+  assert.match(
+    semComentario(store),
+    /useSyncExternalStore\(inscrever, primeAberto, primeAberto\)/,
+    'a leitura é por useSyncExternalStore, que não perde escrita feita fora do React',
+  );
+
+  /*
+   * Trocar de fonte fecha.
+   *
+   * Uma `WebContentsView` que continua filha do `contentView` continua no
+   * hit-test, e o sintoma é o Prime engolindo clique do chat e dos controles
+   * enquanto a tela mostra o vídeo de outra pessoa. Fechar o store é o que
+   * desmonta a faixa, e o cleanup dela é quem chama `closePrimeView`.
+   */
+  assert.match(
+    semComentario(palco),
+    /useEffect\(\(\) => \{\s*if \(currentItem && currentItem\.kind !== 'prime'\) fecharPrime\(\);/,
+    'sair do prime para outra fonte fecha o store',
+  );
+});
+
+test('não existe mais campo de URL nem "não pode ser incorporado" no app desktop', () => {
+  /*
+   * O pedido é explícito: no desktop, nada de pedir URL colada. E na web o
+   * campo também sai, porque ele transformava uma integração que não existe
+   * ali num formulário manual.
+   */
+  const arquivos = [
+    '../web/lib/mediaSources/prime.tsx',
+    '../web/components/player/PrimeStage.tsx',
+    '../web/lib/primeView.ts',
+  ];
+
+  for (const arquivo of arquivos) {
+    const codigo = ler(arquivo);
+    assert.ok(!/<input/i.test(codigo), `${arquivo} não pode ter campo de entrada`);
+    assert.ok(
+      !/Cole aqui o endereço/i.test(codigo),
+      `${arquivo} não pode pedir para colar o endereço`,
+    );
+    assert.ok(
+      !/não pode ser incorporado/i.test(codigo),
+      `${arquivo} não pode dizer que o Prime não pode ser incorporado — no desktop ele é`,
+    );
+  }
+
+  /*
+   * A mensagem da web existe, e é o que sobra lá: uma frase e a outra aba.
+   *
+   * "Não pode" na web é verdade — o Prime Video recusa ser exibido dentro de
+   * outro site — mas ela não pode ser a experiência **principal** da integração.
+   */
+  const painel = ler('../web/lib/mediaSources/prime.tsx');
+  assert.match(
+    painel,
+    /disponível no aplicativo Desktop/,
+    'a web diz que o integrado está no aplicativo Desktop',
+  );
+  assert.match(painel, /https:\/\/www\.primevideo\.com\//, 'e oferece a outra aba');
+});
+
+test('a view é removida do contentView, e nunca só escondida', () => {
+  /*
+   * "Esconder" não resolve. `setVisible(false)` desliga a renderização, mas a
+   * view continua filha do `contentView` e continua entrando no hit-test do
+   * Chromium. O defeito é invisível na tela e aparece como clique perdido.
+   *
+   * A regra do módulo inteiro fica sem `setVisible`: a view existe ou não é
+   * filha de ninguém.
+   */
+  const main = semComentario(ler('../desktop/electron/main/prime.ts'));
+
+  assert.ok(!/setVisible/.test(main), 'a view nunca é só escondida');
+  assert.match(
+    main,
+    /paiDaView\.contentView\.removeChildView\(view\)/,
+    'fechar é remover do contentView',
+  );
+  assert.match(main, /janela\.contentView\.addChildView\(view\)/, 'e abrir é adicionar');
+  assert.match(main, /paiDaView = janela;/, 'o pai fica guardado, para remover no mesmo lugar');
+  assert.match(
+    main,
+    /let paiDaView: BrowserWindow \| null = null;/,
+    'e é uma variável própria, não a janela "da última vez"',
+  );
+
+  /*
+   * Fechar a view não pode derrubar a janela dona.
+   *
+   * `dona` era zerada em `destruir()`, que é chamado quando a pessoa fecha o
+   * Prime. O `prime:abrir` seguinte recebia `null` e não abria mais: o sintoma
+   * seria "funcionou uma vez e nunca mais".
+   */
+  const destruir = main.slice(main.indexOf('function destruir'), main.indexOf('function abrir'));
+  assert.ok(
+    !/dona = null/.test(destruir),
+    'destruir a view não pode zerar a janela dona',
+  );
+  assert.match(
+    main,
+    /BrowserWindow\.fromWebContents\(evento\.sender\)/,
+    'e prime:abrir pega a janela pelo sender, e não por uma global',
+  );
+
+  /*
+   * Quem decide o destino é o renderer.
+   *
+   * O main criava a view já carregando a home e a faixa carregava o título em
+   * seguida: dois `loadURL` em sequência, e o primeiro chegava a aparecer —
+   * um flash da home do Prime a cada troca de faixa.
+   */
+  const abrir = main.slice(
+  main.indexOf('function abrir'),
+  main.indexOf('function temDrm'),
+);
+  assert.ok(
+    !/loadURL\(/.test(abrir),
+    'abrir não carrega nada: quem manda no destino é quem sabe o que a pessoa está fazendo',
+  );
+  assert.ok(
+    !/www\.primevideo\.com/.test(abrir),
+    'e a URL do Prime nem aparece em abrir, com nome de constante ou literal',
+  );
+  assert.match(
+    semComentario(ler('../web/components/player/PrimeStage.tsx')),
+    /urlDaFaixa && urlDaFaixa !== '' \? urlDaFaixa : HOME_PRIME/,
+    'e o renderer pede uma navegação só: o título se houver, a home se não',
+  );
+});
+
+test('a view é reposicionada em todos os momentos em que o palco muda de tamanho', () => {
+  /*
+   * `WebContentsView` não faz parte do DOM, então o retângulo que o `main` usa
+   * para ela não se ajusta sozinho. Se ficar obsoleto, a view cobre o que
+   * estiver embaixo — e o pedido nomeia exatamente o que está embaixo do
+   * player: cabeçalho, chat, fila, pessoas e os controles do Juntos.
+   *
+   * A falha é silenciosa: a tela continua parecendo correta, e o que quebra é o
+   * clique. Por isso a trava é sobre **os dois** escutam, e não sobre um só.
+   *
+   *   `ResizeObserver`   divisória arrastada, painel ocultado, tela cheia
+   *   `resize` da janela redimensionar, maximizar, mudar de monitor
+   */
+  const palco = semComentario(ler('../web/components/player/PrimeStage.tsx'));
+
+  assert.match(
+    palco,
+    /new ResizeObserver\(mandarRetangulo\)/,
+    'o ResizeObserver é o que cobre a divisória, o painel ocultado e o fullscreen',
+  );
+  assert.match(
+    palco,
+    /observador\.observe\(el\)/,
+    'e ele observa a caixa, que é a que o palco redesenha',
+  );
+  assert.match(
+    palco,
+    /window\.addEventListener\('resize', mandarRetangulo\)/,
+    'e o resize da janela cobre o redimensionar da janela',
+  );
+
+  /*
+   * Os dois precisam sair no cleanup.
+   *
+   * Sem isso, cada montagem da faixa deixa um `ResizeObserver` vivoObservando
+   * uma caixa que já não existe: a memória cresce a cada troca de faixa, e o
+   * `openPrimeView` continua sendo chamado por um elemento morto.
+   */
+  assert.match(palco, /observador\?\.disconnect\(\)/, 'o observador é desconectado');
+  assert.match(
+    palco,
+    /window\.removeEventListener\('resize', mandarRetangulo\)/,
+    'e o listener da janela sai junto',
+  );
+
+  /*
+   * O retângulo vai no `openPrimeView`, e não num `style`.
+   *
+   * Um `style` no elemento do renderer só move o que o renderer desenha — e a
+   * view nativa é desenhada pelo Chromium, por cima. Seria um retângulo
+   * perfeito de uma coisa que não se move.
+   */
+  assert.match(
+    palco,
+    /api\.openPrimeView\(\{\s*x: Math\.round\(r\.left \+ window\.scrollX\),\s*y: Math\.round\(r\.top \+ window\.scrollY\),\s*width: Math\.round\(r\.width\),\s*height: Math\.round\(r\.height\),?\s*\}\)/,
+    'e a medida vai pelo IPC, com a soma do scroll',
+  );
+
+  /*
+   * E fechar a view é explícito no cleanup.
+   *
+   * Sem o `closePrimeView` no cleanup, a view continua filha do `contentView`
+   * depois que a faixa desmonta — que é o defeito de clique engolido.
+   */
+  assert.match(
+    palco,
+    /return \(\) => \{\s*void api\.closePrimeView\(\);\s*\};|void api\.closePrimeView\(\);/,
+    'e o cleanup da faixa fecha a view',
   );
 });
