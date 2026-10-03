@@ -5,10 +5,15 @@ import { test } from 'node:test';
 
 import { ehPaginaDeTitulo, normalizarUrlDoPrime } from '../src/prime.js';
 import {
+  AREA_DE_AUTENTICACAO,
   TAMANHO_MAXIMO_DA_URL,
   ehAmazon,
   ehDominioPermitido,
+  ehMesmoRetangulo,
   ehPrimeVideo,
+  ehRotaDeAutenticacao,
+  retanguloDeAutenticacao,
+  rotaDeAutenticacao,
   urlDeTitulo,
   validarUrlPrime,
 } from '../../desktop/electron/shared/dominioPrime.js';
@@ -852,9 +857,12 @@ test('o login da Amazon acontece na sessão do Prime, e não no navegador do sis
     !/const DOMINIO_(PRIME|LOGIN)/.test(main),
     'e nem as constantes: a lista de dominios mora inteira no modulo compartilhado',
   );
-  assert.match(
-    main,
-    /import \{ urlDeTitulo, validarUrlPrime \} from '\.\.\/shared\/dominioPrime'/,
+  /*
+   * O import do `main` virou varias linhas quando entraram as funcoes de layout,
+   * entao a trava olha a origem e nao a forma. O que ela precisa garantir e que o
+   * `main` pegue a regra no modulo compartilhado, e nao defina a dele.
+   */
+  assert.match(main, /import \{[\s\S]{0,400}?\} from '\.\.\/shared\/dominioPrime';/,
     'ele importa do modulo compartilhado, que e o mesmo que o teste exercita',
   );
   assert.ok(
@@ -1365,5 +1373,430 @@ test('o log não imprime a query da Amazon', () => {
     codigo,
     /getUserAgent\(\)/,
     'incluindo o UA real que a sessao esta usando',
+  );
+});
+
+test('o layout do login da Amazon fica numa caixa centralizada, e some quando ele volta', () => {
+  /*
+   * ## O defeito que este teste existe para pegar
+   *
+   * A view ocupava a área inteira do player — cerca de 1900 pixels numa janela
+   * maximizada — em toda página, inclusive nas de login. A página de login da
+   * Amazon é desenhada para uma janela de navegador comum: o contêiner do
+   * formulário é posicionado numa medida que ela escolheu, e a 1900 pixels ele
+   * cai na borda direita, fora do campo de visão. Quem via o sintoma descrevia
+   * "o formulário aparece quase todo fora da tela, no lado direito", e era
+   * exatamente isso.
+   *
+   * A correção não é no site da Amazon — é dar a ele a largura para a qual ele
+   * foi desenhado. E é só isso: nenhum `loadURL`, nenhum cookie, nenhuma
+   * sessão nova.
+   */
+  /*
+   * ## As rotas de login
+   *
+   * A lista é fechada, e é o `/ap/` mais o nome que decide. A versão com
+   * curinga — `ap/<qualquer coisa>` — pegaria `/ap/marketing`, que é uma tela de
+   * campanha da Amazon, e o defeito viraria o oposto: uma tela de catálogo
+   * espremida numa caixa de 650 pixels.
+   */
+  const deLogin = [
+    'https://www.amazon.com.br/ap/signin?openid.sig=ABC&openid.mode=id_token',
+    'https://www.amazon.com/ap/signin',
+    'https://www.amazon.com/ap/signin-select',
+    'https://www.amazon.com/ap/mfa',
+    'https://www.amazon.com.br/ap/cvf',
+    'https://www.amazon.co.uk/ap/challenge',
+    'https://www.amazon.com/ap/register',
+    'https://www.amazon.com/ap/forgotpassword',
+    'https://www.amazon.com/ap/verifycode',
+    'https://www.amazon.com/ap/otp',
+  ];
+  for (const url of deLogin) {
+    const u = validarUrlPrime(url);
+    assert.ok(u, `${url} e uma URL valida`);
+    assert.ok(
+      ehRotaDeAutenticacao(u),
+      `${rotaDeAutenticacao(u)} e tela de login, e a view tem de encolher`,
+    );
+  }
+
+  /*
+   * E o que **nao** e tela de login nao encolhe — que e a metade da garantia que
+   * importa, porque o custo de encolher a view no lugar errado e alto: o
+   * catalogo do Prime fica espremido numa caixa, que e o sintoma que estamos
+   * tentando eliminar.
+   */
+  const deCatalogo = [
+    'https://www.primevideo.com/',
+    'https://www.primevideo.com/detail/the-bear/0ABC?ref_=hmg_x',
+    'https://www.primevideo.com/store',
+    'https://www.primevideo.com/search?k=matrix',
+    'https://www.amazon.com.br/',
+    'https://www.amazon.com.br/gp/css/homepage.html',
+    'https://www.amazon.com.br/ap/marketing',
+    'https://www.amazon.com.br/ap/',
+    'https://www.amazon.com.br/gp/help/customer/display.html',
+    'https://www.amazon.com.br/ap/signinando',
+  ];
+  for (const url of deCatalogo) {
+    const u = validarUrlPrime(url);
+    assert.ok(u, `${url} e uma URL valida`);
+    assert.equal(
+      ehRotaDeAutenticacao(u),
+      false,
+      `${url} nao e tela de login, e a view tem de continuar na area toda`,
+    );
+  }
+
+  /*
+   * Antes da primeira navegacao nao ha rota nenhuma, e isso e resposta valida.
+   *
+   * `validarUrlPrime` devolve `null` para `about:blank`, e quem pergunta e o
+   * codigo que posiciona a view — que e chamado exatamente quando a view acabou
+   * de nascer e ainda nao foi navigatione.
+   */
+  assert.equal(rotaDeAutenticacao(null), '');
+  assert.equal(ehRotaDeAutenticacao(null), false);
+
+  /*
+   * ## A caixa
+   *
+   * Centralizada na area do player, e do tamanho que o formulario da Amazon foi
+   * desenhado para ter.
+   */
+  const area = { x: 0, y: 80, width: 1900, height: 780 };
+  const caixa = retanguloDeAutenticacao(area);
+
+  assert.equal(caixa.width, 650, 'a largura e a do formulario');
+  assert.equal(caixa.height, 750, 'e a altura');
+  assert.equal(
+    caixa.x,
+    Math.round((1900 - 650) / 2),
+    'e fica no meio horizontal da area',
+  );
+  assert.equal(
+    caixa.y,
+    Math.round(80 + (780 - 750) / 2),
+    'e no meio vertical',
+  );
+  assert.ok(
+    caixa.x >= area.x && caixa.y >= area.y,
+    'e nunca começa antes da area',
+  );
+  assert.ok(
+    caixa.x + caixa.width <= area.x + area.width &&
+      caixa.y + caixa.height <= area.y + area.height,
+    'e nunca passa do fim da area',
+  );
+
+  /*
+   * As medidas do enunciado, com a faixa em volta.
+   */
+  assert.ok(
+    AREA_DE_AUTENTICACAO.largura >= 520 && AREA_DE_AUTENTICACAO.largura <= 650,
+    'a largura cabe na faixa de 520 a 650',
+  );
+  assert.ok(
+    AREA_DE_AUTENTICACAO.altura >= 650 && AREA_DE_AUTENTICACAO.altura <= 750,
+    'e a altura cabe na de 650 a 750',
+  );
+
+  /*
+   * ## A area estreita: a caixa tem de caber nela
+   *
+   * Janela pequena com o painel lateral aberto e a area do player fica com
+   * pouco mais de 600 pixels. Um piso fixo de 520 caberia, mas o de 650 nao — e a
+   * view ultrapassando a area cobre o chat de novo, que e o defeito que a
+   * remoção da view do `contentView` resolveu.
+   *
+   * Por isso a funcao usa so `min`: o menor valor nao e um piso, e o que a area
+   * permite.
+   */
+  for (const [w, h] of [
+    [1900, 780],
+    [700, 400],
+    [640, 360],
+    [420, 300],
+    [120, 90],
+  ]) {
+    const pequena = { x: 300, y: 100, width: w, height: h };
+    const r = retanguloDeAutenticacao(pequena);
+    assert.ok(r.width <= w && r.height <= h, `a caixa cabe em ${w}x${h}`);
+    assert.ok(r.width >= 1 && r.height >= 1, `e nao vira tamanho zero em ${w}x${h}`);
+    assert.ok(
+      r.x >= pequena.x && r.x + r.width <= pequena.x + w,
+      `e fica dentro da area em ${w}x${h}`,
+    );
+    assert.ok(
+      r.y >= pequena.y && r.y + r.height <= pequena.y + h,
+      `e na vertical tambem em ${w}x${h}`,
+    );
+    assert.ok(
+      Number.isInteger(r.x) && Number.isInteger(r.y) &&
+        Number.isInteger(r.width) && Number.isInteger(r.height),
+      `e sai em pixel inteiro em ${w}x${h}`,
+    );
+  }
+
+  /*
+   * E o que a funcao devolve nao depende do `this`, nem de nada la fora: a mesma
+   * area produz a mesma caixa em duas chamadas seguidas.
+   */
+  assert.deepEqual(retanguloDeAutenticacao(area), caixa);
+});
+
+test('ehMesmoRetangulo separa "nao mudou" de "ainda nao apliquei"', () => {
+  /*
+   * `resize` dispara dezenas de vezes por segundo durante um arrasto de janela, e
+   * `setBounds` a cada um deles e compositor trabalhando a toa. E o log e
+   * ilegivel com uma linha por quadro.
+   *
+   * A distincao que importa e a do `null`: sem area conhecida ainda, nada foi
+   * aplicado — e comparar `null` com `null` como iguais fecharia a porta antes de
+   * a primeira aplicacao, e a view ficaria em `0,0,0,0`.
+   */
+  const r = { x: 10, y: 20, width: 650, height: 750 };
+
+  assert.equal(ehMesmoRetangulo(r, { ...r }), true, 'o mesmo retangulo duas vezes');
+  assert.equal(ehMesmoRetangulo(null, null), true, 'nada aplicado duas vezes');
+  assert.equal(ehMesmoRetangulo(null, r), false, 'nada aplicado, e algo a aplicar');
+  assert.equal(ehMesmoRetangulo(r, null), false, 'o inverso');
+
+  for (const campo of ['x', 'y', 'width', 'height'] as const) {
+    assert.equal(
+      ehMesmoRetangulo(r, { ...r, [campo]: r[campo] + 1 }),
+      false,
+      `mexer em ${campo} conta como mudanca`,
+    );
+  }
+});
+
+test('a view so muda de tamanho: nenhum loadURL, nenhuma sessao, nenhum cookie', () => {
+  /*
+   * O motivo de `updatePrimeBounds` existir como uma funcao so, e nao espalhada
+   * pelos gatilhos: mudar o layout **nao pode** passar por nenhum caminho que
+   * toque navegacao ou sessao.
+   *
+   * A versao anterior do login falhava porque uma URL OpenID longa era barrada
+   * na validacao e o POST do formulario ia para o navegador do sistema. Qualquer
+   * "correcao" de layout que reabra um caminho de navegacao traz o defeito de
+   * volta por outro nome.
+   */
+  const main = semComentario(ler('../desktop/electron/main/prime.ts'));
+
+  const corpo = main.slice(
+    main.indexOf('function updatePrimeBounds('),
+    main.indexOf('function esquecerArea('),
+  );
+
+  assert.ok(corpo.length > 0, 'a funcao existe');
+
+  // Nenhuma das tres coisas que quebrariam o login.
+  assert.ok(!/loadURL/.test(corpo), 'nenhum loadURL: mudar tamanho nao e navegar');
+  assert.ok(!/fromPartition/.test(corpo), 'nenhuma sessao nova');
+  assert.ok(!/session\./.test(corpo), 'e nenhuma troca de sessao');
+  assert.ok(!/cookie|Cookie/.test(corpo), 'e nenhum cookie');
+  assert.ok(!/executeJavaScript|insertCSS|setUserAgent/.test(corpo), 'e nada injetado na pagina');
+
+  // O que ela pode fazer: mover a view e ajustar o zoom.
+  assert.match(corpo, /view\.setBounds\(destino\)/, 'a view e movida');
+  assert.match(corpo, /setZoomFactor\(1\)/, 'e o zoom e garantido em 1');
+  assert.match(corpo, /getZoomFactor\(\)/, 'depois de comparado, para nao chamar a toa');
+
+  /*
+   * O zoom so volta a 1 porque ele e medido antes: um `setZoomFactor(1)` sem
+   * `getZoomFactor` seria uma chamada por quadro de arrasto de janela.
+   */
+  assert.ok(
+    corpo.indexOf('getZoomFactor()') < corpo.indexOf('setZoomFactor(1)'),
+    'e o zoom e lido antes de ser escrito',
+  );
+
+  /*
+   * Os dois modos sao o unico par de decisao: caixa, ou area toda.
+   *
+   * E `retanguloDeAutenticacao` so aparece na escolha — nunca no `setBounds` de
+   * outro lugar, e nunca dentro do `prime:navegar`, que e o caminho que carrega
+   * a URL integral do login.
+   */
+  assert.match(
+    corpo,
+    /const destino = autenticando \? retanguloDeAutenticacao\(areaDoPlayer\) : areaDoPlayer;/,
+    'a escolha e entre a caixa e a area, e nada mais',
+  );
+
+  const navegar = main.slice(
+    main.indexOf("handle('prime:navegar'"),
+    main.indexOf("handle('prime:pagina'"),
+  );
+  assert.ok(
+    !/retanguloDeAutenticacao|updatePrimeBounds/.test(navegar),
+    'e o prime:navegar nao tem nada de layout dentro',
+  );
+});
+
+test('o layout e recalculado nos cinco momentos em que a area ou a rota mudam', () => {
+  const main = ler('../desktop/electron/main/prime.ts');
+  const codigo = semComentario(main);
+
+  /*
+   * A area muda por quatro motivos, e nenhum deles e a mesma coisa:
+   *
+   *   `prime:abrir`         o palco montou, ou o ResizeObserver disparou — e ele
+   *                         cobre o painel, a divisoria e a tela cheia
+   *   `did-navigate`        a rota mudou, e a rota decide o modo
+   *   `did-navigate-in-page` a rota mudou sem sair da pagina
+   *   `resize` da janela     o renderer as vezes nao chega, e o main se mexer
+   *   tela cheia            a mesma medida, evento proprio
+   *
+   * Deixar um de fora e um retangulo que nao acompanha a janela — e o sintoma e
+   * a view cobrindo o chat ou o cabecalho, que e o pior que pode acontecer.
+   */
+  const abrir = codigo.slice(
+    codigo.indexOf('function abrir('),
+    codigo.indexOf('function temDrm('),
+  );
+  assert.match(
+    abrir,
+    /areaDoPlayer = bounds;/,
+    'prime:abrir guarda a area medida pelo renderer',
+  );
+  assert.match(abrir, /updatePrimeBounds\(\);/, 'e delega o posicionamento');
+
+  const publicar = codigo.slice(
+    codigo.indexOf('function publicar('),
+    codigo.indexOf('function destruir('),
+  );
+  assert.match(
+    publicar,
+    /updatePrimeBounds\(\);/,
+    'a mudanca de rota reposiciona a view',
+  );
+
+  const ligar = codigo.slice(codigo.indexOf('export function ligarPrimeJanela('));
+  for (const evento of ['resize', 'enter-full-screen', 'leave-full-screen']) {
+    assert.match(
+      ligar,
+      new RegExp(`janela\\.on\\('${evento}', \\(\\) => updatePrimeBounds\\(\\)\\)`),
+      `a janela ${evento} reposiciona a view`,
+    );
+  }
+
+  const destruir = codigo.slice(
+    codigo.indexOf('function destruir('),
+    codigo.indexOf('function abrir('),
+  );
+  assert.match(
+    destruir,
+    /esquecerArea\(\);/,
+    'e fechar a view esquece a area, para a proxima sessao nao herdar o retangulo antigo',
+  );
+
+  /*
+   * E `esquecerArea` limpa o que ela guardou. Deixar `retanguloAplicado` para
+   * tras faz a comparacao dizer "nao mudou" na primeira chamada da proxima
+   * sessao, e a view nasce em 0,0,0,0 — invisivel, sem erro, sem log.
+   */
+  const esquecer = codigo.slice(
+    codigo.indexOf('function esquecerArea('),
+    codigo.indexOf('function descrever('),
+  );
+  for (const campo of [
+    'areaDoPlayer = null',
+    'retanguloAplicado = null',
+    'layoutRegistrado = null',
+    'modoAutenticacao = false',
+  ]) {
+    assert.ok(esquecer.includes(campo), `esquecerArea limpa ${campo}`);
+  }
+});
+
+test('o log do layout diz o modo, a rota, o retangulo e o zoom', () => {
+  const main = ler('../desktop/electron/main/prime.ts');
+  const codigo = semComentario(main);
+
+  const corpo = codigo.slice(
+    codigo.indexOf('function updatePrimeBounds('),
+    codigo.indexOf('function esquecerArea('),
+  );
+
+  for (const campo of [
+    'authMode=',
+    'rota=',
+    'pathname=',
+    'bounds={',
+    'area={',
+    'zoomFactor=',
+    'modo=',
+  ]) {
+    assert.ok(corpo.includes(campo), `o log traz ${campo.replace(/=$|=?\{$/, '')}`);
+  }
+
+  /*
+   * Uma linha so, e nao cinco.
+   *
+   * Sao os mesmos dados que o enunciado pedia em linhas separadas, e numa linha
+   * eles sao utilizaveis: da para ver o modo e o retangulo juntos, e ver o que
+   * mudou de uma navegacao para a outra sem abrir o log de outro dia.
+   */
+  const linhas = corpo.match(/`\[prime\] layout/g) ?? [];
+  assert.equal(linhas.length, 1, 'uma unica linha de log');
+
+  /*
+   * E ela so e escrita quando algo mudou de verdade.
+   *
+   * `resize` dispara dezenas de vezes por segundo, e uma linha por quadro torna
+   * o arquivo ilegivel no exato momento em que a pessoa está tentando ler o
+   * log para diagnosticar.
+   */
+  const abriu = '  if (!mudouBounds && !mudouModo) return;';
+  assert.match(
+    corpo,
+    new RegExp(abriu.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    'e a funcao sai antes quando nada mudou',
+  );
+  assert.match(corpo, /if \(linha !== layoutRegistrado\)/, 'e nao repete linha identica');
+
+  /*
+   * O `pathname` vai truncado, pelo mesmo motivo do log de navegação: uma URL
+   * OpenID anexada ao pathname produz uma linha de log de 3 KB.
+   */
+  assert.match(
+    corpo,
+    /urlAtual\.pathname\.slice\(0, PATHNAME_NO_LOG\)/,
+    'e o caminho vai cortado',
+  );
+
+  /*
+   * E o `setBounds` está **dentro** do guarda de "mudou".
+   *
+   * Sem esta trava, `const mudouBounds = false` passava a suíte inteira: a
+   * comparação existia, o log existia, `updatePrimeBounds` era chamado nos
+   * lugares certos — e `setBounds` nunca acontecia, porque ninguém o alcançava.
+   * A view ficava em `0,0,0,0`, invisível, sem erro e sem uma linha de log que
+   * explicasse. É o defeito que a comparação existe para evitar, e o modo de
+   * reintroduzi-lo é trocar a guarda, não apagá-la.
+   */
+  assert.match(
+    corpo,
+    /const mudouBounds = !ehMesmoRetangulo\(retanguloAplicado, destino\);/,
+    'a mudanca e calculada comparando com o retangulo ja aplicado',
+  );
+  assert.match(
+    corpo,
+    /if \(mudouBounds\) \{[\s\S]{0,500}?view\.setBounds\(destino\);/,
+    'e o setBounds acontece dentro do guarda',
+  );
+
+  /*
+   * O zoom reported e o que ficou, e nao o que foi lido: quando o app corrige um
+   * zoom herdado, o log precisa dizer 1 — o valor efetivo — ou a linha mente
+   * sobre o estado da tela.
+   */
+  assert.match(
+    corpo,
+    /zoomFactor=\$\{zoom !== 1 \? 1 : zoom\}/,
+    'e o log reporta o zoom efetivo',
   );
 });

@@ -1,6 +1,13 @@
 import { BrowserWindow, WebContentsView, app, ipcMain, session, shell } from 'electron';
 import { log } from './log';
-import { urlDeTitulo, validarUrlPrime } from '../shared/dominioPrime';
+import {
+  ehMesmoRetangulo,
+  ehRotaDeAutenticacao,
+  retanguloDeAutenticacao,
+  rotaDeAutenticacao,
+  urlDeTitulo,
+  validarUrlPrime,
+} from '../shared/dominioPrime';
 import type { PrimeBounds, PrimePage } from '../shared/contract';
 
 /**
@@ -100,6 +107,147 @@ function registrar(evento: string, cru: string, popup = false): void {
   );
 }
 
+/* ---------------------------------------------------------------------------
+ * Onde a view fica.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * A área do player, como o renderer mediu.
+ *
+ * `null` enquanto ninguém mandou. O renderer manda em `prime:abrir`, que dispara
+ * na montagem do palco, em cada `resize` da janela e em cada mudança do
+ * `ResizeObserver` do palco — que é o que cobre arrastar a divisória, abrir e
+ * fechar o painel lateral, e entrar e sair de tela cheia.
+ *
+ * Guardar o último valor é o que permite ao `main` reposicionar a view sozinho,
+ * nos eventos de janela que ele enxerga e o renderer não. Sem isto, o `main`
+ * só saberia se mover quando alguém perguntasse.
+ */
+let areaDoPlayer: PrimeBounds | null = null;
+
+/** A view está mostrando uma tela de login da conta Amazon? */
+let modoAutenticacao = false;
+
+/**
+ * O último retângulo aplicado, para não repetir trabalho idêntico.
+ *
+ * `resize` dispara dezenas de vezes por segundo durante um arrasto de janela, e
+ * `setBounds` a cada um deles é compositor trabalhando à toa. Serve também para
+ * o log: uma linha por mudança real é legível; uma por quadro não é.
+ */
+let retanguloAplicado: PrimeBounds | null = null;
+
+/** A última linha de layout registrada, para a mesma razão de `retanguloAplicado`. */
+let layoutRegistrado: string | null = null;
+
+/**
+ * Onde a tela de login vai ficar, dentro da área do player.
+ *
+ * Uma função só, e é ela quem decide entre os dois modos. A versão anterior
+ * aplicava o retângulo que o renderer mandava, sem olhar a página: a área do
+ * player é de ~1900 pixels numa janela maximizada, e o formulário da Amazon é
+ * desenhado para uma janela de navegador comum. O resultado era o formulário
+ * inteiro na borda direita, fora do campo de visão.
+ *
+ * Três coisas ela considera, e as três vêm de lugares diferentes:
+ *
+ *   a área            do renderer, que é quem vê o painel, a divisória e a faixa
+ *   a rota atual      do Chromium, via `getURL()` — é a rota que diz se a
+ *                     página é um formulário estreito
+ *   o zoom            do próprio `webContents`, garantido em 1
+ *
+ * ## Por que nada aqui recarrega a página
+ *
+ * `setBounds` reposiciona a view. Não navega, não recria nada, não toca em
+ * cookie, e não passa nada pelo `loadURL`. É a operação de menor consequência
+ * disponível: muda o retângulo, o `layout` do documento recalcula, e o POST do
+ * formulário — que é o que completa o login — segue intacto.
+ *
+ * Este é o ponto que não pode ser negociado. A versão anterior do login falhava
+ * porque uma URL OpenID longa era barrada na validação e o POST ia para o
+ * navegador do sistema; qualquer "correção" de layout que reabra um caminho de
+ * navegação traz o defeito de volta por outro nome.
+ */
+function updatePrimeBounds(): void {
+  if (!view || view.webContents.isDestroyed()) return;
+  if (!areaDoPlayer) return;
+
+  const urlAtual = validarUrlPrime(view.webContents.getURL());
+  const rota = rotaDeAutenticacao(urlAtual);
+  const autenticando = ehRotaDeAutenticacao(urlAtual);
+
+  /*
+   * Zoom em 1, sempre.
+   *
+   * Nada no app mexe em zoom hoje, e o padrão do Chromium já é 1 — esta linha é
+   * o que garante que continue sendo. Ela existe por duas razões, e as duas são
+   * sobre o futuro:
+   *
+   *   um dia algum outro lugar decidir aplicar zoom para "ler melhor" o catálogo
+   *   e herdar o valor na tela de login, onde o formulário é o oposto de uma
+   *   tela para ler;
+   *   e a pessoa apertar Ctrl+ e Ctrl- dentro da view, que grava o zoom no
+   *   perfil da sessão `persist:juntos-prime`, e esse perfil sobrevive ao fechar o
+   *   app. Um dia ela aperta Ctrl- para ver o catálogo melhor, e na volta o login
+   *   nasce a 80%.
+   *
+   * Comparar antes evita uma chamada a cada `resize`.
+   */
+  const zoom = view.webContents.getZoomFactor();
+  if (zoom !== 1) view.webContents.setZoomFactor(1);
+
+  const destino = autenticando ? retanguloDeAutenticacao(areaDoPlayer) : areaDoPlayer;
+
+  const mudouBounds = !ehMesmoRetangulo(retanguloAplicado, destino);
+  const mudouModo = modoAutenticacao !== autenticando;
+
+  if (mudouBounds) {
+    /*
+     * O retângulo vai na própria view, e não em `contentView`.
+     *
+     * `contentView` é a raiz da hierarquia: `setBounds` nela move a raiz, e não o
+     * filho. Quem posiciona a view do Prime é `view.setBounds`.
+     */
+    try {
+      view.setBounds(destino);
+      retanguloAplicado = destino;
+    } catch {
+      // Janela fechada no meio do `setBounds`: não há mais para onde aplicar.
+      return;
+    }
+  }
+
+  modoAutenticacao = autenticando;
+
+  if (!mudouBounds && !mudouModo) return;
+
+  const linha =
+    `[prime] layout authMode=${autenticando} rota=${rota || '-'} ` +
+    `pathname=${urlAtual ? urlAtual.pathname.slice(0, PATHNAME_NO_LOG) : '-'} ` +
+    `bounds={${destino.x},${destino.y},${destino.width},${destino.height}} ` +
+    `area={${areaDoPlayer.x},${areaDoPlayer.y},${areaDoPlayer.width},${areaDoPlayer.height}} ` +
+    `zoomFactor=${zoom !== 1 ? 1 : zoom} ` +
+    `modo=${autenticando ? 'caixa' : 'area toda'}`;
+  if (linha !== layoutRegistrado) {
+    layoutRegistrado = linha;
+    log(linha);
+  }
+}
+
+/**
+ * Esquece a área conhecida.
+ *
+ * Sem isto, quem abrir o Prime numa sessão nova receberia o retângulo da sessão
+ * anterior — que é o de outra janela, em outra posição na tela. O sintoma é a
+ * view aparecendo deslocada em um canto, sem nada do nosso embaixo.
+ */
+function esquecerArea(): void {
+  areaDoPlayer = null;
+  retanguloAplicado = null;
+  layoutRegistrado = null;
+  modoAutenticacao = false;
+}
+
 /**
  * Descreve a página que a view está mostrando, na forma segura.
  *
@@ -131,6 +279,10 @@ function publicar(evento: string): void {
   const cru = view.webContents.getURL();
   registrar(evento, cru);
   paginaAtual = descrever();
+  //
+  // A rota acabou de mudar, e é ela que decide o tamanho da view: o login da
+  // Amazon entra numa caixa de 650 pixels e o catálogo volta a preencher a área.
+  updatePrimeBounds();
   for (const wc of BrowserWindow.getAllWindows()) {
     if (!wc.isDestroyed()) wc.webContents.send('prime:pagina-mudou', paginaAtual);
   }
@@ -163,6 +315,7 @@ function destruir(): void {
   if (!view.webContents.isDestroyed()) view.webContents.close();
   view = null;
   paginaAtual = { url: '', titulo: '', isTitulo: false };
+  esquecerArea();
   log('[prime] view fechada');
 }
 
@@ -325,22 +478,16 @@ function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
      */
   }
 
-  try {
-    /*
-     * O retângulo vai na própria view, e não em `contentView`.
-     *
-     * `contentView` é a raiz da hierarquia: `setBounds` nela move a raiz, e não o
-     * filho. Quem posiciona a view do Prime é `view.setBounds`.
-     */
-    view.setBounds({
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: bounds.height,
-    });
-  } catch {
-    return false;
-  }
+  /*
+   * A área medida pelo palco é guardada, e o posicionamento é de `updatePrimeBounds`.
+   *
+   * Guardar em vez de aplicar aqui é o que deixa o `main` se mexer sozinho quando a
+   * janela muda de tamanho: `prime:abrir` continua sendo a única fonte da área, e
+   * ninguém mais precisa mandar a mesma informação por um caminho novo.
+   */
+  areaDoPlayer = bounds;
+  updatePrimeBounds();
+
   /*
    * Sem `setVisible`: a view nasce visível, e o que a esconde é removê-la.
    */
@@ -448,6 +595,26 @@ export function ligarPrimeJanela(janela: BrowserWindow): void {
       dona = null;
     }
   });
+
+  /*
+   * A view se mexe junto com a janela, mesmo sem o renderer pedir.
+   *
+   * O palco do Junto já manda a área nova em `resize`, em tela cheia e a cada
+   * mudança do painel, pelo `ResizeObserver`. Estes três existem aqui para o caso
+   * em que ele não chega: o renderer ocupado, a faixa fora do montagem, uma
+   * navegação em curso enquanto a pessoa arrasta a janela.
+   *
+   * Nenhum deles é o único caminho. `updatePrimeBounds` é idempotente — se o retângulo
+   * não mudou, não chama `setBounds` — então os dois lados podem responder ao mesmo
+   * evento sem que a view fique pulando entre dois lugares.
+   *
+   * `resize` já cobre tela cheia no Windows, e `enter-full-screen` cobre o resto: os
+   * dois eventos existem porque nem toda plataforma emite os dois, e a caixa do login
+   * precisa ficar centralizada nas duas.
+   */
+  janela.on('resize', () => updatePrimeBounds());
+  janela.on('enter-full-screen', () => updatePrimeBounds());
+  janela.on('leave-full-screen', () => updatePrimeBounds());
 
   log(`[prime] view ligada na janela ${janela.id}`);
 }
