@@ -4,7 +4,14 @@ import { resolve } from 'node:path';
 import { test } from 'node:test';
 
 import { ehPaginaDeTitulo, normalizarUrlDoPrime } from '../src/prime.js';
-import { ehDominioPermitido, ehAmazon, ehPrimeVideo } from '../../desktop/electron/shared/dominioPrime.js';
+import {
+  TAMANHO_MAXIMO_DA_URL,
+  ehAmazon,
+  ehDominioPermitido,
+  ehPrimeVideo,
+  urlDeTitulo,
+  validarUrlPrime,
+} from '../../desktop/electron/shared/dominioPrime.js';
 
 /*
  * O Prime Video dentro do Junto: as regras de URL e o que a sala guarda.
@@ -822,7 +829,7 @@ test('o login da Amazon acontece na sessão do Prime, e não no navegador do sis
    */
   assert.match(
     main,
-    /app\.on\('web-contents-created',[\s\S]{0,300}wc\.session === session\.fromPartition\(PARTICAO\)/,
+    /if \(wc\.session !== session\.fromPartition\(PARTICAO\)\) return;/,
     'o filtro alcança todo WebContents da partição do Prime, e só ele',
   );
   assert.match(
@@ -847,8 +854,8 @@ test('o login da Amazon acontece na sessão do Prime, e não no navegador do sis
   );
   assert.match(
     main,
-    /import \{ ehDominioPermitido \} from '\.\.\/shared\/dominioPrime'/,
-    'ele importa do módulo compartilhado, que é o mesmo que o teste exercita',
+    /import \{ urlDeTitulo, validarUrlPrime \} from '\.\.\/shared\/dominioPrime'/,
+    'ele importa do modulo compartilhado, que e o mesmo que o teste exercita',
   );
   assert.ok(
     !/DOMINIOS_DA_NAVEGACAO|ehDominioDeNavegacao/.test(
@@ -944,5 +951,419 @@ test('a sincronização não injeta no player do Prime, e o motivo está escrito
     semComentario(ler('../server/src/socket.ts')),
     /if \(!canControl\(room, socket\.id\)\) return denied\(room\);\s*if \(typeof itemId !== 'string'\) return;\s*if \(!iniciarCountdown/,
     'a contagem exige controle da sala: uma pessoa sozinha não começa um filme para todo mundo',
+  );
+});
+
+test('a URL de login da Amazon entra inteira: sem teto de 2048, sem apagar a query', () => {
+  /*
+   * ## O defeito que estes testes existem para pegar
+   *
+   * Havia UMA função, `normalizar`, que decidia se a URL era válida **e** apagava
+   * `search` e `hash`. Uma função com duas responsabilidades é uma função em que
+   * uma sempre atrapalha a outra:
+   *
+   *   apagar a query é o que se quer para a URL que vai para a fila
+   *   apagar a query é o que destrói um login em andamento
+   *
+   * E ela tinha `url.length > 2048` como recusa. A URL mais longa do fluxo não é
+   * a de um título: é a de **signin OpenID**, que carrega `openid.return_to` (uma
+   * URL inteira, percent-encoded), `openid.assoc_handle`, `openid.mode`,
+   * `openid.ns`, `openid.sig`, `openid.signed` e `location`. Na prática isso passa
+   * de 2048 com folga.
+   *
+   * Com o teto antigo, `normalizar` devolvia `null`, o `will-navigate` chamava
+   * `preventDefault()` e mandava a URL para o navegador do sistema — **e o login
+   * nunca completava dentro do app**. Quem via o sintoma achava que o Prime estava
+   * recusando carregar.
+   */
+
+  // Uma URL de signin OpenID de tamanho real.
+  const openid =
+    'https://www.amazon.com.br/ap/signin' +
+    '?openid.pape.max_auth_age=0' +
+    '&openid.return_to=' +
+    encodeURIComponent('https://na.primevideo.com/region/na/auth/return?_encoding=UTF8&ref_=ab_dp_mw_ab_web') +
+    '&openid.mode=id_token' +
+    '&openid.ns=https%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fid_token' +
+    '&openid.assoc_handle=' +
+    encodeURIComponent('https://juntos-watchparty.example/handle/'.repeat(30)) +
+    '&openid.signed=text,email,name,postal_code' +
+    '&openid.sig=' +
+    'A'.repeat(1200) +
+    '&location=' +
+    encodeURIComponent('https://www.amazon.com.br/ap/signin?ref_=ap_signin_query') +
+    '&oauth_consumer_key=amzn1.application-oa2-client.abc123' +
+    '&aws_bucket=prime-video' +
+    '&aws_service=DeviceService';
+
+  /*
+   * O tamanho real, medido — e não estimado. A URL acima tem que passar de 2048,
+   * senão o teste não prova nada: um teto de 2048 a aceitaria.
+   */
+  assert.ok(
+    openid.length > 2048,
+    `a URL de teste tem que passar de 2048, e tem ${openid.length}`,
+  );
+
+  const u = validarUrlPrime(openid);
+  assert.ok(u, 'a URL de signin OpenID é válida e é aceita');
+  assert.equal(u.hostname, 'www.amazon.com.br', 'e o hostname é da loja regional');
+  assert.ok(u.search.length > 1000, 'a query do OpenID está inteira');
+  assert.ok(u.toString().includes('openid.sig='), 'incluindo openid.sig');
+  assert.ok(u.toString().includes('openid.return_to='), 'e openid.return_to');
+  assert.ok(u.toString().includes('openid.assoc_handle='), 'e openid.assoc_handle');
+  assert.ok(u.toString().includes('openid.mode='), 'e openid.mode');
+  assert.ok(u.toString().includes('openid.ns='), 'e openid.ns');
+
+  /*
+   * A separação: o que a validação devolve é a URL **integral**.
+   *
+   * `validarUrlPrime` não pode ter lado nenhum. Se ela limpasse a query, a
+   * chamada seguinte do Chromium seria uma URL diferente da que a Amazon emitiu, e
+   * o fluxo morreria em silêncio — sem erro, sem log, só a tela branca.
+   */
+  assert.equal(u.toString(), openid, 'a URL devolvida é byte a byte a que entrou');
+
+  /*
+   * O teto continua existindo, mas em 16 KB.
+   *
+   * Não é decoração: sem teto, `shell.openExternal` receberia uma URL de
+   * gigabytes. E o teto não pode ser tão baixo que recuse o fluxo real.
+   */
+  assert.ok(TAMANHO_MAXIMO_DA_URL >= 16 * 1024, 'o teto é de 16 KB ou mais');
+  assert.ok(
+    validarUrlPrime(`https://www.amazon.com/ap/signin?x=${'a'.repeat(TAMANHO_MAXIMO_DA_URL)}`) === null,
+    'e uma URL acima dele ainda é recusada',
+  );
+
+  /*
+   * A função é só validação. Scheme e domínio continuam sob controle.
+   */
+  assert.equal(validarUrlPrime('javascript:alert(1)//https://www.amazon.com/ap/signin'), null);
+  assert.equal(validarUrlPrime('data:text/html,<script>alert(1)</script>'), null);
+  assert.equal(validarUrlPrime('file:///etc/passwd'), null);
+  assert.equal(validarUrlPrime('https://evilprimevideo.com/detail/x'), null);
+  assert.equal(validarUrlPrime('https://amazon.com.br.evil.net/ap/signin'), null);
+  assert.equal(validarUrlPrime(''), null);
+  assert.equal(validarUrlPrime(undefined), null);
+  assert.equal(validarUrlPrime(null), null);
+  assert.equal(validarUrlPrime(42), null);
+});
+
+test('a URL de mídia só existe quando a página é um título, e nunca serve para logar', () => {
+  /*
+   * `urlDeTitulo` é a forma segura, e é o que vai para a fila. Ela **não** pode
+   * aparecer em lugar nenhum que continue um login — e o teste abaixo de
+   * "nenhum lugar do fluxo…" confere isso no código.
+   *
+   * Aqui a pergunta éoutra: o que ela devolve, e quando.
+   *
+   * O caminho é o que identifica o título, e a query é o que se descarta. Num
+   * título comprado, a query é material de sessão — e sessão não viaja entre
+   * participantes.
+   */
+  const DE_TITULO = 'https://www.primevideo.com/detail/the-bear/0K9Y7ZQ1FQV0WZ4KQ0MDM0MVRW';
+
+  const titulo = validarUrlPrime(`${DE_TITULO}?ref_=hmg_x&_encoding=UTF8#ancla`);
+  assert.ok(titulo, 'a URL do título é válida');
+  assert.equal(
+    urlDeTitulo(titulo),
+    DE_TITULO,
+    'e sai sem query nem âncora, que é o que pode ir para a sala',
+  );
+
+  /*
+   * E o que não é título devolve string vazia — inclusive uma URL de signin.
+   *
+   * A consequência que importa: `urlDeTitulo` de uma página de login é vazia, e
+   * por isso **não pode** servir para continuar um login. Uma URL de signin com a
+   * query removida não é "a mesma página": é outra página, que não autentica
+   * ninguém.
+   */
+  const vazios = [
+    'https://www.amazon.com.br/ap/signin?openid.sig=ABC&openid.mode=id_token',
+    'https://www.amazon.com/ap/signin',
+    'https://www.primevideo.com/',
+    'https://www.primevideo.com/store',
+    'https://www.primevideo.com/search?k=matrix',
+    'https://www.primevideo.com/detail',
+    'https://www.primevideo.com/details/algum-filme',
+  ];
+
+  for (const url of vazios) {
+    const u = validarUrlPrime(url);
+    assert.ok(u, `${url} é uma URL válida`);
+    assert.equal(
+      urlDeTitulo(u),
+      '',
+      `${url} não é de um título, e não pode virar item de fila`,
+    );
+  }
+
+  /*
+   * A paridade com o servidor.
+   *
+   * O servidor decide o que entra na fila; o desktop decide o que oferece o
+   * botão "Assistir com a sala". Se as duas respostas divergissem, o sintoma seria
+   * o botão aparecendo numa página cuja URL o servidor recusa — e nenhum dos dois
+   * lados falharia, cada um no seu teste.
+   *
+   * É o mesmo motivo de `CONTAGEM_REGRESSIVA_MS` ter o valor nos dois lados: o
+   * contrato atravessa um processo, e a única forma de ele não divergir é alguém
+   * conferir.
+   */
+  for (const url of [
+    DE_TITULO,
+    'https://www.primevideo.com/detail/algum-filme',
+    'https://www.primevideo.com/dp/0ABC',
+    'https://www.primevideo.com/title/0ABC',
+    'https://www.primevideo.com/detail/0ABC?ref_=x',
+    ...vazios,
+  ]) {
+    const peloDesktop = urlDeTitulo(validarUrlPrime(url)) !== '';
+    const peloServidor = ehPaginaDeTitulo(url);
+    assert.equal(
+      peloDesktop,
+      peloServidor,
+      `os dois lados precisam concordar em ${url}`,
+    );
+  }
+});
+
+test('nenhum lugar do fluxo de autenticação usa a URL canônica do título', () => {
+  /*
+   * `urlDeTitulo` é a forma segura e é o que vai para a fila. Ela **não** pode
+   * aparecer em lugar nenhum que continue um login:
+   *
+   *   will-navigate              decide; a URL que o Chromium usa é a dele
+   *   setWindowOpenHandler       decide; o Chromium navega o popup
+   *   prime:navegar              carrega a URL integral
+   *
+   * E `descrever` — o que vai para o renderer — é o único lugar onde a forma
+   * canônica aparece, e é o lugar certo: a fila precisa dela.
+   */
+  const main = semComentario(ler('../desktop/electron/main/prime.ts'));
+
+  // 1. `prime:navegar` carrega a integral.
+  const navegar = main.slice(main.indexOf("ipcMain.handle('prime:navegar'"), main.indexOf("ipcMain.handle('prime:pagina'"));
+  assert.match(navegar, /validarUrlPrime\(url\)/, 'prime:navegar valida o que chegou');
+  assert.match(
+    navegar,
+    /view\.webContents\.loadURL\(u\.toString\(\)\)/,
+    'e carrega a URL que a validação devolveu — a integral',
+  );
+  assert.ok(
+    !/urlDeTitulo/.test(navegar),
+    'e em nenhum momento a forma canônica do título entra no caminho do login',
+  );
+
+  // 2. O filtro só decide, e não reconstrói.
+  const filtro = main.slice(
+    main.indexOf("app.on('web-contents-created'"),
+    main.indexOf('function abrir('),
+  );
+  assert.match(filtro, /if \(validarUrlPrime\(url\)\) return;/, 'o filtro valida e deixa passar');
+  assert.match(filtro, /evento\.preventDefault\(\)/, 'ou cancela');
+  assert.ok(
+    !/loadURL/.test(filtro),
+    'e nunca chama loadURL: reescrever a URL teria dois pedidos de navegação em voo',
+  );
+  assert.ok(
+    !/\.search\s*=/.test(filtro),
+    'e nunca mexe em search',
+  );
+
+  // 3. O popup só decide, e a URL não é passada nas opções.
+  const popup = main.slice(main.indexOf('setWindowOpenHandler'), main.indexOf("did-navigate'"));
+  assert.match(popup, /validarUrlPrime\(url\)/, 'o popup valida o domínio');
+  assert.match(popup, /action: 'allow'/, 'e deixa abrir');
+  /*
+   * A URL não pode aparecer em chave nenhuma da resposta do handler.
+   *
+   * A versão anterior procurava `url` nos 200 caracteres depois de
+   * `overrideBrowserWindowOptions`, e a chave estava ANTES dele — o defeito
+   * passava inteiro. Aqui a busca é na fatia toda.
+   */
+  assert.ok(
+    !/\burl\s*:/.test(popup),
+    'e a URL nao entra em chave nenhuma da resposta: o Chromium navega o popup para a que ele produziu',
+  );
+  const opcoes = main.slice(
+    main.indexOf('function opcoesDaJanelaDeLogin'),
+    main.indexOf('function instalarFiltroDeNavegacao'),
+  );
+  assert.match(
+    opcoes,
+    /partition: PARTICAO/,
+    'e a janela do login usa a mesma particao da view, que e o que faz o POST cair no Prime',
+  );
+
+  // 4. `descrever` é onde a forma canônica aparece, e só encher o `url`.
+  const descrever = main.slice(main.indexOf('function descrever'), main.indexOf('function publicar'));
+  assert.match(
+    descrever,
+    /const midia = urlDeTitulo\(u\);\s*return \{\s*url: midia,/,
+    'a forma canônica vai no campo url da página, que é o que a fila consome',
+  );
+  assert.ok(
+    !/loadURL/.test(descrever),
+    'e descrever não navega para lugar nenhum',
+  );
+});
+
+test('o log não imprime a query da Amazon', () => {
+  /*
+   * ## Por que esta forma
+   *
+   * A primeira versão desta trava era um regex que proibia `search`, `hash`,
+   * `cookie` e `token` na função de log. Duas coisas erradas nela:
+   *
+   *   proíbe também dizer que **havia** query, que é a informação que o log
+   *   existe para dar;
+   *   e o regex era frouxo o bastante para casar com `${u ? u.search` — sem
+   *   fechamento nenhum, porque `[^}]*` atravessa o `?`. Ele acusava código que
+   *   estava certo, que é o jeito mais rápido de desabilitar uma trava.
+   *
+   * A forma útil é mais estreita: **toda** menção a `search` em `registrar` tem
+   * que ser a comparação com string vazia, e `hash` não pode aparecer.
+   */
+  const main = ler('../desktop/electron/main/prime.ts');
+  const codigo = semComentario(main);
+
+  const registrar = codigo.slice(
+    codigo.indexOf('function registrar('),
+    codigo.indexOf('function descrever('),
+  );
+  assert.ok(registrar.length > 0, 'a função de registro existe');
+
+  /*
+   * Toda ocorrência de `search` é a comparação que produz um booleano.
+   *
+   * `${u.search !== ''}` não vaza nada: vira `true` ou `false`. `${u.search}`
+   * vazia a query inteira — que é o estado do fluxo OpenID, com `openid.sig`,
+   * `openid.signed`, `openid.assoc_handle` e `location`.
+   */
+  const ocorrencias = registrar.match(/search/g) ?? [];
+  assert.ok(ocorrencias.length > 0, 'e o log menciona search, porque é assim que diz que havia query');
+
+  const permitidas = registrar.match(/u\.search !== ''/g) ?? [];
+  assert.equal(
+    ocorrencias.length,
+    permitidas.length,
+    'toda menção a search é a comparação com string vazia, e nenhuma outra',
+  );
+
+  // E o que não pode aparecer de jeito nenhum.
+  for (const proibido of ['hash', 'searchParams', 'credentials', 'cookie', 'crud=']) {
+    assert.ok(
+      !new RegExp(`\\b${proibido}`, 'i').test(registrar),
+      `o log não menciona ${proibido}`,
+    );
+  }
+
+  /*
+   * E os campos pedidos estão todos lá.
+   *
+   * É o que permite ler um relatório de bug e ver onde o login parou, sem abrir
+   * nada que seja credencial.
+   */
+  for (const [campo, rotulo] of [
+    ['${evento}', 'evento'],
+    ['u.hostname', 'hostname'],
+    ['u.pathname', 'pathname'],
+    ['cru.length', 'urlLength'],
+    ['u.search', 'hasQuery'],
+    ['popup', 'popup'],
+  ] as const) {
+    assert.ok(registrar.includes(campo), `o log registra ${rotulo}`);
+  }
+
+  /*
+   * O `pathname` é truncado.
+   *
+   * Um caminho de 4 KB numa linha de log não ajuda ninguém, e o log de um app
+   * desktop é o que a pessoa cola num relatório de bug.
+   */
+  assert.match(
+    registrar,
+    /u\.pathname\.slice\(0, PATHNAME_NO_LOG\)/,
+    'e o caminho vai cortado',
+  );
+
+  /*
+   * Os eventos que importam estão todos registrados — é a lista que fecha o
+   * diagnóstico do fluxo. Sem eles, um relatório de bug diz que "não entrou"
+   * sem dizer onde parou.
+   *
+   * A checagem é pelo texto, e não por aspas: dois deles são registrados com
+   * template literal (`view criada na particao ...`) e um com o prefixo `[prime]`
+   * grudado na string. Procurar aspas acusaria código que está certo.
+   */
+  for (const evento of [
+    'navegou',
+    'navegou na pagina',
+    'popup permitido',
+    'popup bloqueado',
+    'navegacao bloqueada',
+    'navegar',
+    'navegar recusado',
+    'view criada na particao',
+    'sessao criada sem override de UA',
+    'view fechada',
+    'view ligada',
+  ]) {
+    assert.ok(codigo.includes(evento), `o log registra "${evento}"`);
+  }
+
+  /*
+   * E o campo `popup` é preenchido de verdade, e não por acaso.
+   *
+   * Os dois eventos de popup passam `true`; os de navegação passam o default
+   * `false`. Um `popup` sempre falso deixaria o log incapaz de distinguir "a
+   * janela de login abriu" de "a view navegou", que são justamente as duas
+   * coisas que um bug de login precisa separar.
+   */
+  assert.match(registrar, /popup = false/, 'o campo popup tem valor padrao');
+  assert.match(main, /registrar\('popup permitido', url, true\)/, 'e o popup permitido marca popup=true');
+  assert.match(main, /registrar\('popup bloqueado', url, true\)/, 'e o popup bloqueado tambem');
+
+  /*
+   * O User-Agent fixo saiu, e a trava precisa se manter de pé.
+   *
+   * O UA fixo dizia `Chrome/130.0.0.0`, e o Electron 33 embarca outro Chromium.
+   * Um UA que não bate com o motor faz a Amazon responder com uma variante
+   * diferente de página, que é indistinguível de "o Prime não funciona aqui".
+   *
+   * Este é um teste: sem override, o Chromium manda o UA dele, que é o único que
+   * ele consegue honour. Se o login funcionar assim, a linha volta a ser um
+   * problema a investigar — e não antes.
+   */
+  assert.ok(
+    !/setUserAgent/.test(codigo),
+    'nenhuma chamada a setUserAgent na particao do Prime',
+  );
+  assert.ok(!/USER_AGENT/.test(codigo), 'e a constante do UA fixo tambem saiu do codigo');
+  /*
+   * O arquivo pode citar o UA antigo: o comentário que explica por que ele saiu
+   * precisa nomeá-lo. O que não pode é ele existir como código.
+   */
+  assert.ok(!/Chrome\/130/.test(codigo), 'e o UA fixo saiu do codigo');
+
+  /*
+   * E o log diz qual UA a sessão está usando.
+   *
+   * Sem isso, um override que voltasse por outro caminho — uma configuração da
+   * partição, um switch de linha de comando — não apareceria em lugar nenhum, e o
+   * relatório de bug continuaria sem a informação que o explicaria.
+   */
+  assert.match(
+    codigo,
+    /sessao criada sem override de UA/,
+    'e o log registra a decisao sobre o UA',
+  );
+  assert.match(
+    codigo,
+    /getUserAgent\(\)/,
+    'incluindo o UA real que a sessao esta usando',
   );
 });
