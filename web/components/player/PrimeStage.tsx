@@ -242,6 +242,19 @@ function PrimeBase({ tituloDaFaixa, urlDaFaixa, onAssistirComSala, onFechar, chi
 
   const naPaginaDeTitulo = pagina?.isTitulo === true && pagina.url !== '';
 
+  /*
+   * Para onde o "abrir no navegador" leva.
+   *
+   * Antes ele existia **apenas** quando havia um item `prime` tocando, e por causa
+   * disso sumia justamente no caso em que a pessoa mais precisa dele: no modo
+   * navegação, com o Prime aberto pelo card e o título escolhido à mão.
+   *
+   * O item da fila vem primeiro porque ele é o título que a sala está vendo — mas a
+   * página atual da view serve, e vem do `main` já sem query nem âncora. É a forma
+   * segura por construção, e por isso pode ir para `window.open` sem revisão.
+   */
+  const abrirNoNavegador = urlDaFaixa || (naPaginaDeTitulo ? pagina?.url : '') || '';
+
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-black">
       {/*
@@ -290,10 +303,12 @@ function PrimeBase({ tituloDaFaixa, urlDaFaixa, onAssistirComSala, onFechar, chi
           <span className="min-w-0 flex-1 truncate text-2xs text-ink-muted" title={pagina?.titulo}>
             {pagina?.titulo || tituloDaFaixa || ''}
           </span>
-          {urlDaFaixa && (
+          {abrirNoNavegador && (
             <IconButton
-              label={`Abrir ${rotuloDoPrime(urlDaFaixa)} no navegador`}
-              onClick={() => window.open(urlDaFaixa, '_blank', 'noopener,noreferrer')}
+              label={`Abrir ${rotuloDoPrime(abrirNoNavegador)} no navegador`}
+              onClick={() =>
+                window.open(abrirNoNavegador, '_blank', 'noopener,noreferrer')
+              }
             >
               <ArrowSquareOutIcon size={15} />
             </IconButton>
@@ -324,10 +339,35 @@ function PrimeBase({ tituloDaFaixa, urlDaFaixa, onAssistirComSala, onFechar, chi
         )}
 
         {podeTocarProtegido === false && (
-          <p className="text-2xs leading-relaxed text-ink-faint">
-            Este build do aplicativo não reproduz vídeo protegido dentro dele. Cada pessoa
-            assiste no próprio Prime Video — no navegador, na conta dela.
-          </p>
+          /*
+           * Sem DRM, o app não tem o que oferecer.
+           *
+           * A frase antiga — "não reproduz vídeo protegido dentro dele" — descrevia o
+           * sintoma e não a causa, e a pessoa lia como se fosse o título ou a conta que
+           * estivessem errados. Não era nenhum dos dois: o build do aplicativo não tem o
+           * componente que decifra, e isso não muda com o título.
+           *
+           * Por isso o texto diz o que falta, e o botão dá o caminho: o Prime Video no
+           * navegador da pessoa, na conta dela, onde funciona.
+           */
+          <div className="space-y-2">
+            <p className="text-2xs leading-relaxed text-ink-faint">
+              Este build do aplicativo não possui suporte DRM compatível com o Prime Video.
+              Abra no navegador para assistir na sua conta.
+            </p>
+            {abrirNoNavegador && (
+              <Button
+                onClick={() =>
+                  window.open(abrirNoNavegador, '_blank', 'noopener,noreferrer')
+                }
+                variant="outline"
+                className="h-9 w-full justify-center gap-1.5"
+              >
+                <ArrowSquareOutIcon size={15} />
+                Abrir no Prime Video
+              </Button>
+            )}
+          </div>
         )}
 
         {children}

@@ -1,6 +1,8 @@
-import { BrowserWindow, WebContentsView, app, ipcMain, session, shell } from 'electron';
+import { BrowserWindow, WebContentsView, app, ipcMain, session, shell, type Session, type WebContents } from 'electron';
+import { createServer } from 'node:http';
 import { log } from './log';
 import {
+  ehDominioPermitido,
   ehMesmoRetangulo,
   ehRotaDeAutenticacao,
   retanguloDeAutenticacao,
@@ -369,6 +371,299 @@ function opcoesDaJanelaDeLogin(janela: BrowserWindow | null) {
   } as const;
 }
 
+
+/* ---------------------------------------------------------------------------
+ * Diagnóstico do player.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Palavras que marcam uma linha de log como sobre DRM.
+ *
+ * A lista é das duas pontas: o nome do key system e do CDM, e o nome dos erros
+ * que o Chromium e o player do Prime usam quando o DRM falha. `MEDIA_ERR` entra
+ * porque é assim que o `HTMLMediaElement` nomeia erro de decodificação — o
+ * `MEDIA_ERR_DECODE` (3) e o `MEDIA_ERR_SRC_NOT_SUPPORTED` (4) são os dois
+ * códigos que aparecem quando o stream não abre.
+ *
+ * Case-insensitive, e comparada com `includes`. A lista é sobre o **conteúdo**
+ * da mensagem, não sobre a origem dela: qualquer script do site pode escrever no
+ * console, e o filtro é o que impede um log de 300 linhas de `console.debug` do
+ * player.
+ */
+const PALAVRAS_DE_DRM = [
+  'widevine',
+  'mediakeysystem',
+  'media key',
+  'eme',
+  'cdm',
+  'drm',
+  'license',
+  'notsupportederror',
+  'notallowederror',
+  'quotaexceedederror',
+  'securityerror',
+  'unsupported',
+  'decrypt',
+  'media_err',
+  'src_not_supported',
+  'encrypted',
+];
+
+/**
+ * O que pode entrar no log de uma linha vinda do site.
+ *
+ * ## O corte não é decorativo
+ *
+ * O `console.error` de um player de vídeo carrega o objeto de erro inteiro, e o
+ * objeto de erro do EME carrega, em `message`, coisas que descrevem a tentativa de
+ * decifrar. Um log de bug é o que a pessoa cola num relatório, e um relatório
+ * com material de DRM num arquivo de texto é um vazamento que dura mais que o
+ * app.
+ *
+ * Por isso: 300 caracteres, e **qualquer sequência longa e sem espaços vira
+ * `…`**. Licenças são base64, `message` de erro do Widevine costuma ser hex, e
+ * ambos são a mesma forma: uma parede de caracteres sem espaço. Isso corta o
+ * conteúdo e preserva a frase que explica o erro.
+ */
+const CARACTERES_NO_LOG = 300;
+
+/** Redige uma mensagem vinda do site: corta, e achata blocos sem espaços. */
+function redigir(texto: unknown): string {
+  const bruto = typeof texto === 'string' ? texto : String(texto ?? '');
+  const achatado = bruto
+    .replace(/[A-Za-z0-9+/_=-]{40,}/g, '…')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return achatado.length > CARACTERES_NO_LOG
+    ? `${achatado.slice(0, CARACTERES_NO_LOG)}…`
+    : achatado;
+}
+
+/** O script que escreveu a linha, sem caminho nem query. */
+function origemDaLinha(sourceId: unknown): string {
+  if (typeof sourceId !== 'string' || sourceId === '') return '-';
+  try {
+    const u = new URL(sourceId);
+    // `blob:` e `data:` não têm host; o prefixo do esquema basta para saber de
+    // onde veio, e o resto do endereço não é necessário para o diagnóstico.
+    return u.origin === 'null' ? `${u.protocol}//…` : u.origin;
+  } catch {
+    return '-';
+  }
+}
+
+/**
+ * Ouve o console da view do Prime, e registra só o que for sobre DRM.
+ *
+ * ## O que isto NÃO é
+ *
+ * Não é leitura de DOM, não é injeção, e não altera nada na página: o
+ * `console-message` é um evento do processo principal sobre algo que o renderer
+ * já imprimiu por conta própria. Nenhum `executeJavaScript`, nenhum
+ * `insertCSS`, nenhum `debugger` — este último em especial está de fora **por
+ * escolha**, e o comentário abaixo diz por quê.
+ *
+ * ## Por que o `debugger` ficou de fora
+ *
+ * `webContents.debugger` veria `Network.requestWillBeSentExtraInfo` da
+ * requisição de licença, e o corpo dessa requisição **é a mensagem de
+ * solicitação de licença**. A instrumentação que resolveria o diagnóstico com
+ * precisão máxima é a mesma que colocaria credencial de DRM no disco. O que
+ * sobrar do diagnóstico tem de ser suficiente sem ela.
+ */
+function diagnosticarPlayer(wc: WebContents): void {
+  wc.on('console-message', (...args: unknown[]) => {
+    /*
+     * Electron 33 entrega `(evento, level, mensagem, linha, sourceId)`. As
+     * versões mais novas trocam por um objeto `details`, e o app não deve quebrar
+     * quando o Electron subir: se o segundo argumento for objeto, é o `details`.
+     */
+    const segundo = args[1];
+    if (segundo !== null && typeof segundo === 'object') {
+      const d = segundo as { level?: unknown; message?: unknown; sourceId?: unknown };
+      registrarLinhaDoPlayer(d.message, d.level, d.sourceId);
+      return;
+    }
+    registrarLinhaDoPlayer(args[2], args[1], args[4]);
+  });
+}
+
+function registrarLinhaDoPlayer(mensagem: unknown, level: unknown, sourceId: unknown): void {
+  const texto = typeof mensagem === 'string' ? mensagem : String(mensagem ?? '');
+  if (texto === '') return;
+
+  const minuscula = texto.toLowerCase();
+  if (!PALAVRAS_DE_DRM.some((p) => minuscula.includes(p))) return;
+
+  log(`[prime] player ${redigir(texto)} nivel=${String(level)} origem=${origemDaLinha(sourceId)}`);
+}
+
+/* ---------------------------------------------------------------------------
+ * Permissões da partição do Prime.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * O que a view do Prime pode pedir.
+ *
+ * ## Por que uma lista, e não "o padrão do Electron"
+ *
+ * A partição **não** tinha handler nenhum: a política era a do Electron para
+ * sessão sem handler, e a do `defaultSession` (que libera `display-capture`,
+ * `media` e `fullscreen`) **não** valia aqui — `setPermissionRequestHandler` é por
+ * sessão, e a do Prime nunca recebeu nada.
+ *
+ * Registrar um handler para tratar `mediaKeySystem` significa escolher a política
+ * das outras permissões junto, porque não existe "delegar ao padrão": o handler
+ * registrado é a política. Deixar isso implícito seria trocar uma dependência de
+ * comportamento não documentado por outra — desta vez *dentro do nosso código*,
+ * que é onde dá para ler.
+ *
+ * Por isso a lista é explícita, e o que não está nela é **recusado**. O que
+ * entrou é o que o site do Prime precisa para funcionar, e nada além:
+ *
+ *   fullscreen, automatic-fullscreen  o botão de tela cheia do player
+ *   media                             áudio e vídeo de entrada, para preview
+ *   clipboard-sanitized-write         copiar texto, sem ler a área de transferência
+ *   persistent-storage, background-fetch, background-sync
+ *                                     o que o site guarda entre visitas
+ *
+ * E o que **não** entrou e é recusado por omissão: `geolocation`, `notifications`,
+ * `hid`, `usb`, `serial`, `bluetooth`, `midi`, `payment-handler`,
+ * `window-management`, `local-network`, `storage-access`. Nenhum deles é do
+ * Prime Video, e todos entregam controle do aparelho a uma página de terceiro.
+ */
+const PERMISSOES_DO_PRIME: ReadonlySet<string> = new Set([
+  'fullscreen',
+  'automatic-fullscreen',
+  'media',
+  'clipboard-sanitized-write',
+  'persistent-storage',
+  'background-fetch',
+  'background-sync',
+]);
+
+/** A permissão que decide se o Prime decifra alguma coisa. */
+const PERMISSAO_DRM = 'mediaKeySystem';
+
+/**
+ * A origem pode ter DRM?
+ *
+ * Duas condições, e as duas importam:
+ *
+ *   o domínio é da Prime ou da Amazon — a regra é a mesma de navegação, e
+ *   reaproveitar é o que impede a lista de permissões de virar uma porta que a
+ *   regra de domínio não fecha;
+ *
+ *   **ou** a origem é o servidor local do próprio app, que é de onde a sonda de
+ *   DRM roda. Sem essa segunda, a sonda cairia em `SecurityError` por falta de
+ *   permissão — e o diagnóstico do build passaria a medir a própria política em
+ *   vez de o CDM.
+ *
+ * A página da sonda não serve conteúdo nenhum e não sabe que existe, então
+ * autorizar a origem local aqui não abre nada: `mediaKeySystem` dá acesso ao que
+ * **a própria origem** serve, e lá não há nada.
+ */
+function origemDoPrimeTemDrm(origem: unknown): boolean {
+  if (typeof origem !== 'string' || origem === '') return false;
+  let host: string;
+  try {
+    host = new URL(origem).hostname;
+  } catch {
+    return false;
+  }
+  if (ehDominioPermitido(host)) return true;
+  return host === '127.0.0.1' || host === 'localhost';
+}
+
+/**
+ * Instala a política de permissões da partição do Prime.
+ *
+ * ## Por que os dois handlers, e não um
+ *
+ * A documentação do Electron é explícita: "you must also implement
+ * `setPermissionCheckHandler` to get complete permission handling. Most web APIs
+ * do a permission check and then make a permission request if the check is
+ * denied."
+ *
+ * Só o `check` resolve: devolvendo `true`, a página nem chega a pedir. O
+ * `request` fica como a segunda linha, porque uma API que pede direto — sem
+ * checar antes — passaria por ele.
+ *
+ * ## E o log de cada decisão
+ *
+ * Toda permissão pedida entra no log, concedida ou não. É o que responde
+ * "a permissão `mediaKeySystem` foi bloqueada?" sem precisar de outro
+ * experimento — e uma negativa de DRM aparece aqui como uma linha, ao lado da
+ * recusa do site, que é o par que separa os três casos.
+ */
+function instalarPermissoesDoPrime(ses: Session): void {
+  ses.setPermissionCheckHandler((_wc, permissao, requestingOrigin) => {
+    if (permissao === PERMISSAO_DRM) {
+      const ok = origemDoPrimeTemDrm(requestingOrigin);
+      log(`[prime] permissao check ${PERMISSAO_DRM} origem=${origemDoPrime(requestingOrigin)} -> ${ok}`);
+      return ok;
+    }
+    return PERMISSOES_DO_PRIME.has(permissao);
+  });
+
+  ses.setPermissionRequestHandler((_wc, permissao, callback, details) => {
+    if (permissao === PERMISSAO_DRM) {
+      /*
+       * `details.requestingUrl` primeiro, e o URL do webContents como reserva.
+       *
+       * O pedido vem do frame que pediu, e num site como o Prime há iframes de
+       * anúncio e de player de terceiros: o `requestingUrl` é o do frame que
+       * pediu, e o do webContents é o do documento de topo. A ordem é do mais
+       * específico para o menos, e é a que impede um iframe de pedir DRM em nome
+       * da página de topo.
+       */
+      const pedido = requestingUrlDoPedido(details, requestingUrlDoWebContents(_wc));
+      const ok = origemDoPrimeTemDrm(pedido);
+      log(`[prime] permissao request ${PERMISSAO_DRM} origem=${origemDoPrime(pedido)} -> ${ok}`);
+      callback(ok);
+      return;
+    }
+    const ok = PERMISSOES_DO_PRIME.has(permissao);
+    log(`[prime] permissao request ${permissao} -> ${ok ? 'concedida' : 'recusada'}`);
+    callback(ok);
+  });
+}
+
+/** Só a origem de uma URL, para o log — sem caminho, sem query, sem identificador. */
+function origemDoPrime(url: unknown): string {
+  if (typeof url !== 'string' || url === '') return '-';
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '-';
+  }
+}
+
+/**
+ * O URL que o pedido de permissão acompanha.
+ *
+ * `requestingUrl` está em `details` e nem toda permissão o traz; quando falta, o
+ * chamador passa o do webContents como reserva.
+ */
+function requestingUrlDoPedido(details: unknown, reserva: unknown): unknown {
+  if (details && typeof details === 'object' && 'requestingUrl' in details) {
+    const v = (details as { requestingUrl?: unknown }).requestingUrl;
+    if (typeof v === 'string' && v !== '') return v;
+  }
+  return reserva;
+}
+
+function requestingUrlDoWebContents(wc: unknown): unknown {
+  try {
+    const alvo = wc as { isDestroyed?: () => boolean; getURL?: () => string } | null;
+    if (!alvo || typeof alvo.getURL !== 'function') return '';
+    if (typeof alvo.isDestroyed === 'function' && alvo.isDestroyed()) return '';
+    return alvo.getURL();
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Filtro de navegação, para **todo** WebContents da partição do Prime.
  *
@@ -407,6 +702,16 @@ function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
 
   if (!view) {
     const sessao = session.fromPartition(PARTICAO);
+
+    /*
+     * A política de permissões entra **antes** da view ser criada.
+     *
+     * `session.fromPartition` devolve sempre o mesmo objeto para a mesma partição,
+     * então instalar aqui ou depois é a mesma coisa — e aqui é antes de qualquer
+     * `loadURL`, que é o que garante que a primeira navegação já seja avaliada pela
+     * política nova e não pela anterior.
+     */
+    instalarPermissoesDoPrime(sessao);
     /*
      * Sem `setUserAgent`.
      *
@@ -462,6 +767,8 @@ function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
      * que alcança esta view e a janela de login. Aqui não há um segundo filtro:
      * a mesma regra em dois lugares diverge, e ninguém descobre qual está errada.
      */
+    diagnosticarPlayer(view.webContents);
+
     view.webContents.on('did-navigate', () => publicar('navegou'));
     view.webContents.on('did-navigate-in-page', () => publicar('navegou na pagina'));
 
@@ -497,24 +804,72 @@ function abrir(janela: BrowserWindow | null, bounds: PrimeBounds): boolean {
 /**
  * Este build do Electron decifra vídeo protegido?
  *
- * A pergunta vai para o motor, e não para o site, numa view descartável em
- * `data:`. Rodar `executeJavaScript` na view do Prime seria injeção no DOM de um
- * site de terceiro, que é o que esta integração não faz.
+ * ## A pergunta vai ao motor, e não ao site
+ *
+ * Numa view descartável, sem preload e sem Node, em sandbox — as mesmas
+ * restrições da view do Prime. Rodar `executeJavaScript` na view do Prime seria
+ * injeção no DOM de um site de terceiro, que é o que esta integração não faz.
+ *
+ * ## Por que a sonda precisa de uma página em `127.0.0.1`, e não de `data:`
+ *
+ * EME só funciona em **contexto seguro**, e `data:text/html,…` tem origem opaca:
+ * `window.isSecureContext` é `false` ali. Nesses casos o Chromium responde
+ * `SecurityError` — **com ou sem CDM instalado**.
+ *
+ * A versão anterior desta sonda rodava em `data:` e tratava qualquer falha como
+ * "sem DRM". Isso é um falso negativo garantido: ela diria que não há DRM num
+ * Chromium que tem, e a conclusão sairia de uma medição que não mede. Por isso a
+ * sonda sobe um servidor próprio em `127.0.0.1`, que o Chromium trata como
+ * potencialmente confiável, e registra `isSecureContext` no log: **a sonda
+ * verifica a própria precondição**, e um resultado negativo só vale se a página
+ * rodou segura.
+ *
+ * ## Por que na partição do Prime, e não na sessão padrão
+ *
+ * Porque a pergunta tem duas metades — "existe CDM?" e "esta origem tem
+ * permissão?" — e só na partição do Prime a segunda é respondida pelo mesmo
+ * handler que vai responder pela página do Prime. Sondar na sessão padrão daria
+ * uma resposta que não vale para o caso real.
+ *
+ * ## O que a resposta NÃO decide
+ *
+ * `tem: true` é o **mínimo**: este build tem CDM. Não significa que o Prime Video
+ * vai tocar nele. Depois de `disponivel=true` sobram dois casos, e a diferença entre
+ * eles é o que decide entre reproduzir no Juntos, trocar o runtime ou cair no
+ * navegador:
+ *
+ *   CASO B  Widevine ok, permissão negada — corrigir o handler. Feito aqui.
+ *   CASO C  Widevine ok, permissão ok, e o Prime recusa de novo.
+ *
+ * O CASO C é incompatibilidade entre o Prime Video e o ambiente, e **não há o que
+ * fazer no cliente**: o Prime pode recusar clientes não oficialmente suportados, e
+ * essa decisão é da Amazon, não nossa. Nenhuma linha deste arquivo pode mudá-la, e
+ * por isso a UI nunca promete que toca — ela deixa o caminho oficial à mão.
+ *
+ * O diagnóstico do CASO C é o log do player, com o filtro de DRM. É o que mostra o
+ * nome do erro que a página do Prime recebeu, e esse nome é a evidência que separa
+ * "falta CDM" de "o site recusou o cliente".
  */
-function temDrm(): Promise<boolean> {
+function sondarDrm(): Promise<SondaDrm> {
   return new Promise((resolve) => {
     let sondagem: WebContentsView;
     try {
       sondagem = new WebContentsView({
-        webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+        webPreferences: {
+          partition: PARTICAO,
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
       });
-    } catch {
-      resolve(false);
+    } catch (err) {
+      log(`[prime] drm sonda nao criou a view (${nomeDoErro(err)})`);
+      resolve({ tem: false, motivo: 'view indisponivel', tentativas: [] });
       return;
     }
 
     let respondeu = false;
-    const responder = (valor: boolean) => {
+    const encerrar = (valor: SondaDrm) => {
       if (respondeu) return;
       respondeu = true;
       if (!sondagem.webContents.isDestroyed()) sondagem.webContents.close();
@@ -522,19 +877,214 @@ function temDrm(): Promise<boolean> {
     };
 
     sondagem.webContents.once('did-finish-load', () => {
-      sondagem
-        .webContents.executeJavaScript(
-          `navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{ initDataTypes: ['cenc'] }])` +
-            `.then(() => true).catch(() => false)`,
-        )
-        .then((v) => responder(v === true))
-        .catch(() => responder(false));
+      sondagem.webContents
+        .executeJavaScript(SONDA_DE_EME)
+        .then((bruto: unknown) => {
+          const r = (bruto ?? {}) as Partial<SonDaBruta>;
+          const tentativas = Array.isArray(r.tentativas) ? r.tentativas.map(String) : [];
+          const contextoSeguro = r.contextoSeguro === true;
+          const apiExiste = r.apiExiste === true;
+          const tem = tentativas.some((t) => t.endsWith(': ok'));
+
+          encerrar({
+            tem,
+            motivo: motivoDaSonda(apiExiste, contextoSeguro, tentativas),
+            tentativas,
+          });
+        })
+        .catch((err: unknown) =>
+          encerrar({ tem: false, motivo: `falha na sonda: ${nomeDoErro(err)}`, tentativas: [] }),
+        );
     });
 
-    sondagem.webContents.once('did-fail-load', () => responder(false));
-    setTimeout(() => responder(false), 4000);
+    sondagem.webContents.once('did-fail-load', () =>
+      encerrar({ tem: false, motivo: 'a pagina da sonda nao carregou', tentativas: [] }),
+    );
 
-    void sondagem.webContents.loadURL('data:text/html,<title>sonda</title>');
+    setTimeout(
+      () => encerrar({ tem: false, motivo: 'tempo esgotado', tentativas: [] }),
+      SONDA_TIMEOUTO_MS,
+    );
+
+    abrirServidorDaSonda()
+      .then((sonda) => {
+        // `catch` vazio de propósito: se o load falhar, o `did-fail-load`
+        // acima já encerra a sonda com um motivo, e um `unhandledRejection`
+        // aqui seria um segundo relatório do mesmo evento.
+        void sondagem.webContents.loadURL(sonda.origem).catch(() => {});
+      })
+      .catch((err: unknown) =>
+        encerrar({ tem: false, motivo: `o servidor da sonda nao subiu: ${nomeDoErro(err)}`, tentativas: [] }),
+      );
+  });
+}
+
+/** O que a sonda descobre. */
+interface SondaDrm {
+  /**
+   * A EME respondeu com um key system utilizável?
+   *
+   * `true` é o mínimo: significa que este build tem CDM. **Não** significa que o
+   * Prime Video vai tocar nele — Widevine disponível e o Prime aceitando o
+   * ambiente são duas perguntas separadas, e a segunda só a Amazon responde.
+   */
+  tem: boolean;
+  /**
+   * Por que não, ou `'disponivel'`.
+   *
+   * Quando existe, é o nome do erro do Chromium, e a diferença entre eles é a
+   * diferença entre as três conclusões possíveis:
+   *
+   *   `NotSupportedError`  o build não tem CDM registrado. Conclusivo.
+   *   `SecurityError`       contexto inseguro ou permissão barrada.
+   *   `NotAllowedError`     a permissão foi respondida com `false`.
+   *
+   * Por isso `SondaDrm` guarda o motivo e não só o booleano: um `false` sem
+   * motivo é indistinguível de "a sonda rodou no lugar errado".
+   */
+  motivo: string;
+  /** Uma linha por configuração pedida, com o que cada uma respondeu. */
+  tentativas: string[];
+}
+
+/** O que o script da sonda devolve, antes de virar `SondaDrm`. */
+interface SonDaBruta {
+  apiExiste: boolean;
+  contextoSeguro: boolean;
+  tentativas: string[];
+}
+
+/**
+ * Traduz o que a sonda respondeu no motivo que o log mostra.
+ *
+ * A ordem importa: `apiExiste` e `contextoSeguro` são **precondições**, e um
+ * resultado que falhou nelas não diz nada sobre CDM. Um `SecurityError` com
+ * `contextoSeguro: false` é a sonda mal feita — e dizer "não tem DRM" aí seria
+ * concluir a partir de uma medição inválida.
+ */
+function motivoDaSonda(
+  apiExiste: boolean,
+  contextoSeguro: boolean,
+  tentativas: string[],
+): string {
+  if (!apiExiste) return 'requestMediaKeySystemAccess ausente neste motor';
+  if (!contextoSeguro) return 'contexto nao seguro: resposta invalida';
+  if (tentativas.some((t) => t.endsWith(': ok'))) return 'disponivel';
+  const primeira = tentativas.find((t) => !t.endsWith(': ok'));
+  if (!primeira) return 'a EME nao respondeu';
+  const i = primeira.indexOf(':');
+  return i < 0 ? primeira : primeira.slice(i + 1).trim();
+}
+
+/**
+ * O script da sonda.
+ *
+ * ## Duas configurações, e por quê
+ *
+ * `initDataTypes: ['cenc']` e `[]`. Um CDM pode aceitar a combinação com `cenc` e
+ * recusar a vazia, ou o contrário — `requestMediaKeySystemAccess` promete **uma**
+ * configuração, e a resposta vale só para aquela. Testar uma delas dá `false` num
+ * CDM que funciona com a outra.
+ *
+ * ## Um objeto, e não um booleano
+ *
+ * Porque o que interessa é *qual* falhou e como. Um `true`/`false` perde
+ * `NotSupportedError` — a assinatura do build sem Widevine — e `SecurityError`,
+ * que é a assinatura de sonda feita no contexto errado.
+ */
+const SONDA_DE_EME = `(async () => {
+  const saida = {
+    apiExiste: typeof navigator.requestMediaKeySystemAccess === 'function',
+    contextoSeguro: window.isSecureContext === true,
+    tentativas: [],
+  };
+  if (!saida.apiExiste) return saida;
+  for (const initDataTypes of [['cenc'], []]) {
+    const rotulo = initDataTypes.length ? 'cenc' : 'vazia';
+    try {
+      await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{ initDataTypes }]);
+      saida.tentativas.push(rotulo + ': ok');
+    } catch (erro) {
+      saida.tentativas.push(rotulo + ': ' + (erro && erro.name ? erro.name : 'sem nome'));
+    }
+  }
+  return saida;
+})()`;
+
+/** O nome do erro, porque a mensagem de uma promise rejeitada é inútil no log. */
+function nomeDoErro(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  return String(err).slice(0, 120);
+}
+
+/** Quanto esperar a sonda antes de desistir. */
+const SONDA_TIMEOUTO_MS = 8000;
+
+/**
+ * A página da sonda: uma linha, e nada que possa ser confundido com conteúdo.
+ *
+ * Ela não pede nada, não carrega nada, e não sabe que existe. O único JavaScript
+ * que roda é o da sonda, injetado pelo `main` — que é o app, não um terceiro.
+ */
+const PAGINA_DA_SONDA =
+  '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>sonda drm</title>' +
+  '</head><body></body></html>';
+
+/**
+ * Um servidor HTTP de uma requisição, em `127.0.0.1`, para a página da sonda.
+ *
+ * ## Por que um servidor, e não `data:`
+ *
+ * Porque `data:` não é contexto seguro, e EME exige contexto seguro. Ver o
+ * comentário de `sondarDrm`.
+ *
+ * ## Por que `127.0.0.1` e não `localhost`
+ *
+ * `localhost` precisa resolver, e no Windows ele costuma resolver para `::1`
+ * primeiro — o que faz o servidor abrir num endereço e o `loadURL` procurar no
+ * outro. `127.0.0.1` pula essa etapa, e o Chromium trata o bloco `127.0.0.0/8`
+ * como potencialmente confiável, então o contexto seguro é o mesmo.
+ *
+ * ## A escuta é na loopback
+ *
+ * `listen(0, '127.0.0.1')`: porta efêmera, só na loopback. O servidor existe
+ * enquanto a sonda roda, responde uma página sem corpo, e não tem nada a não
+ * expor. Deixar em `0.0.0.0` abriria uma porta na rede local sem motivo.
+ */
+function abrirServidorDaSonda(): Promise<{ origem: string }> {
+  return new Promise((resolve, reject) => {
+    let servidor: ReturnType<typeof createServer>;
+    try {
+      servidor = createServer((_req, res) => {
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        res.end(PAGINA_DA_SONDA);
+      });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    servidor.once('error', reject);
+    servidor.listen(0, '127.0.0.1', () => {
+      const endereco = servidor.address();
+      if (endereco === null || typeof endereco === 'string') {
+        servidor.close();
+        reject(new Error('a porta da sonda nao foi informada'));
+        return;
+      }
+      /*
+       * O servidor morre sozinho, e o timer nao segura o processo.
+       *
+       * `unref` porque o app pode estar fechando enquanto a sonda ainda está no
+       * ar: um timer referenciado manteria o `main` vivo até ele estourar.
+       */
+      const fechar = setTimeout(() => servidor.close(), SONDA_TIMEOUTO_MS);
+      fechar.unref?.();
+      resolve({ origem: `http://127.0.0.1:${endereco.port}/` });
+    });
   });
 }
 
@@ -583,7 +1133,26 @@ export function registrarIpcPrime(): void {
 
   ipcMain.handle('prime:pagina', () => paginaAtual);
 
-  ipcMain.handle('prime:tem-drm', () => temDrm());
+  /*
+   * A pergunta que a UI faz, e a resposta que o log guarda.
+   *
+   * A UI precisa de um booleano — ela só sabe dizer "toca" ou "não toca" — e o
+   * diagnóstico precisa das tentativas, do contexto seguro e do nome do erro. São
+   * duas saídas de uma sondagem só, e a razão inteira fica no log.
+   *
+   * E o log escreve **antes** de responder: se a pessoa relatar "a faixa não
+   * apareceu", o arquivo já tem o motivo, e isso não depende de a UI ter chegado a
+   * perguntar.
+   */
+  ipcMain.handle('prime:tem-drm', async () => {
+    const sonda = await sondarDrm();
+    log(
+      `[prime] drm disponivel=${sonda.tem} motivo=${sonda.motivo} ` +
+        `tentativas=[${sonda.tentativas.join(" | ")}] ` +
+        `electron=${process.versions.electron} chromium=${process.versions.chrome}`,
+    );
+    return sonda.tem;
+  });
 }
 
 /** Liga a view a uma janela. Pode rodar mais de uma vez, uma por janela. */

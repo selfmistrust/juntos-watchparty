@@ -266,22 +266,92 @@ test('a view do Prime não recebe injeção de JavaScript do site', () => {
   const main = semComentario(ler('../desktop/electron/main/prime.ts'));
 
   /*
-   * `executeJavaScript` existe no arquivo, e é o que a sonda de DRM usa — numa
-   * view descartável em `data:`, não na página do Prime. A regra precisa ser
-   * mais específica que "não usa executeJavaScript": o que não pode é rodar
-   * qualquer coisa na view que tem a particao do Prime.
+   * `executeJavaScript` existe no arquivo, e é o que a sonda de DRM usa — numa view
+   * descartável, que **não** é a view do Prime. A regra precisa ser mais específica
+   * que "não usa executeJavaScript": o que não pode é rodar qualquer coisa na view
+   * que tem a particao do Prime.
+   *
+   * E a sonda roda com as mesmas restrições da view do Prime — sandbox, sem Node,
+   * sem preload — porque é o que faz a resposta valer para o caso real. Um CDM que
+   * funciona só fora do sandbox não serviria para nada aqui.
    */
-  assert.ok(
-    /new WebContentsView\(\{[\s\S]{0,200}webPreferences: \{ sandbox: true/.test(main),
+  const sonda = main.slice(
+    main.indexOf('function sondarDrm('),
+    main.indexOf('function motivoDaSonda('),
+  );
+  assert.ok(sonda.length > 0, "a sonda de DRM existe");
+  assert.match(
+    sonda,
+    /new WebContentsView\(\{[\s\S]{0,200}webPreferences: \{[\s\S]{0,120}?sandbox: true/,
     'a sonda de DRM roda numa view própria, em sandbox',
   );
   assert.ok(
     !/view\.webContents\.executeJavaScript/.test(main),
     'nunca injeta JavaScript na view que tem a sessão do Prime',
   );
+  /*
+   * ## Esta trava mudou de lado, e é o achado mais importante do diagnóstico
+   *
+   * A versão anterior exigia `loadURL('data:text/html…')`. Ela estava **prendendo
+   * o defeito**: EME só funciona em contexto seguro, e `data:` tem origem opaca —
+   * `window.isSecureContext` é `false` ali.
+   *
+   * O Chromium responde `SecurityError` a um `requestMediaKeySystemAccess` em página
+   * insegura, **com ou sem CDM instalado**. A sonda antiga traduzia qualquer falha em
+   * "sem DRM", então teria dito que este build não tem DRM mesmo num Chromium que tem —
+   * e a conclusão da conversa inteira sairia de uma medição que não media nada.
+   *
+   * Por isso a sonda sobe um servidor próprio em `127.0.0.1`, que o Chromium trata como
+   * potencialmente confiável, e registra `isSecureContext` no log: a sonda verifica a
+   * própria precondição, e um resultado negativo só vale se a página rodou segura.
+   */
   assert.ok(
-    /loadURL\('data:text\/html/.test(main),
-    'e a sonda pergunta a um data: URL, sem tocar no site',
+    !/data:text\/html/.test(main),
+    'e a sonda nao usa data:, que nao e contexto seguro e faria ela responder SecurityError com ou sem CDM',
+  );
+  assert.ok(
+    /createServer\(/.test(main) && /listen\(0, '127\.0\.0\.1'/.test(main),
+    'a pagina da sonda sobe num servidor na loopback, que o Chromium trata como potencialmente confiavel',
+  );
+  assert.ok(
+    /contextoSeguro/.test(main),
+    'e a sonda registra se rodou em contexto seguro, porque sem isso um negativo nao prova nada',
+  );
+  /*
+   * E a precondição vem **primeiro** no motivo, antes do nome do erro. Um
+   * `SecurityError` com `contextoSeguro: false` é a sonda feita no lugar errado, e
+   * dizer "não tem DRM" aí seria concluir a partir de uma medição inválida.
+   */
+  /*
+   * A conferência é no **corpo** da função.
+   *
+   * A versão anterior media as posições no arquivo inteiro, e o nome do parâmetro
+   * `contextoSeguro` na assinatura já resolvia a ordem — a trava passava com as três
+   * verificações invertidas no corpo. É a forma mais comum de uma asserção que não
+   * mede nada: ela encontra o texto, e não a ordem do que ele governa.
+   */
+  const motivo = main.slice(
+    main.indexOf('function motivoDaSonda('),
+    main.indexOf('const SONDA_DE_EME'),
+  );
+  const abreCorpo = motivo.indexOf('{');
+  assert.ok(abreCorpo > 0, "a funcao de motivo existe");
+  const corpo = motivo.slice(abreCorpo);
+  const posDe = (t: string) => corpo.indexOf(t);
+
+  assert.ok(posDe('apiExiste') > 0, "o motivo checa se a API existe");
+  assert.ok(posDe('contextoSeguro') > 0, "e se o contexto era seguro");
+  assert.ok(
+    posDe("!apiExiste") < posDe("!contextoSeguro"),
+    'a ausencia da API vem antes do contexto seguro no motivo',
+  );
+  assert.ok(
+    posDe("!contextoSeguro") < posDe("'disponivel'"),
+    'e o contexto seguro vem ANTES de declarar que ha DRM: um SecurityError numa pagina insegura e a sonda mal feita, nao a ausencia de CDM',
+  );
+  assert.ok(
+    corpo.indexOf("tentativas.some((t) => t.endsWith(': ok'))") > posDe("!contextoSeguro"),
+    'e so depois das duas precondicoes vem a leitura das tentativas',
   );
 
   /*
@@ -648,7 +718,7 @@ test('a view é removida do contentView, e nunca só escondida', () => {
    */
   const abrir = main.slice(
   main.indexOf('function abrir'),
-  main.indexOf('function temDrm'),
+  main.indexOf('function sondarDrm'),
 );
   assert.ok(
     !/loadURL\(/.test(abrir),
@@ -1655,7 +1725,7 @@ test('o layout e recalculado nos cinco momentos em que a area ou a rota mudam', 
    */
   const abrir = codigo.slice(
     codigo.indexOf('function abrir('),
-    codigo.indexOf('function temDrm('),
+    codigo.indexOf('function sondarDrm('),
   );
   assert.match(
     abrir,
@@ -1798,5 +1868,496 @@ test('o log do layout diz o modo, a rota, o retangulo e o zoom', () => {
     corpo,
     /zoomFactor=\$\{zoom !== 1 \? 1 : zoom\}/,
     'e o log reporta o zoom efetivo',
+  );
+});
+
+test('a permissão mediaKeySystem é liberada só para o Prime, e só a ele', () => {
+  /*
+   * ## A partição não tinha handler nenhum
+   *
+   * A do `defaultSession` — que libera `display-capture`, `media` e `fullscreen` —
+   * não valia para a partição do Prime: `setPermissionRequestHandler` é por
+   * sessão. Então a política do Prime era a do Electron para sessão sem handler, e
+   * ninguém no projeto tinha escrito isso em lugar nenhum.
+   *
+   * Registrar um handler para tratar `mediaKeySystem` significa escolher a política
+   * das outras permissões junto, porque não existe "delegar ao padrão". Por isso a
+   * lista é explícita: o que não está nela é recusado, e o que entrou é o que o
+   * site do Prime precisa.
+   */
+  const main = semComentario(ler('../desktop/electron/main/prime.ts'));
+
+  /*
+   * Da lista até o fim dos dois handlers.
+   *
+   * A versão anterior parava em `origemDoPrimeTemDrm`, que vem **antes** dos
+   * handlers — e a fatia ficava sem nenhum deles, com o teste acusando código que
+   * estava certo.
+   */
+  const permissoes = main.slice(
+    main.indexOf('const PERMISSOES_DO_PRIME'),
+    main.indexOf('function requestingUrlDoPedido('),
+  );
+  assert.ok(permissoes.length > 0, 'a lista de permissões do Prime existe');
+
+  // 1. A permissão de DRM não está na lista genérica: ela é tratada à parte.
+  assert.ok(
+    !/PERMISSOES_DO_PRIME[\s\S]{0,400}?mediaKeySystem/.test(
+      permissoes.slice(0, permissoes.indexOf('const PERMISSAO_DRM')),
+    ),
+    'mediaKeySystem fica fora da lista genérica, porque é escopada por domínio',
+  );
+
+  // 2. Os dois handlers, e não só um.
+  assert.match(
+    permissoes,
+    /setPermissionCheckHandler\(/,
+    'existe o handler de check, que é o que resolve na prática',
+  );
+  assert.match(
+    permissoes,
+    /setPermissionRequestHandler\(/,
+    'e existe o de request, que a documentação exige junto',
+  );
+  /*
+   * E registrado com uma função, não removido.
+   *
+   * `setPermissionRequestHandler(null)` casava com o `assert.match` do nome do método —
+   * desregistrar o handler passava a trava. A trava tinha de ver o argumento.
+   */
+  assert.ok(
+    !/setPermission(Request|Check)Handler\(null\)/.test(permissoes),
+    'e nenhum dos dois e desregistrado: null devolve a politica do Electron para a particao',
+  );
+  assert.ok(
+    /setPermissionRequestHandler\(\(_wc, permissao, callback, details\) =>/.test(permissoes),
+    'e o de request recebe funcao, com os parametros que ele usa',
+  );
+
+  /*
+   * Nenhum dos dois handlers pode liberar tudo.
+   *
+   * A trava olha **os handlers**, e não a fatia toda: `origemDoPrimeTemDrm` tem um
+   * `return true` legítimo — é a resposta para um host que já foi conferido. Varrer a
+   * fatia inteira acusaria a regra certa, e o jeito mais rápido de desabilitar uma
+   * trava é fazê-la errar em código que está bom.
+   */
+  const handlers = main.slice(
+    main.indexOf('function instalarPermissoesDoPrime('),
+    main.indexOf('function origemDoPrime('),
+  );
+  assert.ok(handlers.length > 0, "os dois handlers estão na função de instalação");
+  assert.ok(
+    !/callback\(true\)/.test(handlers) && !/return true;/.test(handlers),
+    'nenhum handler tem caminho que conceda sem consultar a regra',
+  );
+  assert.ok(
+    /callback\(ok\)/.test(handlers),
+    'e o callback sempre recebe o resultado da consulta',
+  );
+
+  /*
+   * E a regra é o mesmo `ehDominioPermitido` da navegação.
+   *
+   * Uma lista de domínios própria aqui seria uma segunda porta que a regra de
+   * domínio não fecha — e a regra de domínio é a única coisa que impede um
+   * popup de terceiro de tomar a área do player.
+   */
+  const origem = main.slice(
+    main.indexOf('function origemDoPrimeTemDrm('),
+    main.indexOf('function instalarPermissoesDoPrime('),
+  );
+  assert.match(
+    origem,
+    /if \(ehDominioPermitido\(host\)\) return true;/,
+    'e a regra é a mesma da navegação, e não uma lista nova',
+  );
+
+  /*
+   * Mais a origem local do próprio app, e por quê.
+   *
+   * A sonda de DRM roda em `http://127.0.0.1`. Sem esta linha ela cairia em
+   * `SecurityError` por falta de permissão, e o diagnóstico do build passaria a
+   * medir a própria política em vez do CDM.
+   *
+   * E não abre nada: `mediaKeySystem` dá acesso ao que a **própria origem**
+   * serve, e a página da sonda não serve conteúdo.
+   */
+  assert.match(
+    origem,
+    /host === '127\.0\.0\.1' \|\| host === 'localhost'/,
+    'e a origem local do app, que é de onde a sonda roda',
+  );
+
+  /*
+   * A URL do frame que pediu tem precedência sobre a do documento de topo.
+   *
+   * O Prime tem iframe de anúncio e de player de terceiros. Se o handler usasse
+   * o `getURL()` do webContents, um iframe poderia pedir DRM em nome da página de
+   * topo — que é exatamente o que a checagem de origem existe para impedir.
+   */
+  const pedido = main.slice(
+    main.indexOf('function requestingUrlDoPedido('),
+    main.indexOf('function requestingUrlDoWebContents('),
+  );
+  assert.match(pedido, /'requestingUrl' in details/, 'o requestingUrl do frame é lido');
+  assert.match(
+    main.slice(main.indexOf('function instalarPermissoesDoPrime(')),
+    /requestingUrlDoPedido\(details, requestingUrlDoWebContents\(_wc\)\)/,
+    'e ele tem precedência sobre o URL do webContents',
+  );
+
+  /*
+   * Um `new URL` sem `try` derrubaria o processo principal.
+   *
+   * `requestingOrigin` vem do Chromium e a doc não promete que é sempre uma URL
+   * bem formada; uma exceção aqui derrubaria o `main` inteiro, que é o app
+   * inteiro. E a origem de um site que não é do Prime tem de dar `false`, não
+   * erro.
+   */
+  assert.match(origem, /try \{/, 'a origem é lida dentro de um try');
+  assert.match(origem, /\} catch \{\s*return false;/, 'e uma URL inválida recusa, não derruba');
+  assert.match(origem, /typeof origem !== 'string'/, 'e o que não é string é recusado');
+
+  /*
+   * A lista precisa ter o que o player do Prime usa, ou a instalação quebra o
+   * player em vez de só negar o DRM.
+   *
+   * `fullscreen` é o caso concreto: o botão de tela cheia do Prime pede
+   * `fullscreen`, e uma política que recusa tudo por omissão transformaria o
+   * diagnóstico de DRM em um player quebrado por outro motivo.
+   */
+  for (const necessaria of [
+    'fullscreen',
+    'automatic-fullscreen',
+    'media',
+    'clipboard-sanitized-write',
+  ]) {
+    assert.ok(
+      new RegExp(`'${necessaria}'`).test(permissoes),
+      `a permissão ${necessaria} continua liberada, porque o player precisa dela`,
+    );
+  }
+
+  /*
+   * E o que dá controle do aparelho a uma página de terceiro fica de fora.
+   */
+  for (const perigosa of [
+    'geolocation',
+    'notifications',
+    'hid',
+    'usb',
+    'serial',
+    'bluetooth',
+    'midi',
+    'payment-handler',
+    'window-management',
+    'local-network',
+    'storage-access',
+  ]) {
+    assert.ok(
+      !new RegExp(`'${perigosa}'`).test(permissoes),
+      `${perigosa} nao entra na lista do Prime`,
+    );
+  }
+});
+
+test('o log de DRM separa os três casos, e não imprime nada de protegido', () => {
+  const main = ler('../desktop/electron/main/prime.ts');
+  const codigo = semComentario(main);
+
+  /*
+   * A linha de log é o diagnóstico que a pessoa entrega. Ela precisa responder:
+   *
+   *   `disponivel=false motivo=NotSupportedError`  o build não tem CDM
+   *   `disponivel=false motivo=NotAllowedError`    a permissão foi negada
+   *   `disponivel=false motivo=contexto nao seguro` a sonda rodou no lugar errado
+   *   `disponivel=true  motivo=disponivel`          tem CDM — e aí o caso é outro
+   *
+   * Sem `tentativas` e sem `motivo`, um `false` não distingue "sem DRM" de
+   * "permissão barrada", que são duas conclusões e duas decisões diferentes.
+   */
+  /*
+   * `prime:pagina` vem **antes** de `prime:tem-drm` na ordem dos canais, e
+   * `slice` com começo maior que o fim devolve string vazia — que produz um
+   * `assert.ok` falhando sem dizer nada sobre o código. A fatia vai do canal até o
+   * fim da função que registra todos.
+   */
+  const ipc = codigo.slice(
+    codigo.indexOf("handle('prime:tem-drm'"),
+    codigo.indexOf('export function ligarPrimeJanela('),
+  );
+  assert.ok(ipc.length > 0, 'o canal existe');
+  for (const campo of [
+    'drm disponivel=',
+    'motivo=',
+    'tentativas=[',
+    'electron=',
+    'chromium=',
+  ]) {
+    assert.ok(ipc.includes(campo), `a linha traz ${campo.replace(/=$|=?\[$/, '')}`);
+  }
+  /*
+   * E o campo precisa do **valor**, não só do nome.
+   *
+   * Exigir `chromium=` passa quando alguém troca `${process.versions.chrome}` por
+   * qualquer coisa — e o log continua com o nome do campo e sem o número, que é o
+   * que responderia "qual build?".
+   */
+  assert.match(ipc, /chromium=\$\{process\.versions\.chrome\}/, 'a linha traz a versao do chromium do log de drm');
+  assert.match(ipc, /electron=\$\{process\.versions\.electron\}/, 'e a do electron');
+
+  /*
+   * E o log escreve **antes** de responder.
+   *
+   * Se a pessoa relatar "a faixa não apareceu", o arquivo já tem o motivo — e
+   * isso não pode depender de a UI ter chegado a perguntar.
+   */
+  assert.ok(
+    ipc.indexOf('log(') < ipc.indexOf('return sonda.tem'),
+    'e registra antes de responder a UI',
+  );
+  /*
+   * E registra **sempre**.
+   *
+   * `if (sonda.tem) log(...)` continua escrevendo antes do `return`, e a asserção de
+   * ordem não via a condição. É o pior defeito possível num diagnóstico: ele some
+   * justamente no caso que a pessoa está tentando diagnosticar, e o arquivo de log fica
+   * com a versão que funciona.
+   */
+  assert.ok(
+    !/if\s*\([^)]*\)\s*log\(/.test(ipc),
+    'e nao e condicional: um log que so escreve no caminho feliz nao diagnostica nada',
+  );
+
+  /*
+   * O runtime na primeira linha do log do dia.
+   *
+   * A resposta da EME depende do build, e um bug report sem a versão é um bug
+   * report que precisa de uma pergunta antes de ser lido. E o `chromium` vem de
+   * `process.versions.chrome`, não de uma constante escrita à mão: é o número que
+   * o motor realmente é, e é o que decide se um CDM aceito é o do motor que roda.
+   */
+  const boot = semComentario(ler('../desktop/electron/main/log.ts'));
+  assert.match(boot, /process\.versions\.chrome/, 'o log de boot traz a versão do Chromium');
+  assert.match(boot, /process\.versions\.electron/, 'e a do Electron');
+  assert.match(boot, /app\.isPackaged/, 'e se o build está empacotado, que muda o VMP');
+  assert.ok(
+    !/Chrome\/\d+/.test(boot),
+    'e nenhum número de Chromium escrito à mão, que seria uma segunda fonte',
+  );
+});
+
+test('o diagnóstico do player ouve o console e não toca no DRM', () => {
+  const main = ler('../desktop/electron/main/prime.ts');
+  const codigo = semComentario(main);
+
+  /*
+   * As duas metades que o enunciado pede, e a terceira que ele não pede e que
+   * importa mais.
+   */
+  const diagnostico = codigo.slice(
+    codigo.indexOf('function diagnosticarPlayer('),
+    codigo.indexOf('function registrarLinhaDoPlayer('),
+  );
+  assert.ok(diagnostico.length > 0, 'o gancho existe');
+  assert.match(diagnostico, /console-message/, 'e ouve o console da view');
+
+  /*
+   * `webContents.debugger` veria o corpo da requisição de licença, e esse corpo
+   * **é** a mensagem de solicitação de licença. A instrumentação que daria o
+   * diagnóstico mais preciso é a que colocaria credencial de DRM no disco — e o
+   * log de bug é o que a pessoa cola num relatório.
+   */
+  assert.ok(
+    !/\.debugger\./.test(codigo),
+    'nenhum debugger: ele veria o corpo da requisicao de licenca',
+  );
+
+  /*
+   * Sem injeção e sem leitura de DOM. `executeJavaScript` existe no arquivo, mas
+   * só na sonda, que roda em view descartável.
+   */
+  assert.ok(
+    !/view\.webContents\.executeJavaScript/.test(codigo),
+    'nada de executeJavaScript na view do Prime',
+  );
+  assert.ok(
+    !/view\.webContents\.insertCSS|insertCSS\(/.test(codigo),
+    'e nada de CSS injetado',
+  );
+
+  /*
+   * O filtro: só entra no log o que for sobre DRM.
+   *
+   * Sem ele, o log recebe as centenas de `console.debug` de um player de vídeo, e
+   * deixa de ser legível justamente quando alguém precisa dele.
+   */
+  /*
+   * As duas configurações de `initDataTypes`.
+   *
+   * Nada exigia isso, e uma delas sumindo não quebra nada visível: a sonda passa a
+   * pedir só `cenc`, e um CDM que só aceita a configuração vazia responde erro — que
+   * o log reporta como "sem DRM", que é uma conclusão errada.
+   *
+   * E é a cobertura que o log de `tentativas` existe para mostrar: uma linha por
+   * configuração, com o que cada uma respondeu.
+   */
+  const script = main.slice(
+    main.indexOf('const SONDA_DE_EME'),
+    main.indexOf('const SONDA_TIMEOUT_MS'),
+  );
+  assert.match(
+    script,
+    /for \(const initDataTypes of \[\['cenc'\], \[\]\]\)/,
+    'a sonda tenta as duas configuracoes de initDataTypes',
+  );
+  assert.match(
+    script,
+    /tentativas\.push\(/,
+    'e registra uma linha por configuracao, que e o que o log mostra',
+  );
+
+  const palavras = main.slice(
+    main.indexOf('const PALAVRAS_DE_DRM'),
+    main.indexOf('const CARACTERES_NO_LOG'),
+  );
+  for (const termo of [
+    'widevine',
+    'mediakeysystem',
+    'notsupportederror',
+    'notallowederror',
+    'media_err',
+    'license',
+    'drm',
+  ]) {
+    assert.ok(
+      new RegExp(`'${termo}'`, 'i').test(palavras),
+      `o filtro reconhece ${termo}`,
+    );
+  }
+
+  const registra = codigo.slice(
+    codigo.indexOf('function registrarLinhaDoPlayer('),
+  );
+  /*
+   * A forma exata, e não só o nome.
+   *
+   * `assert.match(/PALAVRAS_DE_DRM\.some/)` continua casando com um filtro que não
+   * filtra — `if (false) return;` passa. O que distingue "filtra" de "filtra ao
+   * contrário" é o `return` logo depois do `.some`, e é isso que a trava exige.
+   */
+  assert.match(
+    registra,
+    /if \(!PALAVRAS_DE_DRM\.some\(\(p\) => minuscula\.includes\(p\)\)\) return;/,
+    'e a linha so entra se casar com o filtro: o return logo depois do some',
+  );
+  assert.match(
+    registra,
+    /const minuscula = texto\.toLowerCase\(\);/,
+    'e a comparação é sem distinção de maiúsculas, porque o nome do erro vem em CA',
+  );
+
+  /*
+   * A redação, e por que ela existe.
+   *
+   * `console.error` de um player carrega o objeto de erro inteiro, e o erro do
+   * EME carrega em `message` coisas que descrevem a tentativa de decifrar. Licença
+   * é base64 e mensagem do Widevine costuma ser hex — as duas são a mesma forma:
+   * uma parede de caracteres sem espaço. Achatar isso corta o conteúdo e
+   * preserva a frase que explica o erro.
+   */
+  const redigir = main.slice(
+    main.indexOf('function redigir('),
+    main.indexOf('function origemDaLinha('),
+  );
+  assert.match(
+    redigir,
+    /replace\(\/\[A-Za-z0-9\+\/_\=-\]\{40,\}\/g, '…'\)/,
+    'uma sequencia longa e sem espacos vira reticencias',
+  );
+  assert.match(redigir, /CARACTERES_NO_LOG/, 'e a linha tem teto de tamanho');
+
+  /*
+   * A origem do script entra sem caminho e sem query: um `blob:` do player não
+   * tem host, e o corpo do blob não é diagnóstico.
+   */
+  const origem = main.slice(
+    main.indexOf('function origemDaLinha('),
+    main.indexOf('function diagnosticarPlayer('),
+  );
+  assert.match(origem, /u\.origin === 'null'/, 'um blob ou data vira só o esquema');
+  assert.match(origem, /: u\.origin/, 'e o resto é só a origem, sem caminho nem query');
+});
+
+test('o diagnóstico não promete que DRM disponível é Prime reproduzindo', () => {
+  const main = ler('../desktop/electron/main/prime.ts');
+  const codigo = semComentario(main);
+
+  /*
+   * `tem: true` é o **mínimo** — significa que este build tem CDM. Não significa
+   * que o Prime Video vai tocar nele.
+   *
+   * Widevine disponível e o Prime aceitando o ambiente são duas perguntas
+   * separadas, e a segunda só a Amazon responde. As duas respostas possíveis
+   * depois de `disponivel=true` são:
+   *
+   *   CASO B  Widevine ok, permissão negada  → corrigir o handler (feito)
+   *   CASO C  Widevine ok, permissão ok, Prime recusa  → incompatibilidade de
+   *           ambiente, e não há o que fazer no cliente
+   *
+   * A diferença entre B e C é o que decide entre "reproduzir no Juntos", "mudar
+   * o runtime" e "fallback para o navegador" — e ela não é respondível pelo
+   * código do app.
+   */
+  assert.match(
+    main,
+    /\*\*Não\*\* significa que o\s*\n\s*\* Prime Video vai tocar nele/,
+    'o comentario de SondaDrm diz que true não garante reprodução',
+  );
+  assert.match(
+    main,
+    /o Prime pode recusar clientes não oficialmente suportados|CASO C/,
+    'e o caso em que o Prime recusa um cliente certificado está nomeado',
+  );
+
+  /*
+   * A UI segue sem prometer: `primeCanPlayProtected` devolve um booleano, e a
+   * faixa nunca diz que o título vai tocar — ela sempre deixa o caminho oficial
+   * à mão.
+   */
+  const faixa = ler('../web/components/player/PrimeStage.tsx');
+  assert.match(
+    faixa,
+    /não possui suporte DRM compatível com o Prime Video/,
+    'a faixa diz o que falta, e não "o título está errado"',
+  );
+  assert.match(
+    faixa,
+    /Abrir no Prime Video/,
+    'e dá o caminho do navegador, que é onde funciona',
+  );
+
+  /*
+   * O fallback tem que existir **também** no modo navegação.
+   *
+   * O botão de abrir no navegador vivia atrás de `urlDaFaixa`, e `urlDaFaixa` só
+   * existe com um item `prime` tocando. No modo navegação — o Prime aberto pelo
+   * card, com o título escolhido à mão, que é exatamente quando o DRM falha —
+   * o botão não aparecia. Era a pessoa sem nenhum caminho de saída.
+   */
+  assert.ok(
+    !/\{urlDaFaixa && \(/.test(faixa),
+    'o botão de abrir no navegador não depende mais de haver item na fila',
+  );
+  assert.match(
+    faixa,
+    /const abrirNoNavegador = urlDaFaixa \|\|/,
+    'e ele usa a página atual quando não há item',
+  );
+  assert.match(
+    faixa,
+    /naPaginaDeTitulo \? pagina\?\.url : ''/,
+    'que vem do main já sem query nem âncora, e por isso pode ir para window.open',
   );
 });

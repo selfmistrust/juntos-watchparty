@@ -65,5 +65,18 @@ function inspect(valor: unknown): string {
 
 export function iniciarLog(): void {
   iniciar();
-  log(`Juntos ${app.getVersion()} iniciando · node ${process.versions.node} · electron ${process.versions.electron} · ${process.platform}`);
+  /*
+   * O runtime na primeira linha do arquivo.
+   *
+   * `chromium` vem de `process.versions.chrome`, e não de uma constante escrita à
+   * mão: é o número que o motor realmente é, e é o que decide se um CDM do Widevine
+   * aceito por este build é o do motor que está rodando. Uma versão escrita à mão aqui
+   * seria uma segunda fonte, que diverge sem avisar — a mesma falha do `version` que o
+   * `package.json` do app já teve uma vez.
+   *
+   * E o build empacotado é `Juntos.exe`, não `electron.exe`: o nome do executável
+   * também muda o comportamento do VMP, e um log que não mostra qual dos dois estava
+   * rodando não serve para diagnosticar isso.
+   */
+  log(`Juntos ${app.getVersion()} iniciando · node ${process.versions.node} · electron ${process.versions.electron} · chromium ${process.versions.chrome} · ${process.platform}${app.isPackaged ? ' · empacotado' : ' · desenvolvimento'}`);
 }
